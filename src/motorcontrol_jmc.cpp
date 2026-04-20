@@ -1,27 +1,254 @@
-#include "definitions.h"
-
-#ifdef JMC_DRIVE
 #include "motorcontrol_jmc.h"
 #include "main.h"
 #include "pdata.h"
 #include "comm.h"
 #include "display.h"
+#include "error_history.h"
+#include <limits.h>
 
-
-int16_t motor_currentRPM = 0;
-int16_t motor_currentTorque = 0;
+namespace {
 uint16_t motor_currentStatus = 0;
-int16_t motor_setRPM = 0;
-uint16_t currentCal = 0;
-RTC_DATA_ATTR uint8_t rtc_bootFlagMotor = 0;
-int16_t commCounter = 0;
+unsigned long lastCommSend = 0;
+// JMC comm on this grinder is a mixed map in practice:
+// - vendor-specific setup/runtime registers such as 0x2101/0x2103/0x2502/0x2503
+// - CiA402-style objects such as 0x6040/0x6041/0x606C/0x6077
+//
+// The local "JMC Manual RU-1.pdf" is primarily an EC/CiA402 manual, so it is
+// not a drop-in description of the whole RS-485 path. It was still critical for
+// one detail that the old code got wrong: 0x606C "Actual speed" is I32, so it
+// must be read as TWO 16-bit registers and decoded as signed 32-bit data.
+// Do not simplify 0x606C back to a single-register read.
+constexpr uint16_t JMC_RPM_REG_SPEC = 2114;
+constexpr uint16_t JMC_RPM_REG_LEGACY = 0x606C;
+constexpr uint16_t JMC_MODE_RESPONSE_REG = 0x6061;
+constexpr uint16_t JMC_DRIVE_ERROR_REG = 0x605E;
+constexpr unsigned long JMC_RPM_LOG_ZERO_DELAY_MS = 2000;
+constexpr uint8_t JMC_RPM_MAX_MISSES = 2;
+uint16_t jmcRpmReadReg = JMC_RPM_REG_LEGACY;
+unsigned long jmcRpmSessionStartedAt = 0;
+bool jmcRpmLoggedSample = false;
+bool jmcRpmLoggedZero = false;
+unsigned long jmcLastRpmReadAt = 0;
+unsigned long jmcLastRpmRequestAt = 0;
+uint8_t jmcRpmMissCount = 0;
+bool jmcAwaitingRpmResponse = false;
+enum JmcDiagReadType : uint8_t {
+    JMC_DIAG_NONE = 0,
+    JMC_DIAG_MODE_RESPONSE = 1,
+    JMC_DIAG_DRIVE_ERROR = 2,
+};
+JmcDiagReadType jmcPendingDiagRead = JMC_DIAG_NONE;
+bool jmcAwaitingDiagResponse = false;
+unsigned long jmcLastDiagRequestAt = 0;
+uint8_t jmcLastLoggedModeResponse = 0xFF;
+uint16_t jmcLastLoggedDriveError = 0xFFFF;
 
-unsigned long lastCommSend;
+bool jmcRpmLogStateActive() {
+    switch(state) {
+        case GRINDING:
+        case PURGING:
+        case GRINDING_GBW:
+        case CALIBRATING:
+            return true;
+        default:
+            return false;
+    }
+}
 
-COMM_STATUS commStatus = COMM_DISCONNECTED;
-SYSTEM_STATUS currentStatus = MOTOR_NOT_CONNECTED;
+uint8_t jmcRpmSourceId() {
+    return jmcRpmReadReg == JMC_RPM_REG_SPEC
+               ? ERROR_HISTORY_MOTOR_RPM_SRC_JMC_2114
+               : ERROR_HISTORY_MOTOR_RPM_SRC_JMC_606C;
+}
 
-int16_t calibrateArray[SIZEOFCALIBRATEARRAY] = {0};
+uint16_t alternateJmcRpmReg(uint16_t currentReg) {
+    return currentReg == JMC_RPM_REG_LEGACY ? JMC_RPM_REG_SPEC : JMC_RPM_REG_LEGACY;
+}
+
+uint16_t jmcRpmRegisterCount(uint16_t reg) {
+    return reg == JMC_RPM_REG_LEGACY ? 2 : 1;
+}
+
+int16_t decodeJmcRpmValue(uint16_t reg, const uint16_t* words) {
+    if(words == nullptr) {
+        return 0;
+    }
+
+    if(reg == JMC_RPM_REG_LEGACY) {
+        // 0x606C is documented as I32 in the RU-1 EC/CiA402 manual. The working
+        // serial path on this unit also needs that width; treating it as 16-bit
+        // produced bogus 0/100 RPM reads and destabilized the comm loop.
+        const int32_t raw = static_cast<int32_t>(
+            (static_cast<uint32_t>(words[0]) << 16) |
+            static_cast<uint32_t>(words[1]));
+        if(raw > INT16_MAX) return INT16_MAX;
+        if(raw < INT16_MIN) return INT16_MIN;
+        return static_cast<int16_t>(raw);
+    }
+
+    return static_cast<int16_t>(words[0]);
+}
+
+uint32_t packMotorRpmLogValue(uint8_t subtype, uint8_t source, int16_t value) {
+    return (static_cast<uint32_t>(subtype) << 24) |
+           (static_cast<uint32_t>(source) << 16) |
+           static_cast<uint16_t>(value);
+}
+
+uint32_t packMotorDiagLogValue(uint8_t subtype, uint16_t value) {
+    return (static_cast<uint32_t>(subtype) << 24) | static_cast<uint16_t>(value);
+}
+
+void resetJmcRpmLogSession() {
+    jmcRpmSessionStartedAt = 0;
+    jmcRpmLoggedSample = false;
+    jmcRpmLoggedZero = false;
+}
+
+void resetJmcRpmReadHealth() {
+    jmcLastRpmReadAt = 0;
+    jmcLastRpmRequestAt = 0;
+    jmcRpmMissCount = 0;
+    jmcAwaitingRpmResponse = false;
+}
+
+void resetJmcDiagReadState() {
+    jmcPendingDiagRead = JMC_DIAG_NONE;
+    jmcAwaitingDiagResponse = false;
+    jmcLastDiagRequestAt = 0;
+    jmcLastLoggedModeResponse = 0xFF;
+    jmcLastLoggedDriveError = 0xFFFF;
+}
+
+void queueJmcDiagRead(JmcDiagReadType type) {
+    if(type == JMC_DIAG_NONE) {
+        return;
+    }
+    if(jmcAwaitingDiagResponse) {
+        return;
+    }
+    if(jmcPendingDiagRead == JMC_DIAG_DRIVE_ERROR) {
+        return;
+    }
+    jmcPendingDiagRead = type;
+}
+
+uint16_t jmcDiagRegister(JmcDiagReadType type) {
+    switch(type) {
+        case JMC_DIAG_MODE_RESPONSE: return JMC_MODE_RESPONSE_REG;
+        case JMC_DIAG_DRIVE_ERROR: return JMC_DRIVE_ERROR_REG;
+        case JMC_DIAG_NONE:
+        default:
+            return 0;
+    }
+}
+
+void noteJmcModeResponse(uint16_t value) {
+    const uint8_t mode = static_cast<uint8_t>(value & 0xFFU);
+    if(mode == jmcLastLoggedModeResponse) {
+        return;
+    }
+    error_history_log(ERROR_HISTORY_SOURCE_MOTOR,
+                      ERROR_HISTORY_LEVEL_INFO,
+                      ERROR_HISTORY_CODE_MOTOR_JMC_DIAG,
+                      packMotorDiagLogValue(ERROR_HISTORY_MOTOR_DIAG_MODE_RESPONSE, mode),
+                      state);
+    jmcLastLoggedModeResponse = mode;
+}
+
+void noteJmcDriveError(uint16_t value) {
+    if(value == jmcLastLoggedDriveError) {
+        return;
+    }
+    error_history_log(ERROR_HISTORY_SOURCE_MOTOR,
+                      value == 0 ? ERROR_HISTORY_LEVEL_INFO : ERROR_HISTORY_LEVEL_ERROR,
+                      ERROR_HISTORY_CODE_MOTOR_JMC_DIAG,
+                      packMotorDiagLogValue(ERROR_HISTORY_MOTOR_DIAG_DRIVE_ERROR, value),
+                      state);
+    jmcLastLoggedDriveError = value;
+}
+
+void switchJmcRpmRegister(uint16_t nextReg) {
+    if(nextReg != JMC_RPM_REG_LEGACY && nextReg != JMC_RPM_REG_SPEC) {
+        return;
+    }
+    jmcRpmReadReg = nextReg;
+    resetJmcRpmReadHealth();
+    motor_currentRPM = 0;
+    if(commCounter > 0) {
+        commCounter = 0;
+    }
+}
+
+void noteJmcRpmRead(int16_t rpm) {
+    jmcLastRpmReadAt = millis();
+    jmcAwaitingRpmResponse = false;
+    jmcRpmMissCount = 0;
+
+    if(!jmcRpmLogStateActive() || motor_setRPM == 0) {
+        return;
+    }
+
+    if(jmcRpmSessionStartedAt == 0) {
+        jmcRpmSessionStartedAt = millis();
+    }
+
+    if(!jmcRpmLoggedSample && rpm != 0) {
+        error_history_log(ERROR_HISTORY_SOURCE_MOTOR,
+                          ERROR_HISTORY_LEVEL_INFO,
+                          ERROR_HISTORY_CODE_MOTOR_RPM_TEST,
+                          packMotorRpmLogValue(ERROR_HISTORY_MOTOR_RPM_SAMPLE, jmcRpmSourceId(), rpm),
+                          state);
+        jmcRpmLoggedSample = true;
+    }
+}
+
+void noteJmcRpmReadFailure() {
+    jmcAwaitingRpmResponse = false;
+    if(jmcRpmMissCount < 0xFF) {
+        jmcRpmMissCount++;
+    }
+    if(jmcRpmMissCount >= JMC_RPM_MAX_MISSES) {
+        switchJmcRpmRegister(alternateJmcRpmReg(jmcRpmReadReg));
+    }
+}
+
+void checkJmcRpmZeroLog() {
+    if(!jmcRpmLogStateActive() || motor_setRPM == 0) {
+        resetJmcRpmLogSession();
+        resetJmcRpmReadHealth();
+        return;
+    }
+
+    if(jmcRpmSessionStartedAt == 0) {
+        jmcRpmSessionStartedAt = millis();
+    }
+
+    if(jmcAwaitingRpmResponse &&
+       millis() - jmcLastRpmRequestAt >= static_cast<unsigned long>(comm_get_receive_delay_ms() + 180)) {
+        noteJmcRpmReadFailure();
+    }
+
+    if(jmcAwaitingDiagResponse &&
+       millis() - jmcLastDiagRequestAt >= static_cast<unsigned long>(comm_get_receive_delay_ms() + 180)) {
+        jmcAwaitingDiagResponse = false;
+        jmcPendingDiagRead = JMC_DIAG_NONE;
+    }
+
+    if(!jmcRpmLoggedSample && !jmcRpmLoggedZero &&
+       millis() - jmcRpmSessionStartedAt >= JMC_RPM_LOG_ZERO_DELAY_MS &&
+       motor_currentRPM == 0) {
+        error_history_log(ERROR_HISTORY_SOURCE_MOTOR,
+                          ERROR_HISTORY_LEVEL_WARN,
+                          ERROR_HISTORY_CODE_MOTOR_RPM_TEST,
+                          packMotorRpmLogValue(ERROR_HISTORY_MOTOR_RPM_ZERO,
+                                               jmcRpmSourceId(),
+                                               motor_setRPM),
+                          state);
+        jmcRpmLoggedZero = true;
+    }
+}
+}
 
 int16_t reg_6040 = -1; //Control word
 
@@ -75,7 +302,7 @@ DriveStatus decodeStatusWord(uint16_t statusWord) {
 SYSTEM_STATUS changeToStatus(DriveStatus decodedStatusWord) { 
     switch(decodedStatusWord) { 
       case SWITCH_ON_DISABLED: return MOTOR_NOT_READY;
-      case READY_TO_SWITCH_ON: return MOTOR_NOT_READY;
+      case READY_TO_SWITCH_ON: return MOTOR_READY;
       case SWITCHED_ON: return MOTOR_READY;
       case OPERATION_ENABLED: return MOTOR_ENABLED;
       case FAULT: return MOTOR_FAULT;
@@ -85,8 +312,9 @@ SYSTEM_STATUS changeToStatus(DriveStatus decodedStatusWord) {
     }
 }
 
-void motor_init() {
+void motor_jmc_init_backend() {
   motor_setRPM = 0;
+  motor_currentRPM = 0;
   reg_6040 = -1; //Control word
 
   reg_0500 = -1; // torq command source = 1
@@ -95,16 +323,20 @@ void motor_init() {
   reg_0503 = -1; // torque SET POINT (-300 to 300)
   reg_0510 = -1; // internal fw torque limit (int 0-300)
   reg_0511 = -1; // internal rv torque limit (int -300 - 0)
+  jmcRpmReadReg = JMC_RPM_REG_LEGACY;
+  resetJmcRpmLogSession();
+  resetJmcRpmReadHealth();
+  resetJmcDiagReadState();
   
   commStatus = COMM_DISCONNECTED;
   currentStatus = MOTOR_NOT_CONNECTED;
 }
 
-bool do_comm() { // can be called continously and will update all values. Returns true when new data packet is available.
+bool motor_jmc_do_comm_backend() { // can be called continously and will update all values. Returns true when new data packet is available.
     /* COMM TYPES
     0 = send RPM
     1 = read status word 0x6041
-    2+ = READ STATUS, RPM, TORQUE (1300, 1301, 1302, 1303)
+    2+ = read live RPM + torque
     */
   static unsigned long lastCommReceived;
   // static uint8_t lastCommType;
@@ -112,7 +344,9 @@ bool do_comm() { // can be called continously and will update all values. Return
   static int16_t motor_lastSetRPM = -1;
 
   //Disconnect flow
-  if(lastCommReceived + 4*COMM_DELAY_IDLE < millis() && lastCommReceived > 0) { 
+  // BLE scale activity can momentarily stretch the loop timing; use the explicit
+  // disconnect budget instead of the idle polling interval to avoid false drops.
+  if(lastCommReceived > 0 && lastCommReceived + DISCONNECTED_AFTER < millis()) { 
     #ifndef DEBUG
       error = 2;
     #endif
@@ -156,10 +390,12 @@ bool do_comm() { // can be called continously and will update all values. Return
     error = 6;
   }
 
+  checkJmcRpmZeroLog();
+
   // First communication when disconnected
   if(commStatus == COMM_DISCONNECTED) { 
 
-    if(lastCommSend + COMM_DELAY_SEND > millis()) return false;
+    if(lastCommSend + comm_get_send_delay_ms() > millis()) return false;
 
     if(writeConfirm(0x6040, 1)) { //This is blocking
 
@@ -202,6 +438,19 @@ bool do_comm() { // can be called continously and will update all values. Return
         reg_0501 = 1;
       }
       reg_6040 = 1;
+      if(readReturn(JMC_RPM_REG_LEGACY, jmcRpmRegisterCount(JMC_RPM_REG_LEGACY)) != 0xFFFF) {
+        jmcRpmReadReg = JMC_RPM_REG_LEGACY;
+        motor_currentRPM = decodeJmcRpmValue(JMC_RPM_REG_LEGACY, lastRead);
+        noteJmcRpmRead(motor_currentRPM);
+      } else {
+        jmcRpmReadReg = JMC_RPM_REG_SPEC;
+        const int16_t specRpm = readReturn(JMC_RPM_REG_SPEC, jmcRpmRegisterCount(JMC_RPM_REG_SPEC));
+        if(specRpm != 0xFFFF) {
+          motor_currentRPM = decodeJmcRpmValue(JMC_RPM_REG_SPEC, lastRead);
+          noteJmcRpmRead(motor_currentRPM);
+        }
+      }
+      queueJmcDiagRead(JMC_DIAG_MODE_RESPONSE);
       lastCommReceived = millis();
       nextCommType = 0;
       commStatus = COMM_CONNECTED;
@@ -284,9 +533,24 @@ bool do_comm() { // can be called continously and will update all values. Return
         #endif      
       #endif
 
-      if(received == 0x606C) {
-        motor_currentRPM = lastRead[1]; //discarding the high word since we dont use it
+      if(received == JMC_RPM_REG_SPEC || received == JMC_RPM_REG_LEGACY) {
+        jmcRpmReadReg = received;
+        motor_currentRPM = decodeJmcRpmValue(received, lastRead);
+        noteJmcRpmRead(motor_currentRPM);
         disp_updateRequired = true;
+      }
+      if(received == JMC_MODE_RESPONSE_REG) {
+        jmcAwaitingDiagResponse = false;
+        jmcPendingDiagRead = JMC_DIAG_NONE;
+        noteJmcModeResponse(lastRead[0]);
+      }
+      if(received == JMC_DRIVE_ERROR_REG) {
+        jmcAwaitingDiagResponse = false;
+        jmcPendingDiagRead = JMC_DIAG_NONE;
+        noteJmcDriveError(lastRead[0]);
+      }
+      if(received == 0x603F && jmcAwaitingRpmResponse) {
+        noteJmcRpmReadFailure();
       }
       if(received == 0x6077) { 
         motor_currentTorque = lastRead[0];
@@ -294,7 +558,11 @@ bool do_comm() { // can be called continously and will update all values. Return
       }
 
       if(received == 0x6041) { 
+        const SYSTEM_STATUS previousStatus = currentStatus;
         currentStatus = changeToStatus(decodeStatusWord(lastRead[0]));
+        if(currentStatus != previousStatus && currentStatus == MOTOR_FAULT) {
+          queueJmcDiagRead(JMC_DIAG_DRIVE_ERROR);
+        }
         disp_updateRequired = true;
       }
     }
@@ -315,10 +583,10 @@ bool do_comm() { // can be called continously and will update all values. Return
   //Determine COMM delay
   uint16_t delay;
   if(motor_setRPM == 0) if(reg_6040!=3 && reg_0503!=0 && reg_0502 != 0 && nextCommType > 0) nextCommType = 0; //We need to SEND
-  if (nextCommType == 0) delay = COMM_DELAY_SEND; 
+  if (nextCommType == 0) delay = comm_get_send_delay_ms(); 
   else if(nextCommType > 0) { 
-    if (state == IDLE || state == IDLE_GBW || state == MENU1 || state == MENU2 || state == MENU3) delay = COMM_DELAY_IDLE;
-    else delay = COMMINTERVAL;
+    if (state == IDLE || state == IDLE_GBW || state == MENU1 || state == MENU2 || state == MENU3 || state == MENU4) delay = comm_get_idle_delay_ms();
+    else delay = comm_get_active_interval_ms();
   }
   if(lastCommSend + delay > millis()) return false;
 
@@ -398,7 +666,16 @@ if(motor_setRPM == 0) {
       }
     }
 
-    if(reg_6040 != 0x0F && reg_0502 == motor_setRPM && reg_0503 >= 0) { 
+    if(reg_6040 != 0x07 && reg_6040 != 0x0F && reg_0502 == motor_setRPM && reg_0503 >= 0) {
+      if(writeSingleRegister(0x6040, 0x07)) { // Switch on before enable
+        lastCommSend = millis();
+        nextCommType = 0;
+        motor_lastSetRPM = motor_setRPM;
+        return false;
+      }
+    }
+
+    if(reg_6040 != 0x0F && reg_6040 == 0x07 && reg_0502 == motor_setRPM && reg_0503 >= 0) { 
       if(writeSingleRegister(0x6040, 0x0F)) { //SERVO ENABLE
         lastCommSend = millis();
         nextCommType = 0;
@@ -433,7 +710,16 @@ if(motor_setRPM == 0) {
       }
     }
 
-    if(reg_6040 != 0x0F && reg_0502 == -motor_setRPM && reg_0503 <= 0) { 
+    if(reg_6040 != 0x07 && reg_6040 != 0x0F && reg_0502 == -motor_setRPM && reg_0503 <= 0) {
+      if(writeSingleRegister(0x6040, 0x07)) { // Switch on before enable
+        lastCommSend = millis();
+        nextCommType = 0;
+        motor_lastSetRPM = motor_setRPM;
+        return false;
+      }
+    }
+
+    if(reg_6040 != 0x0F && reg_6040 == 0x07 && reg_0502 == -motor_setRPM && reg_0503 <= 0) { 
       if(writeSingleRegister(0x6040, 0x0F)) { //SERVO ENABLE
         lastCommSend = millis();
         nextCommType = 0;
@@ -468,7 +754,9 @@ if(motor_setRPM == 0) {
   if(nextCommType > 1 && nextCommType < 10) {
     if (nextCommType % 2 == 0) {
       nextCommType++;
-      readRegister(0x606C, 1);
+      jmcAwaitingRpmResponse = true;
+      jmcLastRpmRequestAt = millis();
+      readRegister(jmcRpmReadReg, jmcRpmRegisterCount(jmcRpmReadReg));
       lastCommSend = millis();
     } else {
       nextCommType++;
@@ -478,12 +766,25 @@ if(motor_setRPM == 0) {
   }
 
   if(nextCommType >= 10) { 
+    if(jmcPendingDiagRead != JMC_DIAG_NONE && !jmcAwaitingDiagResponse) {
+      const uint16_t reg = jmcDiagRegister(jmcPendingDiagRead);
+      if(reg != 0) {
+        if(readRegister(reg, 1)) {
+          jmcAwaitingDiagResponse = true;
+          jmcLastDiagRequestAt = millis();
+          lastCommSend = millis();
+          return false;
+        }
+      } else {
+        jmcPendingDiagRead = JMC_DIAG_NONE;
+      }
+    }
     nextCommType = 0;
   }
   return false;
 }
 
-bool motorOff() {
+bool motor_jmc_off_backend() {
     for(int i = 0; i < 10; i++) {
       if(writeConfirm(0x6040, 3)) {
         lastCommSend = millis();
@@ -495,7 +796,7 @@ bool motorOff() {
     return false;
 }
 
-void motorSleep() { 
+void motor_jmc_sleep_backend() { 
   #ifdef DEBUG_MOTORCONTROL
   Serial.print("Motor sleep..");
   #endif
@@ -512,15 +813,15 @@ void motorSleep() {
     }
 }
 
-void motorReset() { 
+void motor_jmc_reset_backend() { 
   writeConfirm(0x2101, 1); // Reset control mode to speed mode
   writeMultipleConfirm(0x1010, 2, 0, 0); // Set magic byte to 0
   writeConfirm(0x6060, 3); //Set CiA402 to speedmode
-  motorSleep(); //Should prevent the necessity of a restart, unsure tho.
+  motor_jmc_sleep_backend(); //Should prevent the necessity of a restart, unsure tho.
 }
 
 //This function needs to be called continuously untill it returns true; which indicates a completed calibration
-bool Calibrate() { 
+bool motor_jmc_calibrate_backend() { 
     static unsigned long lastCall;
     static unsigned long checkTime;
     static uint32_t sum = 0;
@@ -597,5 +898,3 @@ bool Calibrate() {
 
     return false;
 }
-
-#endif

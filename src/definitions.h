@@ -2,9 +2,7 @@
 #include <Arduino.h>
 #pragma once
 
-// CHOOSE ONE
-#define RT_DRIVE
-// #define JMC_DRIVE 
+// Motor type is selected at runtime through the HAL layer.
 
 //DEBUG FLAGS 
 // #define DEBUG
@@ -19,11 +17,9 @@
 
 // USER SETTINGS
 #define absolute_min_rpm 0
-#ifdef RT_DRIVE
-#define absolute_max_rpm 3000
-#else
-#define absolute_max_rpm 2000
-#endif
+#define MOTOR_MAX_RPM_JMC 2000
+#define MOTOR_MAX_RPM_RT 3000
+#define absolute_max_rpm MOTOR_MAX_RPM_RT
 
 #define rpm_scalar 25
 #define SIZEOFCALIBRATEARRAY (2*(absolute_max_rpm - absolute_min_rpm)/rpm_scalar)
@@ -114,18 +110,10 @@
 #define default_autoPurgeEnabled 1
 #define default_auto_off_time 60
 
-#ifdef RT_DRIVE
-#define default_purgeFramesLow 5
-#define default_purgeFramesHigh 3
-#define default_purgePrctLow 125
-#define default_purgePrctHigh 125
-#endif
-#ifdef JMC_DRIVE
 #define default_purgeFramesLow 7
 #define default_purgeFramesHigh 5
 #define default_purgePrctLow 130
 #define default_purgePrctHigh 130
-#endif
 
 #define default_purgeDuration 3000
 #define default_purgeDelay 2000

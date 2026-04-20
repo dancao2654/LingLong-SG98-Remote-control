@@ -1,23 +1,86 @@
-#include "definitions.h"
-#ifdef RT_DRIVE
 #include "motorcontrol_rt.h"
 #include "main.h"
 #include "pdata.h"
 #include "comm.h"
 #include "display.h"
+#include "error_history.h"
 
-int16_t motor_currentRPM = 0;
-int16_t motor_currentTorque = 0;
+namespace {
 uint16_t motor_currentStatus = 0;
-int16_t motor_setRPM = 0;
-uint16_t currentCal = 0;
-RTC_DATA_ATTR uint8_t rtc_bootFlagMotor = 0;
-int16_t commCounter = 0;
+constexpr unsigned long RT_RPM_LOG_ZERO_DELAY_MS = 2000;
+unsigned long rtRpmSessionStartedAt = 0;
+bool rtRpmLoggedSample = false;
+bool rtRpmLoggedZero = false;
 
-int16_t calibrateArray[SIZEOFCALIBRATEARRAY] = {0};
+bool rtRpmLogStateActive() {
+    switch(state) {
+        case GRINDING:
+        case PURGING:
+        case GRINDING_GBW:
+        case CALIBRATING:
+            return true;
+        default:
+            return false;
+    }
+}
 
-COMM_STATUS commStatus = COMM_DISCONNECTED;
-SYSTEM_STATUS currentStatus = MOTOR_NOT_CONNECTED;
+uint32_t packMotorRpmLogValue(uint8_t subtype, uint8_t source, int16_t value) {
+    return (static_cast<uint32_t>(subtype) << 24) |
+           (static_cast<uint32_t>(source) << 16) |
+           static_cast<uint16_t>(value);
+}
+
+void resetRtRpmLogSession() {
+    rtRpmSessionStartedAt = 0;
+    rtRpmLoggedSample = false;
+    rtRpmLoggedZero = false;
+}
+
+void noteRtRpmRead(int16_t rpm) {
+    if(!rtRpmLogStateActive() || motor_setRPM == 0) {
+        return;
+    }
+
+    if(rtRpmSessionStartedAt == 0) {
+        rtRpmSessionStartedAt = millis();
+    }
+
+    if(!rtRpmLoggedSample && rpm != 0) {
+        error_history_log(ERROR_HISTORY_SOURCE_MOTOR,
+                          ERROR_HISTORY_LEVEL_INFO,
+                          ERROR_HISTORY_CODE_MOTOR_RPM_TEST,
+                          packMotorRpmLogValue(ERROR_HISTORY_MOTOR_RPM_SAMPLE,
+                                               ERROR_HISTORY_MOTOR_RPM_SRC_RT_1301,
+                                               rpm),
+                          state);
+        rtRpmLoggedSample = true;
+    }
+}
+
+void checkRtRpmZeroLog() {
+    if(!rtRpmLogStateActive() || motor_setRPM == 0) {
+        resetRtRpmLogSession();
+        return;
+    }
+
+    if(rtRpmSessionStartedAt == 0) {
+        rtRpmSessionStartedAt = millis();
+    }
+
+    if(!rtRpmLoggedSample && !rtRpmLoggedZero &&
+       millis() - rtRpmSessionStartedAt >= RT_RPM_LOG_ZERO_DELAY_MS &&
+       motor_currentRPM == 0) {
+        error_history_log(ERROR_HISTORY_SOURCE_MOTOR,
+                          ERROR_HISTORY_LEVEL_WARN,
+                          ERROR_HISTORY_CODE_MOTOR_RPM_TEST,
+                          packMotorRpmLogValue(ERROR_HISTORY_MOTOR_RPM_ZERO,
+                                               ERROR_HISTORY_MOTOR_RPM_SRC_RT_1301,
+                                               motor_setRPM),
+                          state);
+        rtRpmLoggedZero = true;
+    }
+}
+}
 
 // Actual register mirrors (reflect what the controller has confirmed)
 int16_t reg_201 = -1; //enable disable drive (0 / 1)
@@ -43,18 +106,19 @@ int16_t pending_reg_515 = 0xFFFF;
 
 */
 
-void motor_init() {
+void motor_rt_init_backend() {
   motor_setRPM = 0;
   reg_201 = -1;
   reg_503 = 0;
   reg_514 = -1;
   reg_515 = -1;
   reg_525 = -1;
+  resetRtRpmLogSession();
   commStatus = COMM_DISCONNECTED;
   currentStatus = MOTOR_NOT_CONNECTED;
 }
 
-bool do_comm() { // can be called continously and will update all values. Returns true when new data packet is available.
+bool motor_rt_do_comm_backend() { // can be called continously and will update all values. Returns true when new data packet is available.
     /* COMM TYPES
     0 = send RPM
     1+ = READ STATUS, RPM, TORQUE (1300, 1301, 1302, 1303)
@@ -66,7 +130,9 @@ bool do_comm() { // can be called continously and will update all values. Return
   static int16_t motor_lastSetRPM;
 
   //Disconnect flow
-  if(lastCommReceived + 2*COMM_DELAY_IDLE < millis() && lastCommReceived > 0) { 
+  // BLE scale activity can momentarily stretch the loop timing; use the explicit
+  // disconnect budget instead of the idle polling interval to avoid false drops.
+  if(lastCommReceived > 0 && lastCommReceived + DISCONNECTED_AFTER < millis()) { 
     #ifndef DEBUG
       error = 2;
     #endif
@@ -105,6 +171,8 @@ bool do_comm() { // can be called continously and will update all values. Return
     state = IDLE; 
     error = 6;
   }
+
+  checkRtRpmZeroLog();
 
   // First communication when disconnected
   if(commStatus == COMM_DISCONNECTED) { 
@@ -190,6 +258,7 @@ bool do_comm() { // can be called continously and will update all values. Return
       if(received == 1300 && lastRequestType == 104) { // A request for status, speed & torque
           motor_currentStatus = lastRead[0];
           motor_currentRPM = lastRead[1];
+          noteRtRpmRead(motor_currentRPM);
           //skip 2 = setRPM
           motor_currentTorque = lastRead[3];
           newData = true;
@@ -216,10 +285,10 @@ bool do_comm() { // can be called continously and will update all values. Return
   uint16_t delay;
   if(motor_setRPM == 0) if(reg_201!=0 && reg_514!=0 && reg_515!=0 && reg_525!=0 && nextCommType > 0) nextCommType = 0; //We need to SEND
 
-  if (nextCommType == 0) delay = COMM_DELAY_SEND; 
+  if (nextCommType == 0) delay = comm_get_send_delay_ms(); 
   if(nextCommType > 0) { 
-    if (state == IDLE || state == IDLE_GBW || state == MENU1 || state == MENU2 || state == MENU3) delay = COMM_DELAY_IDLE;
-    else delay = COMMINTERVAL;
+    if (state == IDLE || state == IDLE_GBW || state == MENU1 || state == MENU2 || state == MENU3 || state == MENU4) delay = comm_get_idle_delay_ms();
+    else delay = comm_get_active_interval_ms();
   }
 
   if(lastCommSend + delay > millis()) return false;
@@ -369,7 +438,7 @@ bool do_comm() { // can be called continously and will update all values. Return
   return false;
 }
 
-bool motorOff() {
+bool motor_rt_off_backend() {
   uint8_t score = 0;
     for(int i = 0; i < 10; i++) {
       if(writeMultipleConfirm(514, 2, 0, 0)) { //SET SPEED LIMIT FORWARD = 0
@@ -401,7 +470,7 @@ bool motorOff() {
     return false;
 }
 
-void motorSleep() { 
+void motor_rt_sleep_backend() {
   // Serial.print("Motor sleep..");
   // if(writeConfirm(0x6040, 0)) { 
   //   Serial.println("confirmed");
@@ -409,7 +478,7 @@ void motorSleep() {
 }
 
 //This function needs to be called continuously untill it returns true; which indicates a completed calibration
-bool Calibrate() { 
+bool motor_rt_calibrate_backend() { 
     static unsigned long lastCall;
     static unsigned long checkTime;
     static uint32_t sum = 0;
@@ -478,5 +547,3 @@ bool Calibrate() {
 
     return false;
 }
-
-#endif

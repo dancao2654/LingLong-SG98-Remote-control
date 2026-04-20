@@ -3,58 +3,40 @@
 #include "display.h"
 #include "main.h"
 #include "gbw.h"
+#include "diag_console.h"
+#include "error_history.h"
+#include "motor_hal.h"
 #include "pdata.h"
 #include "display.h"
 #include "io.h"
 #include "comm.h"
 
-#ifdef RT_DRIVE 
-#include "motorcontrol_rt.h"
-#endif 
-#ifdef JMC_DRIVE
-#include "motorcontrol_jmc.h"
-#endif
-
 States state = IDLE;
 int8_t menu1Selected = EXITMENU;
 int8_t menu2Selected = RETURN_FROM_PURGE;
 int8_t menu3Selected = RETURN_FROM_GBW;
+int8_t menu4Selected = RETURN_FROM_JMC_BAUD;
+int8_t motorSelectSelected = MOTOR_SELECT_AUTO;
 bool enterMenu = false;
 bool firstBootFlag = false;
+States motorSelectReturnState = IDLE;
 
-#ifdef JMC_DRIVE
 menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"EXIT MENU", 0, 0, 0, 0, "EXITMENU", ""},                 // 0
     {"Purge Settings", 0, 0, 0, 0, "PURGESETT", ""},           // 1
     {"GbW Settings", 0, 0, 0, 0, "GBWSETT", ""},               // 2
-    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 3
-    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 4
-    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 5
-    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 6
-    {"Max RPM", default_maxRPM, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "MAXRPM", "rpm"}, // 7
-    {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 8
-    {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 9
-    {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, //10
-    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 11
+    {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 3
+    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 4
+    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 5
+    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 6
+    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 7
+    {"Max RPM", default_maxRPM, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "MAXRPM", "rpm"}, // 8
+    {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 9
+    {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 10
+    {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, //11
+    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 12
     {"Reset default", 0, 0, 1, 1, "RSTALL", ""},
 };
-#endif
-#ifdef RT_DRIVE
-menuEntry Menu1[NUM_MENU1_ITEMS] = {
-    {"EXIT MENU", 0, 0, 0, 0, "EXITMENU", ""},                 // 0
-    {"Purge Settings", 0, 0, 0, 0, "PURGESETT", ""},           // 1
-    {"GbW Settings", 0, 0, 0, 0, "GBWSETT", ""},               // 2
-    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 3
-    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 4
-    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 5
-    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 6
-    {"Max RPM", default_maxRPM, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "MAXRPM", "rpm"}, // 7
-    {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 8
-    {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 9
-    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 11
-    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},
-};
-#endif
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {
     {"BACK", 0, 0, 0, 0, "RETURN2", ""},                                           // 0  RETURN_FROM_PURGE
@@ -84,6 +66,15 @@ menuEntry Menu3[NUM_MENU3_ITEMS] = {
     {"Save scale", 0, 0, 1, 1, "SCALESTORED", ""},                                  // 7 SAVE_SCALE
 };
 
+menuEntry Menu4[NUM_MENU4_ITEMS] = {
+    {"BACK", 0, 0, 0, 0, "RETURN4", ""},
+    {"JMC 9600", 0, 0 ,0, 0, "JMC9600", ""},
+    {"JMC 19200", 0, 0 ,0, 0, "JMC19200", ""},
+    {"JMC 38400", 0, 0 ,0, 0, "JMC38400", ""},
+    {"JMC 57600", 0, 0 ,0, 0, "JMC57600", ""},
+    {"JMC 115200", 0, 0 ,0, 0, "JMC115200", ""},
+};
+
 volatile bool newData = true; //This is new TORQUE data.
 
 volatile uint8_t error = 0;
@@ -101,6 +92,52 @@ bool ready_purge = false;
 
 unsigned long lastLoopTime = 0;
 int loopcount = 0;
+
+namespace {
+uint8_t purgeFrameCounter = 0;
+int16_t purgeLastSetRPM = 0;
+unsigned long purgeStartTime = 0;
+unsigned long purgeLastCheckAt = 0;
+unsigned long purgeRunStartedAt = 0;
+float purgeTestTorque = 0;
+int16_t purgeTestScalar = 0;
+int16_t purgeFrames = 0;
+uint8_t purgePhase = 0;
+uint8_t purgeLastPhase = 0xFF;
+bool purgeSequenceNeedsInit = true;
+}
+
+void purge_prepare_for_grinding() {
+    purgeFrameCounter = 0;
+    purgeLastSetRPM = setRPM;
+    purgeStartTime = millis();
+    purgeLastCheckAt = millis();
+    ready_purge = false;
+}
+
+void purge_cancel_pending() {
+    purgeFrameCounter = 0;
+    purgeLastSetRPM = setRPM;
+    purgeStartTime = millis();
+    purgeLastCheckAt = millis();
+    purgeRunStartedAt = millis();
+    purgePhase = 0;
+    purgeLastPhase = 0xFF;
+    purgeSequenceNeedsInit = true;
+    ready_purge = false;
+}
+
+void purge_mark_started() {
+    purgeFrameCounter = 0;
+    purgeLastSetRPM = setRPM;
+    purgeStartTime = millis();
+    purgeLastCheckAt = millis();
+    purgeRunStartedAt = millis();
+    purgePhase = 0;
+    purgeLastPhase = 0xFF;
+    purgeSequenceNeedsInit = true;
+    ready_purge = false;
+}
 
 
 void scaleTask(void *pvParameters) {
@@ -172,8 +209,10 @@ void setup() {
     io_init();
     comm_init();
     Serial.println("Comm init");
+    error_history_init();
     motor_init();
     Serial.println("motor_init");
+    diag_console_init();
     vitals_init();
     lastActivity = millis();
 }
@@ -181,6 +220,7 @@ void setup() {
 void loop() { 
     doVitals();
     do_comm();
+    diag_console_poll();
     do_io();
     sleepTimeCheck();
     update_display();
@@ -236,10 +276,18 @@ void loop() {
         //everything handled in do_io
     }
 
+    if(state == MENU4) {
+        motor_setRPM = 0;
+    }
+
     if(state == CALIBRATING) { 
         ledAction(1);
         Calibrate();
         lastActivity = millis();
+    }
+
+    if(state == MOTOR_SELECT) {
+        motor_setRPM = 0;
     }
 
    // newData = false;
@@ -247,20 +295,12 @@ void loop() {
 
 
 void checkPurge() { 
-    static uint8_t frameCounter = 0;
-    static int16_t last_setRPM;
-    static unsigned long startTime = 0;
-    static unsigned long lastCall = 0;
-    static float test_torque;
-    static int16_t test_scalar;
-    static int16_t purge_frames;
-
     //if last call was +1000ms ago, reset.
-    if(lastCall + 500 < millis()) { 
-        lastCall = millis();
-        startTime = millis();
+    if(purgeLastCheckAt + 500 < millis()) { 
+        purgeLastCheckAt = millis();
+        purgeStartTime = millis();
         ready_purge = false;
-        frameCounter = 0;
+        purgeFrameCounter = 0;
     }
 
     if(commStatus != COMM_CONNECTED) { 
@@ -269,51 +309,52 @@ void checkPurge() {
     } else motor_setRPM = setRPM;
 
     //Reset if the RPM is changed
-    if(setRPM != last_setRPM) {
-        last_setRPM = setRPM;
-        frameCounter = 0;
+    if(setRPM != purgeLastSetRPM) {
+        purgeLastSetRPM = setRPM;
+        purgeFrameCounter = 0;
         ready_purge = false;
-        startTime = millis();
+        purgeStartTime = millis();
     }
 
     // Auto off after x time no grinding detected
     if(Menu2[AUTO_OFF_TIME].value > 0) {
-        if(startTime + Menu2[AUTO_OFF_TIME].value*1000 < millis() && ready_purge == false) { 
+        if(purgeStartTime + Menu2[AUTO_OFF_TIME].value*1000 < millis() && ready_purge == false) { 
             motor_setRPM = 0;
+            purge_cancel_pending();
             state = IDLE;
             lastActivity = millis();
         }
     }
 
     //Auto purge sequence
-    if(Menu2[AUTO_PURGE_ENABLED].value == true && startTime + Menu2[SETPURGESTABILTIME].value < millis() && lastActivity + 1000 < millis() && newData == true) 
+    if(Menu2[AUTO_PURGE_ENABLED].value == true && purgeStartTime + Menu2[SETPURGESTABILTIME].value < millis() && lastActivity + 1000 < millis() && newData == true) 
     { 
 
     //the torque defined during calibration
-      if(rpm_scalar != 0) test_torque = calibrateArray[((setRPM + absolute_min_rpm)/rpm_scalar)];
+      if(rpm_scalar != 0) purgeTestTorque = calibrateArray[((setRPM + absolute_min_rpm)/rpm_scalar)];
       #ifdef DEBUG_CALIB
-        Serial.print("torque: "), Serial.print(motor_currentTorque), Serial.print(" test: "), Serial.println(test_torque);
+        Serial.print("torque: "), Serial.print(motor_currentTorque), Serial.print(" test: "), Serial.println(purgeTestTorque);
       #endif
       if(setRPM > 500) { //High values
-        test_scalar = Menu2[SETPURGEPRCTHIGH].value;
-        purge_frames = Menu2[SETPURGEFRAMESHIGH].value;
+        purgeTestScalar = Menu2[SETPURGEPRCTHIGH].value;
+        purgeFrames = Menu2[SETPURGEFRAMESHIGH].value;
       } else {          // low values
-        test_scalar = Menu2[SETPURGEPRCTLOW].value;
-        purge_frames = Menu2[SETPURGEFRAMESLOW].value;
+        purgeTestScalar = Menu2[SETPURGEPRCTLOW].value;
+        purgeFrames = Menu2[SETPURGEFRAMESLOW].value;
       }
 
       ///if the actual torque is greater than the calibrated torque*scalar we count up frames (note only when newData = true)
-      if(motor_currentTorque > (test_torque*test_scalar)/100.f) { 
-        frameCounter++;
+      if(motor_currentTorque > (purgeTestTorque*purgeTestScalar)/100.f) { 
+        purgeFrameCounter++;
         #ifdef DEBUG_CALIB
-          Serial.print("frame counter: "), Serial.println(frameCounter);
+          Serial.print("frame counter: "), Serial.println(purgeFrameCounter);
         #endif
       } else {  //If it's smaller, we set the frames to 0;
-        frameCounter = 0;
+        purgeFrameCounter = 0;
       }
 
       // If we've made the threshold once, purge will commence after grinding. LastActivity stay millis() as long as we're grinding beans
-      if(frameCounter >= purge_frames)  
+      if(purgeFrameCounter >= purgeFrames)  
       { 
         ready_purge = true;
         lastActivity = millis(); //Update the last known time we were grinding.. 
@@ -326,78 +367,76 @@ void checkPurge() {
         Serial.println("go purge");
         #endif
         disp_updateRequired = true;
-        ready_purge = false;
-        frameCounter = 0; //should already be 0 but ok.
+        purge_mark_started();
         state = PURGING;
         }
     }
-    lastCall = millis();
+    purgeLastCheckAt = millis();
 }
 
 void do_purge() { 
-    static unsigned long lastCall;
-    static unsigned long startTime;
-    static uint8_t phase;
-    static uint8_t last_purge_phase; 
     uint16_t delayTime = Menu2[SETPURGEOFFTIME].value;
 
-    // if its the first call in a while..
-    if(lastCall + 500 < millis()) { 
-        lastCall = millis();
-        startTime = millis(); 
-        phase = 0;
-        last_purge_phase = 0xFF;
+    if(purgeSequenceNeedsInit) { 
+        purgeRunStartedAt = millis(); 
+        purgePhase = 0;
+        purgeLastPhase = 0xFF;
+        purgeSequenceNeedsInit = false;
         #ifdef DEBUG
             Serial.println("Purge commence..");
         #endif
-        if(Menu2[SETPURGERPM].value == 0 && Menu2[SETPURGEREVERSE].value == 0) state = IDLE;
+        if(Menu2[SETPURGERPM].value == 0 && Menu2[SETPURGEREVERSE].value == 0) {
+            purge_cancel_pending();
+            state = IDLE;
+            return;
+        }
     }
     
     //started <delayTime ago
-    if(startTime + delayTime > millis()) { 
+    if(purgeRunStartedAt + delayTime > millis()) { 
         if(delayTime > 0) motor_setRPM = 0; 
-        phase = 1; 
+        purgePhase = 1; 
     }
 
     // Time between delayTime and 500 + purgeTime 
-    if(startTime + delayTime < millis() && startTime + delayTime + Menu2[SETPURGETIME].value > millis()) {
+    if(purgeRunStartedAt + delayTime < millis() && purgeRunStartedAt + delayTime + Menu2[SETPURGETIME].value > millis()) {
         motor_setRPM = Menu2[SETPURGERPM].value > Menu1[SETMAX].value? Menu1[SETMAX].value : Menu2[SETPURGERPM].value; 
-        phase = 2;
+        purgePhase = 2;
     }
 
     //We're not doing reverse
-    if(Menu2[SETPURGEREVERSE].value == false && startTime + delayTime + Menu2[SETPURGETIME].value < millis()) {
+    if(Menu2[SETPURGEREVERSE].value == false && purgeRunStartedAt + delayTime + Menu2[SETPURGETIME].value < millis()) {
         motor_setRPM = 0;
+        purge_cancel_pending();
         state = IDLE;
         disp_updateRequired = true;
-        phase = 5;
+        purgePhase = 5;
     } else { 
         //were doing reverse, pause for 500ms 
-        if(startTime + delayTime + Menu2[SETPURGETIME].value < millis() && startTime + 2*delayTime + Menu2[SETPURGETIME].value > millis()) { 
+        if(purgeRunStartedAt + delayTime + Menu2[SETPURGETIME].value < millis() && purgeRunStartedAt + 2*delayTime + Menu2[SETPURGETIME].value > millis()) { 
             motor_setRPM = 0;
-            phase = 3;
+            purgePhase = 3;
         }
         //do another reverse purge for purge time
-        if(startTime + 2*delayTime + Menu2[SETPURGETIME].value < millis() && startTime + 2*delayTime + 2*Menu2[SETPURGETIME].value > millis()) {
+        if(purgeRunStartedAt + 2*delayTime + Menu2[SETPURGETIME].value < millis() && purgeRunStartedAt + 2*delayTime + 2*Menu2[SETPURGETIME].value > millis()) {
             motor_setRPM = (-1) * (Menu2[SETPURGEREVERSE].value > Menu1[SETMAX].value? Menu1[SETMAX].value : Menu2[SETPURGEREVERSE].value);
-            phase = 4;
+            purgePhase = 4;
         }
-        if(startTime + 2*delayTime + 2*Menu2[SETPURGETIME].value < millis()) { 
-            phase = 5;
+        if(purgeRunStartedAt + 2*delayTime + 2*Menu2[SETPURGETIME].value < millis()) { 
+            purgePhase = 5;
             motor_setRPM = 0;
+            purge_cancel_pending();
             state = IDLE;
             disp_updateRequired = true;
         }
     }
 
-    if(phase != last_purge_phase) { 
-        Serial.println(phase);
+    if(purgePhase != purgeLastPhase) { 
+        Serial.println(purgePhase);
         disp_updateRequired = true;
-        last_purge_phase = phase;
+        purgeLastPhase = purgePhase;
         Serial.println(motor_setRPM);
     }
-
-    lastCall = millis();
 }
 
 

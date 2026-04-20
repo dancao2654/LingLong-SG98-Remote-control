@@ -3,14 +3,8 @@
 #include "io.h"
 #include "pdata.h"
 #include "display.h"
-
-#ifdef JMC_DRIVE
-#include "motorcontrol_jmc.h"
-#endif
-
-#ifdef RT_DRIVE
-#include "motorcontrol_rt.h"
-#endif
+#include "motor_hal.h"
+#include "ble_console.h"
 
 // #define DEBUG_GBW
 unsigned long startOfShot = 0;
@@ -61,6 +55,7 @@ uint16_t last_shot_updated;
 //SEPARATE TASK!!
 void scales_init() { 
     NimBLEDevice::init("GbWService");
+    ble_console_init();
     if (xSemaphoreTake(scaleMutex, portMAX_DELAY)) {
         mac_local = scale_connect_mac;
         xSemaphoreGive(scaleMutex);
@@ -73,6 +68,11 @@ void gbwVitals()
     static uint8_t prevScaleStatus;
     static unsigned long lastConnected;
     static int32_t prevWeight;
+    const bool scaleModeActive = (state == IDLE_GBW || state == GRINDING_GBW);
+
+    connect = scaleModeActive;
+    maintain = scaleModeActive;
+    ble_console_set_advertising_enabled(!scaleModeActive);
 
     if(scale.manage(connect, maintain, mac_local) == true) { 
         scaleStatus = SCALE_CONNECTED;
@@ -112,17 +112,6 @@ void gbwVitals()
         newWeightAvail = true;
         disp_updateRequired = true;
     } else newWeightAvail = false; //Here coz thats one round!
-
-    // Manage connection states 
-    if(state == IDLE_GBW || state == GRINDING_GBW) {
-        connect = true;
-        maintain = true;
-    } else {
-        if(state == IDLE || state == GRINDING || state == SLEEPING)  {
-            maintain = false;
-        }
-        connect = false;
-    }
 
     if(scaleStatus != prevScaleStatus) { 
         disp_updateRequired = true;
@@ -535,6 +524,9 @@ void gbw_learn() {
     #endif
 
     // Calculating expected stop time
+    if(Menu3[GBW_OFFSET].value <= 0) {
+        return;
+    }
     int16_t actualDeltaWeight = _shot[last_shot_updated].weight - stopWeight; 
     float endingSpeed = float(actualDeltaWeight) / float(Menu3[GBW_OFFSET].value);
     int16_t grindOvershoot = setWeight - stopWeight; 
@@ -579,4 +571,3 @@ void gbw_learn() {
         #endif
     }
 }
-

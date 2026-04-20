@@ -2,13 +2,7 @@
 #include "HardwareSerial.h"
 #include "comm.h"  
 #include "main.h"
-
-#ifdef RT_DRIVE
-#include "motorcontrol_rt.h"
-#endif
-#ifdef JMC_DRIVE
-#include "motorcontrol_jmc.h"
-#endif
+#include "motor_hal.h"
 
 unsigned long lastSend;
 unsigned long lastReceived = 0;
@@ -20,47 +14,481 @@ bool responseReceived = 0;
 uint8_t lastRequestType = 0;
 uint16_t crc = 0;
 uint16_t lastRegAddr = 0;
+CommProfile activeCommProfile = COMM_PROFILE_JMC;
+JmcCommRate activeJmcRate = JMC_COMM_RATE_9600;
+
+namespace {
+constexpr uint32_t RS485_TURNAROUND_US = 50;
+uint16_t sendDelayForProfile(CommProfile profile);
+uint16_t receiveDelayForProfile(CommProfile profile);
+uint16_t idleDelayForProfile(CommProfile profile);
+uint16_t activeIntervalForProfile(CommProfile profile);
+
+uint32_t baudRateForJmcRate(JmcCommRate rate) {
+  switch (rate) {
+    case JMC_COMM_RATE_57600:
+      return 57600;
+    case JMC_COMM_RATE_38400:
+      return 38400;
+    case JMC_COMM_RATE_19200:
+      return 19200;
+    case JMC_COMM_RATE_115200:
+      return 115200;
+    case JMC_COMM_RATE_9600:
+    default:
+      return COMM_BAUD_RATE_JMC;
+  }
+}
+
+uint32_t baudRateForProfile(CommProfile profile) {
+  switch (profile) {
+    case COMM_PROFILE_JMC:
+      return baudRateForJmcRate(activeJmcRate);
+    case COMM_PROFILE_RT:
+    default:
+      return COMM_BAUD_RATE_RT;
+  }
+}
+
+uint32_t serialConfigForProfile(CommProfile profile) {
+  switch (profile) {
+    case COMM_PROFILE_JMC:
+      return SERIAL_8N1;
+    case COMM_PROFILE_RT:
+    default:
+      return SERIAL_8N1;
+  }
+}
+
+uint8_t expectedResponseLength() {
+  if(lastRequestType == 0 || lastRequestType > 200) {
+    return 8;
+  }
+
+  if(lastRequestType > 100 && lastRequestType < 200) {
+    return 5 + ((lastRequestType - 100) * 2);
+  }
+
+  return 0;
+}
+
+bool frameReadyToRead(int availableBytes) {
+  if(availableBytes <= 0) {
+    return false;
+  }
+
+  const uint8_t expectedLen = expectedResponseLength();
+  if(expectedLen > 0 && availableBytes >= expectedLen) {
+    return true;
+  }
+
+  // Modbus exception replies are always 5 bytes. Give normal frames a brief
+  // window to finish arriving before treating 5 bytes as an exception.
+  if(availableBytes == 5 && millis() >= lastSend + receiveDelayForProfile(activeCommProfile) + 20) {
+    return true;
+  }
+
+  return false;
+}
+
+int16_t waitForResponse(unsigned long timeoutMs) {
+  const unsigned long deadline = millis() + timeoutMs;
+  while(millis() < deadline) {
+    const int16_t received = receive();
+    if(received != 0) {
+      return received;
+    }
+    delay(1);
+  }
+  return 0;
+}
+
+bool isJmcProfile() {
+  return activeCommProfile == COMM_PROFILE_JMC;
+}
+
+uint16_t sendDelayForProfile(CommProfile profile) {
+  if (profile != COMM_PROFILE_JMC) return COMM_DELAY_SEND;
+
+  switch (activeJmcRate) {
+    case JMC_COMM_RATE_115200: return 8;
+    case JMC_COMM_RATE_57600: return 10;
+    case JMC_COMM_RATE_38400: return 12;
+    case JMC_COMM_RATE_19200: return 20;
+    case JMC_COMM_RATE_9600:
+    default:
+      return 35;
+  }
+}
+
+uint16_t receiveDelayForProfile(CommProfile profile) {
+  if (profile != COMM_PROFILE_JMC) return COMM_DELAY_RECEIVE;
+
+  switch (activeJmcRate) {
+    case JMC_COMM_RATE_115200: return 6;
+    case JMC_COMM_RATE_57600: return 7;
+    case JMC_COMM_RATE_38400: return 8;
+    case JMC_COMM_RATE_19200: return 12;
+    case JMC_COMM_RATE_9600:
+    default:
+      return 25;
+  }
+}
+
+uint16_t idleDelayForProfile(CommProfile profile) {
+  if (profile != COMM_PROFILE_JMC) return COMM_DELAY_IDLE;
+
+  switch (activeJmcRate) {
+    case JMC_COMM_RATE_115200: return 140;
+    case JMC_COMM_RATE_57600: return 160;
+    case JMC_COMM_RATE_38400: return 180;
+    case JMC_COMM_RATE_19200: return 250;
+    case JMC_COMM_RATE_9600:
+    default:
+      return 400;
+  }
+}
+
+uint16_t activeIntervalForProfile(CommProfile profile) {
+  if (profile != COMM_PROFILE_JMC) return COMMINTERVAL;
+
+  switch (activeJmcRate) {
+    case JMC_COMM_RATE_115200: return 12;
+    case JMC_COMM_RATE_57600: return 14;
+    case JMC_COMM_RATE_38400: return 16;
+    case JMC_COMM_RATE_19200: return 24;
+    case JMC_COMM_RATE_9600:
+    default:
+      return 40;
+  }
+}
+
+bool writeResponseMatches(int16_t received, uint16_t expectedReg) {
+  if(received == 0) {
+    return false;
+  }
+
+  if(received == 0x603F) {
+    return false;
+  }
+
+  // The original JMC-only transport treated any parsed response as a
+  // successful confirm step. Preserve that behavior for JMC so the shared
+  // transport does not become stricter than the legacy firmware.
+  if(isJmcProfile()) {
+    return true;
+  }
+
+  return received == expectedReg;
+}
+
+bool readResponseMatches(int16_t received, uint16_t expectedReg) {
+  if(received == 0 || received == 0x603F) {
+    return false;
+  }
+
+  return received == expectedReg;
+}
+
+void debugSendFrame(const uint8_t* data, size_t length) {
+  setTXmode();
+  delayMicroseconds(RS485_TURNAROUND_US);
+  Serial2.write(data, length);
+  Serial2.flush();
+  delayMicroseconds(RS485_TURNAROUND_US);
+  setRXmode();
+}
+
+uint8_t debugExpectedReadLength(uint16_t regCount) {
+  return static_cast<uint8_t>(5 + (regCount * 2));
+}
+
+bool debugCollectResponse(uint8_t* buffer,
+                          uint8_t maxLen,
+                          uint8_t expectedLen,
+                          uint8_t* actualLen) {
+  const unsigned long deadline = millis() + comm_get_receive_delay_ms() + 250;
+  bool sawAnyBytes = false;
+  unsigned long lastByteAt = 0;
+  uint8_t len = 0;
+
+  while(millis() < deadline) {
+    while(Serial2.available() > 0 && len < maxLen) {
+      buffer[len++] = static_cast<uint8_t>(Serial2.read());
+      sawAnyBytes = true;
+      lastByteAt = millis();
+    }
+
+    if(sawAnyBytes) {
+      if(expectedLen > 0 && len >= expectedLen) {
+        break;
+      }
+      if(lastByteAt > 0 && millis() - lastByteAt > 20) {
+        break;
+      }
+    }
+    delay(1);
+  }
+
+  *actualLen = len;
+  return sawAnyBytes;
+}
+
+void debugInitTransaction(CommDebugTransaction* transaction) {
+  if(transaction == nullptr) {
+    return;
+  }
+
+  memset(transaction, 0, sizeof(*transaction));
+  transaction->parsed_reg = -1;
+  transaction->timed_out = true;
+}
+
+bool debugFinalizeRead(uint8_t slave,
+                       uint16_t regAddr,
+                       uint16_t regCount,
+                       CommDebugTransaction* transaction) {
+  if(transaction == nullptr) {
+    return false;
+  }
+
+  if(transaction->response_len == 0) {
+    transaction->timed_out = true;
+    return false;
+  }
+
+  transaction->timed_out = false;
+
+  if(transaction->response_len == 5 && (transaction->response[1] & 0x80U) != 0) {
+    transaction->exception_code = transaction->response[2];
+    transaction->response_crc_ok =
+        modbus_crc16(transaction->response, 3) ==
+        static_cast<uint16_t>(transaction->response[3] | (transaction->response[4] << 8));
+    return false;
+  }
+
+  if(transaction->response_len < 5) {
+    return false;
+  }
+
+  const uint16_t crcResp =
+      static_cast<uint16_t>(transaction->response[transaction->response_len - 2] |
+                            (transaction->response[transaction->response_len - 1] << 8));
+  transaction->response_crc_ok =
+      modbus_crc16(transaction->response, transaction->response_len - 2) == crcResp;
+  if(!transaction->response_crc_ok) {
+    return false;
+  }
+
+  if(transaction->response[0] != slave || transaction->response[1] != FUNC_READ_HOLDING_REGISTERS) {
+    return false;
+  }
+
+  const uint8_t byteCount = transaction->response[2];
+  if(byteCount != regCount * 2 || transaction->response_len < static_cast<uint8_t>(byteCount + 5)) {
+    return false;
+  }
+
+  transaction->parsed_reg = regAddr;
+  transaction->success = true;
+  return true;
+}
+
+bool debugFinalizeWriteSingle(uint8_t slave,
+                              CommDebugTransaction* transaction) {
+  if(transaction == nullptr) {
+    return false;
+  }
+
+  if(transaction->response_len == 0) {
+    transaction->timed_out = true;
+    return false;
+  }
+
+  transaction->timed_out = false;
+
+  if(transaction->response_len == 5 && (transaction->response[1] & 0x80U) != 0) {
+    transaction->exception_code = transaction->response[2];
+    transaction->response_crc_ok =
+        modbus_crc16(transaction->response, 3) ==
+        static_cast<uint16_t>(transaction->response[3] | (transaction->response[4] << 8));
+    return false;
+  }
+
+  if(transaction->response_len < 8) {
+    return false;
+  }
+
+  const uint16_t crcResp =
+      static_cast<uint16_t>(transaction->response[transaction->response_len - 2] |
+                            (transaction->response[transaction->response_len - 1] << 8));
+  transaction->response_crc_ok =
+      modbus_crc16(transaction->response, transaction->response_len - 2) == crcResp;
+  if(!transaction->response_crc_ok) {
+    return false;
+  }
+
+  if(transaction->response[0] != slave || transaction->response[1] != FUNC_WRITE_SINGLE_REGISTER) {
+    return false;
+  }
+
+  transaction->parsed_reg = static_cast<int16_t>((transaction->response[2] << 8) | transaction->response[3]);
+  transaction->success = true;
+  return true;
+}
+
+void debugApplyUart(uint32_t baudRate, uint32_t serialConfig) {
+  Serial2.flush();
+  Serial2.end();
+  delay(2);
+  Serial2.begin(baudRate, serialConfig, RS485_RXD, RS485_TXD);
+  setRXmode();
+  delay(2);
+}
+}
 
 void comm_init() { 
   pinMode(RS485DE, OUTPUT);
   pinMode(RS485RE, OUTPUT);
-  Serial2.begin(BAUD_RATE, PARITY, RS485_RXD, RS485_TXD);
+  setRXmode();
+  comm_set_profile(COMM_PROFILE_JMC, true);
   #ifdef DEBUG_COMM
     Serial.println("comm init");
   #endif
 }
 
+bool comm_set_profile(CommProfile profile, bool force) {
+  if (!force && profile == activeCommProfile) return false;
+
+  Serial2.flush();
+  Serial2.end();
+  delay(2);
+  Serial2.begin(baudRateForProfile(profile), serialConfigForProfile(profile), RS485_RXD, RS485_TXD);
+  setRXmode();
+  delay(2);
+
+  while (Serial2.available()) Serial2.read();
+  memset(response, 0, sizeof(response));
+  memset(lastRead, 0, sizeof(lastRead));
+  errorCode = 0;
+  lastRequestType = 0;
+  lastRegAddr = 0;
+  lastSend = 0;
+  lastReceived = 0;
+  activeCommProfile = profile;
+  return true;
+}
+
+bool comm_set_jmc_rate(JmcCommRate rate, bool reapply_active) {
+  if(!reapply_active && rate == activeJmcRate) {
+    return false;
+  }
+
+  activeJmcRate = rate;
+  if(reapply_active && activeCommProfile == COMM_PROFILE_JMC) {
+    comm_set_profile(COMM_PROFILE_JMC, true);
+  }
+  return true;
+}
+
+JmcCommRate comm_get_jmc_rate() {
+  return activeJmcRate;
+}
+
+uint32_t comm_get_jmc_baud() {
+  return baudRateForJmcRate(activeJmcRate);
+}
+
+const char* comm_get_jmc_rate_label() {
+  switch (activeJmcRate) {
+    case JMC_COMM_RATE_57600:
+      return "57600";
+    case JMC_COMM_RATE_38400:
+      return "38400";
+    case JMC_COMM_RATE_19200:
+      return "19200";
+    case JMC_COMM_RATE_115200:
+      return "115200";
+    case JMC_COMM_RATE_9600:
+    default:
+      return "9600";
+  }
+}
+
+uint16_t comm_get_send_delay_ms() {
+  return sendDelayForProfile(activeCommProfile);
+}
+
+uint16_t comm_get_receive_delay_ms() {
+  return receiveDelayForProfile(activeCommProfile);
+}
+
+uint16_t comm_get_idle_delay_ms() {
+  return idleDelayForProfile(activeCommProfile);
+}
+
+uint16_t comm_get_active_interval_ms() {
+  return activeIntervalForProfile(activeCommProfile);
+}
+
+CommProfile comm_get_profile() {
+  return activeCommProfile;
+}
+
+const char* comm_get_profile_label() {
+  switch (activeCommProfile) {
+    case COMM_PROFILE_JMC:
+      switch (activeJmcRate) {
+        case JMC_COMM_RATE_57600:
+          return "57600-8N1";
+        case JMC_COMM_RATE_38400:
+          return "38400-8N1";
+        case JMC_COMM_RATE_19200:
+          return "19200-8N1";
+        case JMC_COMM_RATE_115200:
+          return "115200-8N1";
+        case JMC_COMM_RATE_9600:
+        default:
+          return "9600-8N1";
+      }
+    case COMM_PROFILE_RT:
+    default:
+      return "9600-8N1";
+  }
+}
+
 bool writeConfirm(uint16_t reg_addr, uint16_t value) { 
-  while(millis() - lastSend < COMM_DELAY_SEND);
-  writeSingleRegister(reg_addr, value);
-  delay(COMM_DELAY_RECEIVE + 1);
-  bool response = false;
-  int16_t received = receive();
-  if(received == reg_addr) response = true;
-  return response;
+  while(millis() - lastSend < comm_get_send_delay_ms()) {
+    delay(1);
+  }
+  if(!writeSingleRegister(reg_addr, value)) {
+    return false;
+  }
+  return writeResponseMatches(waitForResponse(comm_get_receive_delay_ms() + 150), reg_addr);
 }
 
 bool writeMultipleConfirm(uint16_t reg_addr_start, uint16_t reg_count, uint16_t data1, uint16_t data2, uint16_t data3, uint16_t data4) { 
-  while(millis() - lastSend < COMM_DELAY_SEND);
-  writeMultipleRegisters(reg_addr_start, reg_count, data1, data2, data3, data4);
-  delay(COMM_DELAY_RECEIVE + 1);
-  bool response = false;
-  #ifdef DEBUG_COMM
-    Serial.print("received bytes: "), Serial.println(Serial2.available());
-  #endif
-  int16_t received = receive();
-  if(received == reg_addr_start) response = true;
-  return response;
+  while(millis() - lastSend < comm_get_send_delay_ms()) {
+    delay(1);
+  }
+  if(!writeMultipleRegisters(reg_addr_start, reg_count, data1, data2, data3, data4)) {
+    return false;
+  }
+  return writeResponseMatches(waitForResponse(comm_get_receive_delay_ms() + 150), reg_addr_start);
 }
 
 int16_t readReturn(uint16_t reg_addr, uint16_t reg_count) { //returns 0xFFFF if unsuccesfull, otherwise returns read value of first reg_addr
-  while(millis() - lastSend < COMM_DELAY_SEND);
-  readRegister(reg_addr, reg_count); //Send read request
+  while(millis() - lastSend < comm_get_send_delay_ms()) {
+    delay(1);
+  }
+  if(!readRegister(reg_addr, reg_count)) { //Send read request
+    return 0xFFFF;
+  }
   #ifdef DEBUG_COMM
     Serial.print("requesting: "), Serial.println(reg_addr);
   #endif
-  while(millis() - lastSend < COMM_DELAY_RECEIVE);
-  if(receive() == reg_addr) { 
+  const int16_t received = waitForResponse(comm_get_receive_delay_ms() + 150);
+  if(readResponseMatches(received, reg_addr)) { 
     #ifdef DEBUG_COMM
     Serial.print("Readreturn, lastRead0: "), Serial.println(lastRead[0]);
     #endif
@@ -78,17 +506,17 @@ void rs485_send(uint8_t* data, size_t length) {
   Serial.println("<end>");
   #endif
   setTXmode();
-  delayMicroseconds(500);
+  delayMicroseconds(RS485_TURNAROUND_US);
   Serial2.write(data, length);
   Serial2.flush();
-  delayMicroseconds(500);
+  delayMicroseconds(RS485_TURNAROUND_US);
   setRXmode();
   lastSend = millis();
   commCounter++;
 }
 
 bool writeSingleRegister(uint16_t reg_addr, uint16_t value) { //returns true when succesfully SEND
-  if(lastSend + COMM_DELAY_SEND > millis()) { return false; }
+  if(lastSend + comm_get_send_delay_ms() > millis()) { return false; }
   request[0] = SLAVE_ID;
   request[1] = FUNC_WRITE_SINGLE_REGISTER;
   request[2] = reg_addr >> 8;
@@ -110,7 +538,7 @@ bool writeSingleRegister(uint16_t reg_addr, uint16_t value) { //returns true whe
 bool writeMultipleRegisters(uint16_t reg_addr_start, uint16_t reg_count,
                            uint16_t data1, uint16_t data2,
                            uint16_t data3, uint16_t data4) {
-    if (lastSend + COMM_DELAY_SEND > millis()) return false;
+    if (lastSend + comm_get_send_delay_ms() > millis()) return false;
     if (reg_count < 1 || reg_count > 4) return false;
 
     request[0] = SLAVE_ID;
@@ -161,6 +589,9 @@ bool receiveError(uint8_t msgLength) {
 
     errorCode = response[2];
     error = 3; 
+    if(commCounter > 0) {
+      commCounter--;
+    }
     Serial.print("error received: ");
     Serial.println(errorCode);
 
@@ -170,10 +601,16 @@ bool receiveError(uint8_t msgLength) {
 }
 
 int16_t receive() {  // Returns 0 when nothing is read. returns the read register when succesfull receive(). 
-  if(lastSend + COMM_DELAY_RECEIVE > millis()) return 0; //exit if not expecting a complete message yet, faster and safer than checking serial.available();
+  if(lastSend + comm_get_receive_delay_ms() > millis()) return 0; //exit if not expecting a complete message yet, faster and safer than checking serial.available();
 
-  int len;
-  len = Serial2.available();
+  int len = Serial2.available();
+  if(!frameReadyToRead(len)) {
+    return 0;
+  }
+
+  if(len > static_cast<int>(sizeof(response))) {
+    len = sizeof(response);
+  }
 
   Serial2.readBytes(response, len);
   memset(lastRead, 0, sizeof(lastRead));
@@ -309,7 +746,7 @@ int16_t receive() {  // Returns 0 when nothing is read. returns the read registe
 }
 
 bool readRegister(uint16_t reg_addr, uint16_t reg_count) { //returns true when succesfully SEND
-  if(lastSend + COMM_DELAY_SEND > millis()) { return false; }
+  if(lastSend + comm_get_send_delay_ms() > millis()) { return false; }
   request[0] = SLAVE_ID;
   request[1] = FUNC_READ_HOLDING_REGISTERS;
   request[2] = reg_addr >> 8;
@@ -328,6 +765,112 @@ bool readRegister(uint16_t reg_addr, uint16_t reg_count) { //returns true when s
   lastRequestType = 100 + reg_count;
   lastRegAddr = reg_addr;
   return true;
+}
+
+bool comm_debug_raw_read(CommProfile profile,
+                         uint8_t slave,
+                         uint16_t reg_addr,
+                         uint16_t reg_count,
+                         CommDebugTransaction* transaction) {
+  return comm_debug_raw_read_uart(baudRateForProfile(profile),
+                                  serialConfigForProfile(profile),
+                                  slave,
+                                  reg_addr,
+                                  reg_count,
+                                  transaction);
+}
+
+bool comm_debug_raw_write_single(CommProfile profile,
+                                 uint8_t slave,
+                                 uint16_t reg_addr,
+                                 uint16_t value,
+                                 CommDebugTransaction* transaction) {
+  return comm_debug_raw_write_single_uart(baudRateForProfile(profile),
+                                          serialConfigForProfile(profile),
+                                          slave,
+                                          reg_addr,
+                                          value,
+                                          transaction);
+}
+
+bool comm_debug_raw_read_uart(uint32_t baud_rate,
+                              uint32_t serial_config,
+                              uint8_t slave,
+                              uint16_t reg_addr,
+                              uint16_t reg_count,
+                              CommDebugTransaction* transaction) {
+  debugInitTransaction(transaction);
+  if(transaction == nullptr || reg_count == 0 || reg_count > 10) {
+    return false;
+  }
+
+  const CommProfile savedProfile = activeCommProfile;
+  debugApplyUart(baud_rate, serial_config);
+  delay(20);
+  while(Serial2.available()) Serial2.read();
+
+  transaction->request[0] = slave;
+  transaction->request[1] = FUNC_READ_HOLDING_REGISTERS;
+  transaction->request[2] = reg_addr >> 8;
+  transaction->request[3] = reg_addr & 0xFF;
+  transaction->request[4] = reg_count >> 8;
+  transaction->request[5] = reg_count & 0xFF;
+  const uint16_t crcReq = modbus_crc16(transaction->request, 6);
+  transaction->request[6] = crcReq & 0xFF;
+  transaction->request[7] = crcReq >> 8;
+  transaction->request_len = 8;
+
+  debugSendFrame(transaction->request, transaction->request_len);
+  debugCollectResponse(transaction->response,
+                       sizeof(transaction->response),
+                       debugExpectedReadLength(reg_count),
+                       &transaction->response_len);
+  const bool success = debugFinalizeRead(slave, reg_addr, reg_count, transaction);
+
+  while(Serial2.available()) Serial2.read();
+  comm_set_profile(savedProfile, true);
+  delay(20);
+  return success;
+}
+
+bool comm_debug_raw_write_single_uart(uint32_t baud_rate,
+                                      uint32_t serial_config,
+                                      uint8_t slave,
+                                      uint16_t reg_addr,
+                                      uint16_t value,
+                                      CommDebugTransaction* transaction) {
+  debugInitTransaction(transaction);
+  if(transaction == nullptr) {
+    return false;
+  }
+
+  const CommProfile savedProfile = activeCommProfile;
+  debugApplyUart(baud_rate, serial_config);
+  delay(20);
+  while(Serial2.available()) Serial2.read();
+
+  transaction->request[0] = slave;
+  transaction->request[1] = FUNC_WRITE_SINGLE_REGISTER;
+  transaction->request[2] = reg_addr >> 8;
+  transaction->request[3] = reg_addr & 0xFF;
+  transaction->request[4] = value >> 8;
+  transaction->request[5] = value & 0xFF;
+  const uint16_t crcReq = modbus_crc16(transaction->request, 6);
+  transaction->request[6] = crcReq & 0xFF;
+  transaction->request[7] = crcReq >> 8;
+  transaction->request_len = 8;
+
+  debugSendFrame(transaction->request, transaction->request_len);
+  debugCollectResponse(transaction->response,
+                       sizeof(transaction->response),
+                       8,
+                       &transaction->response_len);
+  const bool success = debugFinalizeWriteSingle(slave, transaction);
+
+  while(Serial2.available()) Serial2.read();
+  comm_set_profile(savedProfile, true);
+  delay(20);
+  return success;
 }
 
 // ---- MODBUS CRC16 ----
