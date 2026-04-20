@@ -11,6 +11,7 @@
 #include "io.h"
 #include "comm.h"
 #include "wifi_ui.h"
+#include "radio_mode.h"
 
 States state = IDLE;
 int8_t menu1Selected = EXITMENU;
@@ -27,17 +28,18 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Purge Settings", 0, 0, 0, 0, "PURGESETT", ""},           // 1
     {"GbW Settings", 0, 0, 0, 0, "GBWSETT", ""},               // 2
     {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 3
-    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 4
-    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 5
-    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 6
-    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 7
-    {"Max RPM", default_maxRPM, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "MAXRPM", "rpm"}, // 8
-    {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 9
-    {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 10
-    {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, //11
-    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 12
-    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 13
-    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 14
+    {"Radio mode", default_radio_mode, 0, 1, 1, "RADIOMODE", ""}, // 4
+    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 5
+    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 6
+    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 7
+    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 8
+    {"Max RPM", default_maxRPM, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "MAXRPM", "rpm"}, // 9
+    {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 10
+    {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 11
+    {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, //12
+    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 13
+    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 14
+    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 15
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {
@@ -170,6 +172,8 @@ void setup() {
     #else
     delay(250);
     #endif
+    Serial.printf("[fw] SG98 controller build=%s\n", BUILD_ID);
+    Serial.println("[fw] target=controller_box");
     
     setCpuFrequencyMhz(80);
 
@@ -215,17 +219,17 @@ void setup() {
     motor_init();
     Serial.println("motor_init");
     diag_console_init();
-    wifi_ui_init();
+    radio_mode_init();
     vitals_init();
     lastActivity = millis();
 }
 
 void loop() { 
     doVitals();
+    do_io();
     do_comm();
     diag_console_poll();
-    wifi_ui_poll();
-    do_io();
+    radio_mode_poll();
     sleepTimeCheck();
     update_display();
     
@@ -233,8 +237,8 @@ void loop() {
     if(state == SLEEPING){ 
         esp_task_wdt_deinit();
         ledAction(0);
-        motorOff();
         display_off();
+        // Drive-specific sleep handlers own the final low-power transition.
         motorSleep();
         sleep_init();
     }

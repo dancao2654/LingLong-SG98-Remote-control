@@ -471,10 +471,16 @@ bool motor_rt_off_backend() {
 }
 
 void motor_rt_sleep_backend() {
-  // Serial.print("Motor sleep..");
-  // if(writeConfirm(0x6040, 0)) { 
-  //   Serial.println("confirmed");
-  // }
+  // RT P01.06 controls how servo-off behaves. Use the documented
+  // "stop at zero speed, keeping de-energized state" mode before
+  // disabling the drive for board sleep.
+  for(int i = 0; i < 10; i++) {
+    delay(200);
+    if(writeConfirm(106, 1)) {
+      break;
+    }
+  }
+  motor_rt_off_backend();
 }
 
 //This function needs to be called continuously untill it returns true; which indicates a completed calibration

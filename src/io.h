@@ -13,6 +13,7 @@ void do_io();
 
 bool START_BUTTON();
 bool ENC_BUTTON();
+bool ENC_BUTTON_DOWN();
 bool pressedLong();
 
 extern int16_t storedSetRPM;

@@ -14,7 +14,7 @@
 #include <Fonts/FreeSans24pt7b.h>
 #include "comm.h"
 #include "motor_hal.h"
-#include "wifi_ui.h"
+#include "radio_mode.h"
 
 #define COLOR_NAVY 0x0010
 #define COLOR_BRIGHT_BLUE 0x55FF
@@ -420,8 +420,8 @@ void drawTopIndicators(int screenId) {
   const int regionX = SCREEN_WIDTH - (regionWidth + 20);
   const int leftRegionWidth = regionX - leftMargin - 8;
   const String motorLabel = fitHeaderLabel(getMotorDisplayLabel(), regionWidth);
-  const String wifiLabel = fitLabelToFont(wifi_ui_lcd_status(), leftRegionWidth, WIFI_STATUS_FONT);
-  const uint16_t wifiColor = wifi_ui_sta_connected() ? COLOR_GREEN : COLOR_YELLOW;
+  const String wifiLabel = fitLabelToFont(radio_mode_lcd_status(), leftRegionWidth, WIFI_STATUS_FONT);
+  const uint16_t wifiColor = radio_mode_status_ok() ? COLOR_GREEN : COLOR_YELLOW;
 
   if (forceRedraw || motorLabel != prevMotorLabel) {
     tft->fillRect(regionX, 0, SCREEN_WIDTH - regionX, HEADER_HEIGHT, ST77XX_BLACK);
@@ -1859,6 +1859,25 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                     tft->setCursor((SCREEN_WIDTH - w) / 2, 200);
                     tft->print(macCopy); 
                   } 
+                } else if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
+                  const char* radioLabels[2] = {"Web UI", "ESP-NOW"};
+                  tft->getTextBounds(radioLabels[i], 0, 0, &x1, &y1, &w, &h);
+                  int y = 100 + i * 50;
+                  tft->setCursor((SCREEN_WIDTH - w) / 2, y);
+                  tft->print(radioLabels[i]);
+                  if (i == selected) {
+                      tft->drawRoundRect((SCREEN_WIDTH - w) / 2 - 8, y - h - 6 , w + 22, h + 16, 6, COLOR_GREEN);
+                  }
+
+                  if(i == 0) {
+                    tft->setFont(&FreeSans9pt7b);
+                    const char* msg1 = "Web UI keeps AP + home Wi-Fi.";
+                    const char* msg2 = "ESP-NOW disables the web server.";
+                    tft->setCursor(12, 184);
+                    tft->print(msg1);
+                    tft->setCursor(12, 204);
+                    tft->print(msg2);
+                  }
                 } else if(menuNum == 1 && (selectedIdx == Menu1Items::RESET || selectedIdx == Menu1Items::RESETNETWORK)) { 
                   tft->getTextBounds(alt_label2[i], 0, 0, &x1, &y1, &w, &h);
                   int y = 100 + i * 50;
