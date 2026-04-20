@@ -9,6 +9,7 @@
 #include "gbw.h"
 #include "comm.h"
 #include "motor_hal.h"
+#include "wifi_ui.h"
 
 namespace {
 bool shouldOpenDriveSelector() {
@@ -302,14 +303,21 @@ void do_io() {
                 OriginalValue = Menu1[menu1Selected].value;
             } else { 
                 enterMenu = false;
-                if(menu1Selected != Menu1Items::RESET) pdata_write(2);
+                if(menu1Selected != Menu1Items::RESET && menu1Selected != Menu1Items::RESETNETWORK) pdata_write(2);
                 pdata_normalize();
+                if(menu1Selected == Menu1Items::RESETNETWORK && Menu1[menu1Selected].value == 1) {
+                    wifi_ui_reset_network_settings();
+                    Menu1[menu1Selected].value = 0;
+                    disp_updateRequired = true;
+                }
                 if(menu1Selected == Menu1Items::RESET && Menu1[menu1Selected].value == 1) { 
                     pdata_write(8);  // Reset the build ID so it resets on boot.
                     motorReset();
                     delay(1000);
                     if(motor_get_drive_type() == DRIVE_TYPE_JMC) sleep_init();
                     else ESP.restart();
+                } else if(menu1Selected == Menu1Items::RESETNETWORK) {
+                    Menu1[menu1Selected].value = 0;
                 }
             }
         } else if(longPress == true && !longPressActionHandled && menu1Selected == Menu1Items::CALIBRATE) { 
