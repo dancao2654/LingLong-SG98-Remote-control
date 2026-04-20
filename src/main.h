@@ -10,14 +10,24 @@ void sleep_release();
 void sleepTimeCheck();
 void checkPurge();
 void do_purge();
+void purge_prepare_for_grinding();
+void purge_cancel_pending();
+void purge_mark_started();
 
-enum States{SLEEPING, IDLE, IDLE_GBW, GRINDING, PURGING, GRINDING_GBW, MENU1, MENU2, MENU3, CALIBRATING};
+enum States{SLEEPING, IDLE, IDLE_GBW, GRINDING, PURGING, GRINDING_GBW, MENU1, MENU2, MENU3, MENU4, CALIBRATING, MOTOR_SELECT};
 
-#ifdef JMC_DRIVE
+enum MotorSelectItems{
+    MOTOR_SELECT_AUTO,
+    MOTOR_SELECT_JMC,
+    MOTOR_SELECT_RT,
+    NUM_MOTOR_SELECT_ITEMS
+};
+
 enum Menu1Items{
     EXITMENU,
     PURGESETTINGS,
     GBWSETTINGS,
+    JMCBAUDMENU,
     SETSLEEP,
     DISP_BRIGHTNESS,
     LED_BRIGHTNESS,
@@ -30,24 +40,6 @@ enum Menu1Items{
     RESET,
     NUM_MENU1_ITEMS
 };
-#endif
-#ifdef RT_DRIVE
-enum Menu1Items{
-    EXITMENU,
-    PURGESETTINGS,
-    GBWSETTINGS,
-    SETSLEEP,
-    DISP_BRIGHTNESS,
-    LED_BRIGHTNESS,
-    INVERT_SCROLL,
-    SETMAX,
-    SETMIN,
-    SETMOTORTORQUE,
-    CALIBRATE,
-    RESET,
-    NUM_MENU1_ITEMS
-};
-#endif
 
 enum Menu2Items{
     RETURN_FROM_PURGE,
@@ -79,6 +71,16 @@ enum Menu3Items{
     NUM_MENU3_ITEMS
 };
 
+enum Menu4Items{
+    RETURN_FROM_JMC_BAUD,
+    JMCBAUD9600,
+    JMCBAUD19200,
+    JMCBAUD38400,
+    JMCBAUD57600,
+    JMCBAUD115200,
+    NUM_MENU4_ITEMS
+};
+
 struct menuEntry { 
     const char* name;
     int16_t value;
@@ -92,6 +94,7 @@ struct menuEntry {
 extern menuEntry Menu1[NUM_MENU1_ITEMS];
 extern menuEntry Menu2[NUM_MENU2_ITEMS];
 extern menuEntry Menu3[NUM_MENU3_ITEMS];
+extern menuEntry Menu4[NUM_MENU4_ITEMS];
 
 extern bool firstBootFlag;
 
@@ -101,7 +104,10 @@ extern bool modeGbW;
 extern int8_t menu1Selected;
 extern int8_t menu2Selected;
 extern int8_t menu3Selected;
+extern int8_t menu4Selected;
+extern int8_t motorSelectSelected;
 extern bool enterMenu;
+extern States motorSelectReturnState;
 
 extern int16_t setRPM;
 extern uint32_t setWeight; //in mg (18g = 18000)

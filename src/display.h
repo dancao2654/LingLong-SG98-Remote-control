@@ -11,6 +11,7 @@ void display_init();
 void setBrightness();
 void update_display();
 void display_off();
+void display_show_motor_probe_splash(const char* motorLabel);
 
 void drawErrorOverlay();
 void drawIdleScreen();
@@ -20,6 +21,7 @@ void drawGrindingGbwScreen();
 void drawCalibratingScreen();
 void drawMenuScreen(int menuNum, int numItems, int selectedIdx);
 void drawMenuValueScreen(int menuNum, int selectedIdx);
+void drawMotorSelectScreen();
 
 
 #endif

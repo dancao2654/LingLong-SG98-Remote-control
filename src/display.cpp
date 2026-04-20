@@ -13,22 +13,19 @@
 #include <Fonts/FreeSans18pt7b.h>
 #include <Fonts/FreeSans24pt7b.h>
 #include "comm.h"
-
-#ifdef RT_DRIVE 
-#include "motorcontrol_rt.h"
-#endif 
-#ifdef JMC_DRIVE
-#include "motorcontrol_jmc.h"
-#endif
+#include "motor_hal.h"
 
 #define COLOR_NAVY 0x0010
+#define COLOR_BRIGHT_BLUE 0x55FF
 #define COLOR_GREEN 0x4fe9
+#define COLOR_TEAL 0x0438
 #define COLOR_RED 0xe803
 #define COLOR_YELLOW 0xe7e0
 
 const int SCREEN_WIDTH = 280;
 const int SCREEN_HEIGHT = 240;
 Adafruit_ST7789 *tft = NULL;
+const int HEADER_HEIGHT = 24;
 
 #define SCREEN_IDLE      0
 #define SCREEN_GBW_IDLE  1
@@ -38,11 +35,409 @@ Adafruit_ST7789 *tft = NULL;
 #define SCREEN_GRINDING_GBW 5
 #define SCREEN_CALIBRATING  6
 #define SCREEN_ERROR        7
+#define SCREEN_MOTOR_SELECT 8
 
 int initializedScreenId = -1;
 bool dimmed = false;
 bool disp_updateRequired = true;
 unsigned long drawnErrorAt;
+
+const char* getCommStatusText(SYSTEM_STATUS status);
+uint16_t getCommStatusColor(SYSTEM_STATUS status);
+
+namespace {
+const GFXfont* const HEADER_FONT = &FreeSans12pt7b;
+const GFXfont* const SCALE_NAME_FONT = &FreeSans9pt7b;
+constexpr unsigned long MOTOR_SPLASH_DURATION_MS = 5000;
+constexpr unsigned long MOTOR_SPLASH_VISIBLE_MS = 1800;
+constexpr unsigned long MOTOR_SPLASH_BLANK_MS = 250;
+String motorSplashLabel = "";
+unsigned long motorSplashStartedAt = 0;
+unsigned long motorSplashUntil = 0;
+
+bool isJmcBaudMenuItem(int selectedIdx) {
+  return selectedIdx >= Menu4Items::JMCBAUD9600 && selectedIdx <= Menu4Items::JMCBAUD115200;
+}
+
+uint32_t baudForJmcMenuItem(int selectedIdx) {
+  switch (selectedIdx) {
+    case Menu4Items::JMCBAUD9600: return 9600;
+    case Menu4Items::JMCBAUD19200: return 19200;
+    case Menu4Items::JMCBAUD38400: return 38400;
+    case Menu4Items::JMCBAUD57600: return 57600;
+    case Menu4Items::JMCBAUD115200: return 115200;
+    default: return 0;
+  }
+}
+
+int getMotorSplashTextSize(const String& label) {
+  if (label.length() == 0) return 1;
+
+  constexpr int horizontalMargin = 8;
+  constexpr int verticalMargin = 12;
+  const int maxWidth = SCREEN_WIDTH - (horizontalMargin * 2);
+  const int maxHeight = SCREEN_HEIGHT - (verticalMargin * 2);
+  const int sizeByWidth = maxWidth / (6 * label.length());
+  const int sizeByHeight = maxHeight / 8;
+  const int textSize = min(sizeByWidth, sizeByHeight);
+  return textSize > 0 ? textSize : 1;
+}
+
+bool hasSplashMaskPixel(const GFXcanvas1& canvas, int16_t x, int16_t y, int16_t radius = 0) {
+  for (int16_t dy = -radius; dy <= radius; ++dy) {
+    const int16_t yy = y + dy;
+    if (yy < 0 || yy >= SCREEN_HEIGHT) continue;
+    for (int16_t dx = -radius; dx <= radius; ++dx) {
+      const int16_t xx = x + dx;
+      if (xx < 0 || xx >= SCREEN_WIDTH) continue;
+      if (canvas.getPixel(xx, yy)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+void drawMotorSplashLabel(const String& label) {
+  const int textSize = getMotorSplashTextSize(label);
+  GFXcanvas1 canvas(SCREEN_WIDTH, SCREEN_HEIGHT);
+
+  if (canvas.getBuffer() == nullptr) {
+    tft->setFont(NULL);
+    tft->setTextWrap(false);
+    tft->setTextSize(textSize);
+    tft->setTextColor(COLOR_YELLOW);
+    int16_t x1, y1;
+    uint16_t w, h;
+    tft->getTextBounds(label, 0, 0, &x1, &y1, &w, &h);
+    tft->setCursor((SCREEN_WIDTH - w) / 2, (SCREEN_HEIGHT - h) / 2);
+    tft->print(label);
+    return;
+  }
+
+  canvas.fillScreen(0);
+  canvas.setFont(NULL);
+  canvas.setTextWrap(false);
+  canvas.setTextSize(textSize);
+  canvas.setTextColor(1);
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  canvas.getTextBounds(label, 0, 0, &x1, &y1, &w, &h);
+  const int textX = (SCREEN_WIDTH - w) / 2;
+  const int textY = (SCREEN_HEIGHT - h) / 2;
+  canvas.setCursor(textX, textY);
+  canvas.print(label);
+
+  const int stripePitch = max(10, textSize);
+  constexpr int shadowOffset = 4;
+  constexpr int strokeRadius = 1;
+
+  for (int16_t y = 0; y < SCREEN_HEIGHT; ++y) {
+    for (int16_t x = 0; x < SCREEN_WIDTH; ++x) {
+      if (!hasSplashMaskPixel(canvas, x, y, strokeRadius)) continue;
+
+      const int16_t shadowX = x + shadowOffset;
+      const int16_t shadowY = y + shadowOffset;
+      if (shadowX < SCREEN_WIDTH && shadowY < SCREEN_HEIGHT) {
+        tft->drawPixel(shadowX, shadowY, COLOR_BRIGHT_BLUE);
+      }
+
+      const uint16_t stripeColor = (((x + y) / stripePitch) % 2 == 0) ? COLOR_BRIGHT_BLUE : COLOR_NAVY;
+      tft->drawPixel(x, y, stripeColor);
+    }
+  }
+}
+
+bool drawMotorProbeSplashIfActive() {
+  static int lastFlashPhase = -1;
+  static String lastDrawnLabel = "";
+
+  if (motorSplashUntil == 0 || motorSplashLabel.length() == 0) {
+    return false;
+  }
+
+  const unsigned long now = millis();
+  if (now >= motorSplashUntil) {
+    motorSplashUntil = 0;
+    motorSplashStartedAt = 0;
+    motorSplashLabel = "";
+    lastFlashPhase = -1;
+    lastDrawnLabel = "";
+    tft->setTextSize(1);
+    tft->setTextWrap(true);
+    initializedScreenId = -1;
+    disp_updateRequired = true;
+    return false;
+  }
+
+  const unsigned long flashCycleMs = MOTOR_SPLASH_VISIBLE_MS + MOTOR_SPLASH_BLANK_MS;
+  const unsigned long splashElapsed = now - motorSplashStartedAt;
+  const int flashPhase = ((splashElapsed % flashCycleMs) < MOTOR_SPLASH_VISIBLE_MS) ? 1 : 0;
+  if (flashPhase != lastFlashPhase || motorSplashLabel != lastDrawnLabel) {
+    tft->fillScreen(ST77XX_BLACK);
+
+    if (flashPhase == 1) {
+      drawMotorSplashLabel(motorSplashLabel);
+    }
+
+    lastFlashPhase = flashPhase;
+    lastDrawnLabel = motorSplashLabel;
+  }
+
+  tft->setTextSize(1);
+  tft->setTextWrap(true);
+  disp_updateRequired = true;
+  return true;
+}
+
+String getScaleDisplayLabel() {
+  String label = "";
+
+  if (scaleMutex != NULL && xSemaphoreTake(scaleMutex, pdMS_TO_TICKS(5))) {
+    label = scale_name;
+    if (label.length() == 0) label = scale_connect_name;
+    xSemaphoreGive(scaleMutex);
+  }
+
+  label.trim();
+  if (label.length() == 0) label = "Scale";
+  return label;
+}
+
+String fitLabelToFont(const String& text, int maxWidth, const GFXfont* font) {
+  if (text.length() == 0) return text;
+
+  int16_t x1, y1;
+  uint16_t w, h;
+  tft->setFont(font);
+  tft->getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+  if (w <= maxWidth) return text;
+
+  String fitted = text;
+  while (fitted.length() > 4) {
+    fitted = fitted.substring(0, fitted.length() - 1);
+    const String candidate = fitted + "...";
+    tft->getTextBounds(candidate, 0, 0, &x1, &y1, &w, &h);
+    if (w <= maxWidth) {
+      return candidate;
+    }
+  }
+
+  return text.substring(0, 1);
+}
+
+String fitHeaderLabel(const String& text, int maxWidth) {
+  return fitLabelToFont(text, maxWidth, HEADER_FONT);
+}
+
+String fitScaleNameLabel(const String& text, int maxWidth) {
+  return fitLabelToFont(text, maxWidth, SCALE_NAME_FONT);
+}
+
+String getMotorDisplayLabel() {
+  return String(motor_get_type_label());
+}
+
+uint32_t getActiveMotorCommBaud() {
+  if (commStatus != COMM_CONNECTED) return 0;
+
+  switch (comm_get_profile()) {
+    case COMM_PROFILE_JMC:
+      return comm_get_jmc_baud();
+    case COMM_PROFILE_RT:
+    default:
+      return COMM_BAUD_RATE_RT;
+  }
+}
+
+bool shouldShowMotorBaudBadge(SYSTEM_STATUS status) {
+  return status == MOTOR_READY && getActiveMotorCommBaud() > 0;
+}
+
+void drawMotorStatusLine(int statusX, int statusY, SYSTEM_STATUS status) {
+  tft->setFont(&FreeSans9pt7b);
+  tft->fillRect(statusX - 2, statusY - 18, 118, 24, ST77XX_BLACK);
+
+  if (shouldShowMotorBaudBadge(status)) {
+    const int iconX = statusX + 2;
+    const int iconY = statusY - 15;
+    tft->drawLine(iconX, iconY + 8, iconX + 5, iconY + 13, COLOR_GREEN);
+    tft->drawLine(iconX + 5, iconY + 13, iconX + 16, iconY + 2, COLOR_GREEN);
+
+    char baudStr[16];
+    snprintf(baudStr, sizeof(baudStr), "%lu", static_cast<unsigned long>(getActiveMotorCommBaud()));
+    tft->setTextColor(COLOR_GREEN);
+    tft->setCursor(statusX + 24, statusY);
+    tft->print(baudStr);
+    return;
+  }
+
+  tft->setTextColor(getCommStatusColor(status));
+  tft->setCursor(statusX, statusY);
+  tft->print(getCommStatusText(status));
+}
+
+int getMotorDirectionIndicator() {
+  if (motor_currentRPM > 0) return 1;
+  if (motor_currentRPM < 0) return -1;
+  if (motor_setRPM > 0) return 1;
+  if (motor_setRPM < 0) return -1;
+  return 0;
+}
+
+int16_t getDisplayMotorRPM() {
+  if (motor_currentRPM != 0) return motor_currentRPM;
+
+  switch (state) {
+    case GRINDING:
+    case PURGING:
+    case GRINDING_GBW:
+    case CALIBRATING:
+      return motor_setRPM;
+    default:
+      return 0;
+  }
+}
+
+const char* getAnimatedDirectionText(int direction, uint8_t phase) {
+  static const char* const cwFrames[] = {">  ", ">> ", ">>>", " >>"};
+  static const char* const ccwFrames[] = {"  <", " <<", "<<<", "<< "};
+
+  if (direction > 0) return cwFrames[phase % 4];
+  if (direction < 0) return ccwFrames[phase % 4];
+  return "";
+}
+
+bool getHeaderLineBounds(int rightX, int baselineY, const String& text, const GFXfont* font, int16_t* x, int16_t* y, uint16_t* w, uint16_t* h) {
+  if (text.length() == 0 || x == nullptr || y == nullptr || w == nullptr || h == nullptr) {
+    return false;
+  }
+
+  int16_t x1, y1;
+  uint16_t width, height;
+
+  tft->setFont(font);
+  tft->getTextBounds(text, 0, baselineY, &x1, &y1, &width, &height);
+  const int drawX = rightX - width;
+  tft->getTextBounds(text, drawX, baselineY, x, y, w, h);
+  return true;
+}
+
+void clearRightAlignedLine(int rightX, int baselineY, const String& text, const GFXfont* font) {
+  int16_t x, y;
+  uint16_t w, h;
+  if (!getHeaderLineBounds(rightX, baselineY, text, font, &x, &y, &w, &h)) {
+    return;
+  }
+
+  tft->fillRect(x - 2, y - 1, w + 4, h + 2, ST77XX_BLACK);
+}
+
+void drawRightAlignedLine(int rightX, int baselineY, const String& text, const GFXfont* font, uint16_t textColor) {
+  int16_t x, y;
+  uint16_t w, h;
+  if (!getHeaderLineBounds(rightX, baselineY, text, font, &x, &y, &w, &h)) {
+    return;
+  }
+
+  tft->setFont(font);
+  tft->setTextColor(textColor);
+  tft->setCursor(x, baselineY);
+  tft->print(text);
+}
+
+void drawRightAlignedPill(int rightX, int baselineY, const String& text, const GFXfont* font, uint16_t textColor, uint16_t pillColor) {
+  int16_t x, y;
+  uint16_t w, h;
+  if (!getHeaderLineBounds(rightX, baselineY, text, font, &x, &y, &w, &h)) {
+    return;
+  }
+
+  constexpr int horizontalPadding = 10;
+  constexpr int verticalPadding = 4;
+  constexpr int radius = 9;
+  const int pillX = x - horizontalPadding;
+  const int pillY = y - verticalPadding;
+  const int pillW = w + horizontalPadding * 2;
+  const int pillH = h + verticalPadding * 2;
+
+  tft->fillRoundRect(pillX, pillY, pillW, pillH, radius, pillColor);
+  tft->drawRoundRect(pillX, pillY, pillW, pillH, radius, COLOR_BRIGHT_BLUE);
+  tft->setFont(font);
+  tft->setTextColor(textColor);
+  tft->setCursor(x, baselineY);
+  tft->print(text);
+}
+
+void drawTopIndicators(int screenId) {
+  static int prevScreenId = -1;
+  static String prevMotorLabel = "";
+
+  const bool forceRedraw = prevScreenId != screenId;
+  const int rightMargin = 20;
+  const int regionWidth = 156;
+  const int motorBaselineY = 18;
+  const int rightX = SCREEN_WIDTH - rightMargin;
+  const int regionX = SCREEN_WIDTH - (regionWidth + 20);
+  const String motorLabel = fitHeaderLabel(getMotorDisplayLabel(), regionWidth);
+
+  if (forceRedraw || motorLabel != prevMotorLabel) {
+    tft->fillRect(regionX, 0, SCREEN_WIDTH - regionX, HEADER_HEIGHT, ST77XX_BLACK);
+  }
+
+  drawRightAlignedPill(rightX, motorBaselineY, motorLabel, HEADER_FONT, COLOR_BRIGHT_BLUE, COLOR_NAVY);
+
+  prevScreenId = screenId;
+  prevMotorLabel = motorLabel;
+}
+
+void drawScaleNameLegend(const String& label, const String& previousLabel) {
+  const int baselineY = SCREEN_HEIGHT * 0.82;
+  const int rightX = SCREEN_WIDTH - 10;
+
+  if (label == previousLabel) {
+    return;
+  }
+
+  clearRightAlignedLine(rightX, baselineY, previousLabel, SCALE_NAME_FONT);
+  clearRightAlignedLine(rightX, baselineY, label, SCALE_NAME_FONT);
+  drawRightAlignedLine(rightX, baselineY, label, SCALE_NAME_FONT, COLOR_BRIGHT_BLUE);
+}
+
+void drawSeparatorLine(int x, int y, int width, bool animated) {
+  constexpr int lineHeight = 6;
+  constexpr int lineRadius = 3;
+  constexpr int dotWidth = 14;
+  constexpr int dotGap = 8;
+  constexpr unsigned long stepMs = 80;
+
+  static unsigned long lastStepAt = 0;
+  static int phase = 0;
+
+  if (animated && millis() - lastStepAt >= stepMs) {
+    phase = (phase + 3) % (dotWidth + dotGap);
+    lastStepAt = millis();
+  }
+
+  tft->fillRoundRect(x, y, width, lineHeight, lineRadius, ST77XX_BLACK);
+
+  if (animated) {
+    for (int dotX = x - phase; dotX < x + width; dotX += dotWidth + dotGap) {
+      const int drawX = dotX < x ? x : dotX;
+      const int drawEnd = (dotX + dotWidth) > (x + width) ? (x + width) : (dotX + dotWidth);
+      const int drawWidth = drawEnd - drawX;
+      if (drawWidth > 0) {
+        tft->fillRoundRect(drawX, y, drawWidth, lineHeight, lineRadius, COLOR_NAVY);
+      }
+    }
+    disp_updateRequired = true;
+    return;
+  }
+
+  tft->fillRoundRect(x, y, width, lineHeight, lineRadius, COLOR_NAVY);
+}
+}
 
 
 void display_init() { 
@@ -93,6 +488,10 @@ void update_display() {
   disp_updateRequired = false;
   setBrightness();
 
+    if(drawMotorProbeSplashIfActive()) {
+      return;
+    }
+
     if(state == IDLE) { 
       drawIdleScreen();
     }
@@ -129,8 +528,16 @@ void update_display() {
       enterMenu == true ? drawMenuValueScreen(3, menu3Selected) : drawMenuScreen(3, NUM_MENU3_ITEMS, menu3Selected);
     }
 
+    if(state == MENU4) {
+      enterMenu == true ? drawMenuValueScreen(4, menu4Selected) : drawMenuScreen(4, NUM_MENU4_ITEMS, menu4Selected);
+    }
+
     if(state == CALIBRATING) { 
       drawCalibratingScreen();
+    }
+
+    if(state == MOTOR_SELECT) {
+      drawMotorSelectScreen();
     }
 }
 
@@ -140,6 +547,17 @@ void display_off() {
         tft->enableDisplay(false); // turn off display output (if supported)
     }
     ledcWrite(1,0);
+}
+
+void display_show_motor_probe_splash(const char* motorLabel) {
+  if (motorLabel == nullptr || motorLabel[0] == '\0') {
+    return;
+  }
+
+  motorSplashLabel = motorLabel;
+  motorSplashStartedAt = millis();
+  motorSplashUntil = motorSplashStartedAt + MOTOR_SPLASH_DURATION_MS;
+  disp_updateRequired = true;
 }
 
 const char* getCommStatusText(SYSTEM_STATUS status) {
@@ -189,7 +607,7 @@ const char* getErrorChar(uint8_t error) {
     case 1: return "Drive connection failed";
     case 2: return "Drive connection lost";
     case 3: return "Drive fault:";
-    case 4: return "drive packet loss > 100";
+    case 4: return "drive packet loss > 25";
     case 5: return "Failed to create mutex";
     case 6: return "Motor stalled..";
     case 7: return "Write error, please reboot all";
@@ -209,9 +627,9 @@ const char* getErrorChar(uint8_t error) {
 
 void drawErrorOverlay() {
   const int OVERLAY_MARGIN_X = 5;  // extra left/right margin for rounded corners
-  const int OVERLAY_HEIGHT  = 40;   // total height of overlay area
-  const int OVERLAY_Y      = 0;     // always at the very top
-  static uint8_t prevError = 0xFF;  // Only redraw if error changes
+  const int OVERLAY_HEIGHT  = 44;   // total height of overlay area
+  const int OVERLAY_Y      = HEADER_HEIGHT;     // keep header visible
+  static uint8_t prevError = 0;  // Track the last drawn overlay error
   static unsigned long errorDrawnAt;
 
   if(errorDrawnAt + 5000 < millis() && error > 100 && prevError == error) { 
@@ -219,18 +637,15 @@ void drawErrorOverlay() {
   }
 
   if (prevError == error) return;
-  prevError = error;
 
   if (error == 0) { 
-    tft->fillRect(
-    OVERLAY_MARGIN_X, 
-    OVERLAY_Y, 
-    SCREEN_WIDTH - 2 * OVERLAY_MARGIN_X, 
-    OVERLAY_HEIGHT, 
-    ST77XX_BLACK
-    );
-  return;
+    prevError = 0;
+    initializedScreenId = -1;
+    disp_updateRequired = true;
+    return;
   }
+
+  prevError = error;
 
   // DRAW ERROR:
   errorDrawnAt = millis();
@@ -255,7 +670,7 @@ void drawErrorOverlay() {
 
   // Centered X, placed vertically in middle of overlay area
   int textX = SCREEN_WIDTH/2 - w/2;
-  int textY = 20; 
+  int textY = OVERLAY_Y + 18; 
 
   // Background rectangle: add a little extra width for padding
   int bgPad = 8;
@@ -279,7 +694,7 @@ void drawErrorOverlay() {
     tft->setFont(&FreeSans9pt7b);
     tft->getTextBounds(hexBuf, 0, 0, &x1, &y1, &w, &h);
     int codeX = SCREEN_WIDTH/2 - w/2;
-    int codeY = OVERLAY_Y - h - 2;
+    int codeY = OVERLAY_Y + OVERLAY_HEIGHT - 6;
     tft->setTextColor(ST77XX_WHITE, ST77XX_RED);
     tft->setCursor(codeX, codeY);
     tft->print(hexBuf);
@@ -336,6 +751,9 @@ void drawIdleScreen() {
     tft->print(purgeStatus);
   }
 
+  drawTopIndicators(SCREEN_IDLE);
+  drawSeparatorLine((SCREEN_WIDTH - SCREEN_WIDTH * 0.8) / 2, SCREEN_HEIGHT * 0.7, SCREEN_WIDTH * 0.8, false);
+
   // --- Update setRPM ---
   if (prevSetRPM != setRPM) {
     char newVal[10];
@@ -359,16 +777,9 @@ void drawIdleScreen() {
 
   // --- Update commStatus ---
   if (prevSysStatus != currentStatus) {
-    const char* newStatus = getCommStatusText(currentStatus);
-
-    tft->setFont(&FreeSans9pt7b);
-    tft->getTextBounds("Disconnected", 0, 0, &x1, &y1, &w, &h);
     int statusY = SCREEN_HEIGHT * 0.91;
     int statusX = 10;
-    tft->fillRect(statusX - 1, statusY - h, w + 2, h + 8, ST77XX_BLACK);
-    tft->setTextColor(getCommStatusColor(currentStatus));
-    tft->setCursor(statusX, statusY);
-    tft->print(newStatus);
+    drawMotorStatusLine(statusX, statusY, currentStatus);
 
     prevSysStatus = currentStatus;
   }
@@ -379,6 +790,7 @@ void drawGbWIdleScreen() {
   static float prevCurrentWeight = -1000;
   static SYSTEM_STATUS prevSysStatus = MOTOR_INVALID;
   static SCALE_STATUS prevScaleStatus = INVALID_SCALE_STATUS;
+  static String prevScaleLegend = "";
 
   if (initializedScreenId != SCREEN_GBW_IDLE) {
     tft->fillScreen(ST77XX_BLACK);
@@ -393,18 +805,19 @@ void drawGbWIdleScreen() {
     prevCurrentWeight = -1.0;
     prevSysStatus = MOTOR_INVALID;
     prevScaleStatus = INVALID_SCALE_STATUS;
+    prevScaleLegend = "";
 
     tft->setFont(&FreeSans9pt7b);
-    int16_t x1, y1; uint16_t w, h;
-    tft->getTextBounds("Scale", 0, 0, &x1, &y1, &w, &h);
-
-    tft->setCursor(SCREEN_WIDTH - 10 - w, SCREEN_HEIGHT*0.82);
-    tft->setTextColor(ST77XX_WHITE);  
-    tft->print("Scale");
-
+    tft->setTextColor(ST77XX_WHITE);
     tft->setCursor(10, SCREEN_HEIGHT*0.82);
     tft->print("Drive");
   }
+
+  drawTopIndicators(SCREEN_GBW_IDLE);
+  const String scaleLegend = fitScaleNameLabel(getScaleDisplayLabel(), 140);
+  drawScaleNameLegend(scaleLegend, prevScaleLegend);
+  prevScaleLegend = scaleLegend;
+  drawSeparatorLine((SCREEN_WIDTH - SCREEN_WIDTH * 0.8) / 2, SCREEN_HEIGHT * 0.7, SCREEN_WIDTH * 0.8, false);
 
   // --- SetWeight (centered) ---
   if (prevSetWeight != setWeight) {
@@ -448,17 +861,9 @@ void drawGbWIdleScreen() {
 
   // --- COMM status (bottom-left, larger font, more right, centered) ---
   if (prevSysStatus != currentStatus) {
-    const char* newStatus = getCommStatusText(currentStatus);
-
-    tft->setFont(&FreeSans9pt7b);
-    int16_t x1, y1; uint16_t w, h;
-    tft->getTextBounds("Disconnected", 0, 0, &x1, &y1, &w, &h);
     int statusY = SCREEN_HEIGHT * 0.91;
     int statusX = 10;
-    tft->fillRect(statusX - 1, statusY - h, w + 2, h + 8, ST77XX_BLACK);
-    tft->setTextColor(getCommStatusColor(currentStatus));
-    tft->setCursor(statusX, statusY);
-    tft->print(newStatus);
+    drawMotorStatusLine(statusX, statusY, currentStatus);
 
     prevSysStatus = currentStatus;
   }
@@ -510,6 +915,8 @@ void drawGrindingOrPurgingScreen() {
     static bool prevPurgeEnabled = false;
     static bool prevPurgeReady = false;
     static bool prevPurgingDrawn = false;
+    static int8_t prevDirection = 2;
+    static int8_t prevDirectionPhase = -1;
 
     int16_t x1, y1;
     uint16_t w, h;
@@ -534,6 +941,8 @@ void drawGrindingOrPurgingScreen() {
         prevPurgeEnabled = !Menu2[AUTO_PURGE_ENABLED].value;
         prevPurgeReady = !ready_purge;
         prevPurgingDrawn = false;
+        prevDirection = 2;
+        prevDirectionPhase = -1;
 
         tft->setFont(&FreeSans9pt7b);
         tft->getTextBounds("Purge", 0, 0, &x1, &y1, &w, &h);
@@ -546,10 +955,34 @@ void drawGrindingOrPurgingScreen() {
         tft->print("Drive");
     }
 
+    drawTopIndicators(state == PURGING ? SCREEN_PURGING : SCREEN_GRINDING);
+    drawSeparatorLine(dividerX, dividerY, dividerW, true);
+
+    // --- Direction indicator (left side, green) ---
+    const int8_t direction = getMotorDirectionIndicator();
+    const int8_t directionPhase = direction == 0 ? 0 : ((millis() / 180) % 4);
+    if (prevDirection != direction || prevDirectionPhase != directionPhase) {
+      tft->setFont(&FreeSans12pt7b);
+      tft->getTextBounds("<<<", 0, 0, &x1, &y1, &w, &h);
+      const int dirX = 12;
+      const int dirY = 64;
+      tft->fillRect(dirX - 2, dirY - h, w + 12, h + 10, ST77XX_BLACK);
+
+      if (direction != 0) {
+        tft->setTextColor(COLOR_GREEN);
+        tft->setCursor(dirX, dirY);
+        tft->print(getAnimatedDirectionText(direction, directionPhase));
+      }
+
+      prevDirection = direction;
+      prevDirectionPhase = directionPhase;
+    }
+
     // --- RPM digits (left side) ---
-    if (prevRPM != motor_currentRPM) {
+    const int16_t displayRPM = abs((int)getDisplayMotorRPM());
+    if (prevRPM != displayRPM) {
       char newVal[10];
-      sprintf(newVal, "%d", motor_currentRPM);
+      sprintf(newVal, "%d", displayRPM);
 
       tft->setFont(&FreeSans24pt7b);
       int16_t x1, y1;
@@ -560,20 +993,16 @@ void drawGrindingOrPurgingScreen() {
 
       tft->fillRect(valX - 2, valY - h, w + 10, h + 8, ST77XX_BLACK);
 
-      tft->setTextColor(ST77XX_WHITE);
+      tft->setTextColor(direction == 0 ? ST77XX_WHITE : COLOR_GREEN);
       tft->setCursor(valX, valY);
       tft->print(newVal);
 
-      prevRPM = motor_currentRPM;
+      prevRPM = displayRPM;
     }
   
 
     // --- Torque speedometer (right side) ---
-    #ifdef RT_DRIVE
-      int16_t torquePercent = ((100 * motor_currentTorque) / Menu1[SETMOTORTORQUE].value); //A value 
-    #else
-      int16_t torquePercent = ((10*motor_currentTorque)/Menu1[SETMOTORTORQUE].value) ; //A value 
-    #endif
+    const int16_t torquePercent = motor_get_torque_percent();
     if (prevTorque != motor_currentTorque) {
         tft->fillCircle(speedoCX, speedoCY, speedoR + 2, ST77XX_BLACK);
 
@@ -618,17 +1047,9 @@ void drawGrindingOrPurgingScreen() {
 
     // --- Connection status (bottom left) ---
   if (prevSysStatus != currentStatus) {
-    const char* newStatus = getCommStatusText(currentStatus);
-
-    tft->setFont(&FreeSans9pt7b);
-    int16_t x1, y1; uint16_t w, h;
-    tft->getTextBounds("Disconnected", 0, 0, &x1, &y1, &w, &h);
     int statusY = SCREEN_HEIGHT * 0.91;
     int statusX = 10;
-    tft->fillRect(statusX - 1, statusY - h, w + 2, h + 8, ST77XX_BLACK);
-    tft->setTextColor(getCommStatusColor(currentStatus));
-    tft->setCursor(statusX, statusY);
-    tft->print(newStatus);
+    drawMotorStatusLine(statusX, statusY, currentStatus);
 
     prevSysStatus = currentStatus;
   }
@@ -697,6 +1118,7 @@ void drawGrindingGbwScreen() {
     static int32_t prevCurrentWeight = -999999;
     static SYSTEM_STATUS prevSysStatus = MOTOR_INVALID;
     static SCALE_STATUS prevScaleStatus = INVALID_SCALE_STATUS;
+    static String prevScaleLegend = "";
 
     // Layout constants
     const int dividerY = SCREEN_HEIGHT * 0.7;
@@ -714,13 +1136,7 @@ void drawGrindingGbwScreen() {
         tft->fillRoundRect(dividerX, dividerY, dividerW, 6, 3, COLOR_NAVY);
 
         tft->setFont(&FreeSans9pt7b);
-        int16_t x1, y1; uint16_t w, h;
-        tft->getTextBounds("Scale", 0, 0, &x1, &y1, &w, &h);
-
-        tft->setCursor(SCREEN_WIDTH - 10 - w, SCREEN_HEIGHT*0.82);
-        tft->setTextColor(ST77XX_WHITE);  
-        tft->print("Scale");
-
+        tft->setTextColor(ST77XX_WHITE);
         tft->setCursor(10, SCREEN_HEIGHT*0.82);
         tft->print("Drive");
 
@@ -729,7 +1145,14 @@ void drawGrindingGbwScreen() {
         prevCurrentWeight = -999999;
         prevSysStatus = MOTOR_INVALID;
         prevScaleStatus = INVALID_SCALE_STATUS;
+        prevScaleLegend = "";
     }
+
+    drawTopIndicators(thisScreenId);
+    const String scaleLegend = fitScaleNameLabel(getScaleDisplayLabel(), 140);
+    drawScaleNameLegend(scaleLegend, prevScaleLegend);
+    prevScaleLegend = scaleLegend;
+    drawSeparatorLine(dividerX, dividerY, dividerW, true);
 
     // --- RPM digits (left side) ---
       if (prevRPM != motor_setRPM) {
@@ -792,17 +1215,9 @@ void drawGrindingGbwScreen() {
 
     // --- COMM status (bottom-left, larger font, more right, centered) ---
     if (prevSysStatus != currentStatus) {
-      const char* newStatus = getCommStatusText(currentStatus);
-
-      tft->setFont(&FreeSans9pt7b);
-      int16_t x1, y1; uint16_t w, h;
-      tft->getTextBounds("Disconnected", 0, 0, &x1, &y1, &w, &h);
       int statusY = SCREEN_HEIGHT * 0.91;
       int statusX = 10;
-      tft->fillRect(statusX - 1, statusY - h, w + 2, h + 8, ST77XX_BLACK);
-      tft->setTextColor(getCommStatusColor(currentStatus));
-      tft->setCursor(statusX, statusY);
-      tft->print(newStatus);
+      drawMotorStatusLine(statusX, statusY, currentStatus);
 
       prevSysStatus = currentStatus;
     }
@@ -876,10 +1291,14 @@ void drawCalibratingScreen() {
         prevTotal = -1;
     }
 
+    drawTopIndicators(SCREEN_CALIBRATING);
+    drawSeparatorLine(dividerX, dividerY, dividerW, true);
+
     // --- RPM digits (left side) ---
-    if (prevRPM != motor_currentRPM) {
+    const int16_t displayRPM = getDisplayMotorRPM();
+    if (prevRPM != displayRPM) {
       char newVal[10];
-      sprintf(newVal, "%d", motor_currentRPM);
+      sprintf(newVal, "%d", displayRPM);
 
       tft->setFont(&FreeSans24pt7b);
       int16_t x1, y1;
@@ -894,27 +1313,28 @@ void drawCalibratingScreen() {
       tft->setCursor(valX, valY);
       tft->print(newVal);
 
-      prevRPM = motor_currentRPM;
+      prevRPM = displayRPM;
     }
 
     // --- Torque speedometer (right side) ---
     int16_t torquePercent = motor_currentTorque;
     if (prevTorque != motor_currentTorque) {
-
-        int16_t x1, y1;
-        uint16_t w, h;
-        tft->getTextBounds("8888", 0, 0, &x1, &y1, &w, &h); // Max 4 digits
-        int valX = speedoCX - w / 2;
-        int valY = speedoCY+ h/2;
-        tft->fillRect(valX - 2, valY - h, w + 10, h + 8, ST77XX_BLACK);
-
         tft->setFont(&FreeSans18pt7b);
         tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+        int16_t x1, y1;
+        uint16_t w, h;
+        const char* clearStr = "-8888";
+        tft->getTextBounds(clearStr, 0, 0, &x1, &y1, &w, &h);
+        int valX = speedoCX - w / 2;
+        int valY = speedoCY + h / 2;
+        tft->getTextBounds(clearStr, valX, valY, &x1, &y1, &w, &h);
+        tft->fillRect(x1 - 4, y1 - 4, w + 8, h + 8, ST77XX_BLACK);
+
         char percentStr[8];
         sprintf(percentStr, "%d", torquePercent);
 
         tft->getTextBounds(percentStr, 0, 0, &x1, &y1, &w, &h);
-        tft->setCursor(speedoCX - w / 2, speedoCY+ h/2);
+        tft->setCursor(speedoCX - w / 2, speedoCY + h / 2);
         tft->print(percentStr);
 
         prevTorque = motor_currentTorque;
@@ -923,17 +1343,9 @@ void drawCalibratingScreen() {
 
     // --- COMM status (bottom left) ---
     if (prevSysStatus != currentStatus) {
-      const char* newStatus = getCommStatusText(currentStatus);
-
-      tft->setFont(&FreeSans9pt7b);
-      int16_t x1, y1; uint16_t w, h;
-      tft->getTextBounds("Disconnected", 0, 0, &x1, &y1, &w, &h);
       int statusY = SCREEN_HEIGHT * 0.91;
       int statusX = 10;
-      tft->fillRect(statusX - 1, statusY - h, w + 2, h + 8, ST77XX_BLACK);
-      tft->setTextColor(getCommStatusColor(currentStatus));
-      tft->setCursor(statusX, statusY);
-      tft->print(newStatus);
+      drawMotorStatusLine(statusX, statusY, currentStatus);
 
       prevSysStatus = currentStatus;
     }
@@ -968,8 +1380,98 @@ static const menuEntry* getMenuByNum(int menuNum) {
         case 1: return Menu1;
         case 2: return Menu2;
         case 3: return Menu3;
+        case 4: return Menu4;
         default: return nullptr;
     }
+}
+
+static const char* getMotorSelectLabel(int idx) {
+    switch(idx) {
+        case MOTOR_SELECT_AUTO: return "AUTO";
+        case MOTOR_SELECT_JMC: return "JMC";
+        case MOTOR_SELECT_RT: return "RT";
+        default: return "";
+    }
+}
+
+static const char* getMotorSelectHint(int idx) {
+    switch(idx) {
+        case MOTOR_SELECT_AUTO: return "Retry auto probe";
+        case MOTOR_SELECT_JMC: return "Force JMC backend";
+        case MOTOR_SELECT_RT: return "Force RT backend";
+        default: return "";
+    }
+}
+
+void drawMotorSelectScreen() {
+    static int prevSelected = -1;
+    const int thisScreenId = SCREEN_MOTOR_SELECT;
+
+    if(initializedScreenId != thisScreenId) {
+        tft->fillScreen(ST77XX_BLACK);
+        initializedScreenId = thisScreenId;
+        prevSelected = -1;
+
+        tft->setFont(&FreeSans18pt7b);
+        tft->setTextColor(ST77XX_WHITE);
+        int16_t x1, y1;
+        uint16_t w, h;
+        const char* title = "Select Drive";
+        tft->getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, HEADER_HEIGHT + h + 8);
+        tft->print(title);
+
+        tft->setFont(&FreeSans9pt7b);
+        const char* line1 = "Auto probe did not lock.";
+        const char* line2 = "Rotate to choose, press encoder to apply.";
+        const char* line3 = "Press Start to go back.";
+        tft->getTextBounds(line1, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, 74);
+        tft->print(line1);
+        tft->getTextBounds(line2, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, 96);
+        tft->print(line2);
+        tft->getTextBounds(line3, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, 116);
+        tft->print(line3);
+    }
+
+    drawTopIndicators(thisScreenId);
+
+    if(prevSelected == motorSelectSelected) {
+        return;
+    }
+
+    tft->fillRect(16, 126, SCREEN_WIDTH - 32, 96, ST77XX_BLACK);
+
+    for(int i = 0; i < NUM_MOTOR_SELECT_ITEMS; ++i) {
+        const bool selected = i == motorSelectSelected;
+        const int boxX = 26;
+        const int boxY = 132 + i * 30;
+        const int boxW = SCREEN_WIDTH - 52;
+        const int boxH = 24;
+
+        tft->drawRoundRect(boxX, boxY, boxW, boxH, 8, selected ? COLOR_GREEN : COLOR_NAVY);
+
+        tft->setFont(selected ? &FreeSans12pt7b : &FreeSans9pt7b);
+        tft->setTextColor(selected ? COLOR_BRIGHT_BLUE : ST77XX_WHITE);
+
+        int16_t x1, y1;
+        uint16_t w, h;
+        tft->getTextBounds(getMotorSelectLabel(i), 0, 0, &x1, &y1, &w, &h);
+        const int labelX = boxX + 10;
+        const int labelY = boxY + boxH - 6;
+        tft->setCursor(labelX, labelY);
+        tft->print(getMotorSelectLabel(i));
+
+        tft->setFont(&FreeSans9pt7b);
+        tft->setTextColor(selected ? COLOR_GREEN : 0x8410);
+        tft->getTextBounds(getMotorSelectHint(i), 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor(boxX + boxW - w - 10, labelY);
+        tft->print(getMotorSelectHint(i));
+    }
+
+    prevSelected = motorSelectSelected;
 }
 
 void drawMenuScreen(int menuNum, int numItems, int selectedIdx) {
@@ -1010,6 +1512,8 @@ void drawMenuScreen(int menuNum, int numItems, int selectedIdx) {
         fullRedraw = true;
         prevMenuNum = menuNum;
     }
+
+    drawTopIndicators(thisScreenId);
 
     for (int i = 0; i < itemCount; ++i) {
         int relIdx = i - itemCount / 2; // -2, -1, 0, 1, 2
@@ -1068,7 +1572,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
     // Clear screen if needed
     static int prevSelectedIdx = -1, prevMenuNum = -1;
     static int16_t prevValue = 0xFFFF;
-    int thisScreenId = menuNum * selectedIdx * 32;
+    int thisScreenId = (menuNum << 8) | selectedIdx;
     
     const menuEntry* menu = getMenuByNum(menuNum);
     const menuEntry& item = menu[selectedIdx];
@@ -1087,7 +1591,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
         tft->setTextColor(ST77XX_WHITE);
         int16_t x1, y1; uint16_t w, h;
         tft->getTextBounds("Calibrate?", 0, 0, &x1, &y1, &w, &h);
-        tft->setCursor((SCREEN_WIDTH - w) / 2, 20 + h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, HEADER_HEIGHT + h + 4);
         tft->print("Calibrate?");
         
         // Instruction below
@@ -1104,17 +1608,154 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
         tft->getTextBounds(msg3, 0, 0, &x1, &y1, &w, &h);
         tft->setCursor((SCREEN_WIDTH - w) / 2, 140);
         tft->print(msg3);
+      } else if (menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) {
+        tft->setFont(&FreeSans18pt7b);
+        tft->setTextColor(ST77XX_WHITE);
+        int16_t x1, y1; uint16_t w, h;
+        char title[24];
+        snprintf(title, sizeof(title), "JMC %lu?", static_cast<unsigned long>(baudForJmcMenuItem(selectedIdx)));
+        tft->getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, HEADER_HEIGHT + h + 4);
+        tft->print(title);
+
+        tft->setFont(&FreeSans9pt7b);
+        char msg1[48];
+        char msg2[48];
+        snprintf(msg1, sizeof(msg1), "Set drive comm to %lu profile.", static_cast<unsigned long>(baudForJmcMenuItem(selectedIdx)));
+        snprintf(msg2, sizeof(msg2), "Board stores %lu for next boot.", static_cast<unsigned long>(baudForJmcMenuItem(selectedIdx)));
+        const char* msg3 = "Press encoder. Then power cycle.";
+        const char* msg4 = "Press Start to exit";
+        tft->getTextBounds(msg1, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, 92);
+        tft->print(msg1);
+        tft->getTextBounds(msg2, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, 112);
+        tft->print(msg2);
+        tft->getTextBounds(msg3, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, 132);
+        tft->print(msg3);
+        tft->getTextBounds(msg4, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, 152);
+        tft->print(msg4);
       } else { 
           // Show menu item name, top center
           tft->setFont(&FreeSans12pt7b);
           tft->setTextColor(ST77XX_WHITE);
           int16_t x1, y1; uint16_t w, h;
           tft->getTextBounds(item.name, 0, 0, &x1, &y1, &w, &h);
-          tft->setCursor((SCREEN_WIDTH - w) / 2, 30);
+          tft->setCursor((SCREEN_WIDTH - w) / 2, HEADER_HEIGHT + h + 2);
           tft->print(item.name);
       }
     } 
+
+    drawTopIndicators(thisScreenId);
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) prevValue = item.value; //basically do nothing
+    else if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) {
+      static JmcBaudTrialStatus prevTrialStatus = JMC_BAUD_SWITCH_FAIL_LOST;
+      static uint32_t prevTrialBaud = 0xFFFFFFFFUL;
+      static uint32_t prevReadBeforeBaud = 0xFFFFFFFFUL;
+      static uint32_t prevReadAfterBaud = 0xFFFFFFFFUL;
+      static uint32_t prevTargetBaud = 0xFFFFFFFFUL;
+      static bool prevBaudConnected = false;
+      static String prevUartLabel = "";
+      static String prevDriveLabel = "";
+
+      const JmcBaudTrialStatus trialStatus = motor_get_jmc_baud_trial_status();
+      const uint32_t trialBaud = motor_get_jmc_baud_trial_result_baud();
+      const uint32_t readBeforeBaud = motor_get_jmc_baud_trial_read_before();
+      const uint32_t readAfterBaud = motor_get_jmc_baud_trial_read_after();
+      const String uartLabel = comm_get_profile_label();
+      const String driveLabel = motor_get_type_label();
+      const uint32_t targetBaud = baudForJmcMenuItem(selectedIdx);
+      const bool baudConnected =
+          motor_get_drive_type() == DRIVE_TYPE_JMC &&
+          commStatus == COMM_CONNECTED &&
+          comm_get_jmc_baud() == targetBaud;
+
+      if(prevValue == 0xFFFF || prevTrialStatus != trialStatus || prevTrialBaud != trialBaud || prevReadBeforeBaud != readBeforeBaud || prevReadAfterBaud != readAfterBaud || prevTargetBaud != targetBaud || prevBaudConnected != baudConnected || prevUartLabel != uartLabel || prevDriveLabel != driveLabel) {
+        tft->fillRect(0, 166, SCREEN_WIDTH, SCREEN_HEIGHT - 166, ST77XX_BLACK);
+
+        uint16_t statusColor = ST77XX_WHITE;
+        switch(trialStatus) {
+          case JMC_BAUD_SWITCH_RUNNING:
+            statusColor = COLOR_YELLOW;
+            break;
+          case JMC_BAUD_SWITCH_SET_OK:
+          case JMC_BAUD_SWITCH_ALREADY_SET:
+            statusColor = COLOR_GREEN;
+            break;
+          case JMC_BAUD_SWITCH_FAIL_NO_JMC:
+          case JMC_BAUD_SWITCH_FAIL_WRITE:
+          case JMC_BAUD_SWITCH_FAIL_VERIFY:
+          case JMC_BAUD_SWITCH_FAIL_LOST:
+            statusColor = COLOR_RED;
+            break;
+          case JMC_BAUD_SWITCH_IDLE:
+          default:
+            statusColor = ST77XX_WHITE;
+            break;
+        }
+
+        char detailLine[48];
+        snprintf(detailLine, sizeof(detailLine), "Drive: %s   UART: %s", driveLabel.c_str(), uartLabel.c_str());
+        char baudLine[48];
+        if(trialBaud > 0) snprintf(baudLine, sizeof(baudLine), "Result baud: %lu", static_cast<unsigned long>(trialBaud));
+        else snprintf(baudLine, sizeof(baudLine), "Result baud: none");
+        char readLine[48];
+        if(readBeforeBaud > 0 && readAfterBaud > 0) {
+          snprintf(readLine, sizeof(readLine), "Read: %lu -> %lu",
+                   static_cast<unsigned long>(readBeforeBaud),
+                   static_cast<unsigned long>(readAfterBaud));
+        } else if(readBeforeBaud > 0) {
+          snprintf(readLine, sizeof(readLine), "Read before: %lu",
+                   static_cast<unsigned long>(readBeforeBaud));
+        } else if(readAfterBaud > 0) {
+          snprintf(readLine, sizeof(readLine), "Read after: %lu",
+                   static_cast<unsigned long>(readAfterBaud));
+        } else {
+          snprintf(readLine, sizeof(readLine), "Read: unavailable");
+        }
+
+        tft->setFont(&FreeSans9pt7b);
+        tft->setTextColor(ST77XX_WHITE);
+        tft->setCursor(10, 182);
+        tft->print(detailLine);
+
+        tft->setFont(&FreeSans12pt7b);
+        tft->setTextColor(statusColor);
+        tft->setCursor(10, 206);
+        if(baudConnected) {
+          const int iconX = 12;
+          const int iconY = 198;
+          tft->drawLine(iconX, iconY + 8, iconX + 5, iconY + 13, COLOR_GREEN);
+          tft->drawLine(iconX + 5, iconY + 13, iconX + 16, iconY + 2, COLOR_GREEN);
+          char okLine[24];
+          snprintf(okLine, sizeof(okLine), "%lu", static_cast<unsigned long>(targetBaud));
+          tft->setCursor(34, 206);
+          tft->print(okLine);
+        } else {
+          tft->print(motor_get_jmc_baud_trial_status_text());
+        }
+
+        tft->setFont(&FreeSans9pt7b);
+        tft->setTextColor(ST77XX_WHITE);
+        tft->setCursor(10, 228);
+        tft->print(baudLine);
+
+        tft->setCursor(10, 248);
+        tft->print(readLine);
+
+        prevTrialStatus = trialStatus;
+        prevTrialBaud = trialBaud;
+        prevReadBeforeBaud = readBeforeBaud;
+        prevReadAfterBaud = readAfterBaud;
+        prevTargetBaud = targetBaud;
+        prevBaudConnected = baudConnected;
+        prevUartLabel = uartLabel;
+        prevDriveLabel = driveLabel;
+      }
+      prevValue = item.value;
+    }
     else {
       if(prevValue != item.value) {
         tft->fillRect(0, 60, SCREEN_WIDTH, SCREEN_HEIGHT-60, ST77XX_BLACK);

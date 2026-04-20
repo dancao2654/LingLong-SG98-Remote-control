@@ -7,14 +7,72 @@
 #include "pdata.h"
 #include "display.h"
 #include "gbw.h"
+#include "comm.h"
+#include "motor_hal.h"
 
-#ifdef JMC_DRIVE
-#include "motorcontrol_jmc.h"
-#endif
+namespace {
+bool shouldOpenDriveSelector() {
+    return motor_get_drive_type() == DRIVE_TYPE_UNKNOWN || error == 1;
+}
 
-#ifdef RT_DRIVE
-#include "motorcontrol_rt.h"
-#endif
+void openDriveSelector(States returnState) {
+    motorSelectReturnState = returnState;
+
+    switch(motor_get_drive_type()) {
+        case DRIVE_TYPE_JMC:
+            motorSelectSelected = MOTOR_SELECT_JMC;
+            break;
+        case DRIVE_TYPE_RT:
+            motorSelectSelected = MOTOR_SELECT_RT;
+            break;
+        case DRIVE_TYPE_UNKNOWN:
+        default:
+            motorSelectSelected = MOTOR_SELECT_AUTO;
+            break;
+    }
+
+    enterMenu = false;
+    state = MOTOR_SELECT;
+    disp_updateRequired = true;
+}
+
+void applyDriveSelection() {
+    switch(motorSelectSelected) {
+        case MOTOR_SELECT_JMC:
+            motor_force_drive_type(DRIVE_TYPE_JMC, false);
+            break;
+        case MOTOR_SELECT_RT:
+            motor_force_drive_type(DRIVE_TYPE_RT, false);
+            break;
+        case MOTOR_SELECT_AUTO:
+        default:
+            motor_redetect_drive(false);
+            break;
+    }
+
+    error = 0;
+    errorCode = 0;
+    commCounter = 0;
+    lastActivity = millis();
+    state = motorSelectReturnState;
+    disp_updateRequired = true;
+}
+
+bool isJmcBaudMenuItem(int selectedIdx) {
+    return selectedIdx >= Menu4Items::JMCBAUD9600 && selectedIdx <= Menu4Items::JMCBAUD115200;
+}
+
+uint32_t baudForJmcMenuItem(int selectedIdx) {
+    switch(selectedIdx) {
+        case Menu4Items::JMCBAUD9600: return 9600;
+        case Menu4Items::JMCBAUD19200: return 19200;
+        case Menu4Items::JMCBAUD38400: return 38400;
+        case Menu4Items::JMCBAUD57600: return 57600;
+        case Menu4Items::JMCBAUD115200: return 115200;
+        default: return 0;
+    }
+}
+}
 
 
 Button enc_button(ENC_BTN);
@@ -45,6 +103,7 @@ void do_io() {
     static bool lastIdle = false; //lastIdle true means it was on normal Idle before, false means idle_GBW
     static int16_t OriginalValue = 0;
     static bool notReleasedYet = false;
+    static bool longPressActionHandled = false;
     
 
     if(state == IDLE) { 
@@ -55,19 +114,29 @@ void do_io() {
         if(setRPM < Menu1[SETMIN].value) setRPM = Menu1[SETMIN].value;
         
         //START BUTTON
-        if(START_BUTTON() == true && longPress == false && dimmed == false) state = GRINDING;
+        if(START_BUTTON() == true && longPress == false && dimmed == false) {
+            if(shouldOpenDriveSelector()) openDriveSelector(IDLE);
+            else {
+                purge_prepare_for_grinding();
+                state = GRINDING;
+            }
+        }
 
         //ENC BUTTON
         if(ENC_BUTTON() == true && dimmed == false) { 
             notReleasedYet = false;
             if(longPress == false) { 
-                if(error == 0 || error == 1 || error == 2) state = MENU1;
-                lastIdle = true;
-                if(error > 2) { 
-                    error = 0;
-                    commCounter = 0;
+                if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
+                    openDriveSelector(IDLE);
+                } else {
+                    if(error == 0 || error == 1 || error == 2) state = MENU1;
+                    lastIdle = true;
+                    if(error > 2) { 
+                        error = 0;
+                        commCounter = 0;
+                    }
+                    disp_updateRequired = true;
                 }
-                disp_updateRequired = true;
             }
         } else { // enc_button == false
             if(longPress == true && notReleasedYet == false) {  //when we're still holding longPress 
@@ -80,7 +149,10 @@ void do_io() {
         //OTHER
         if(pressedLong() == true) { 
             longPress = true;
-        } else longPress = false;
+        } else {
+            longPress = false;
+            longPressActionHandled = false;
+        }
 
         if(setRPM != storedSetRPM && lastActivity + 10000 < millis()) {
             storedSetRPM = setRPM;
@@ -96,19 +168,26 @@ void do_io() {
         if(setWeight > default_max_weight) setWeight = default_max_weight;
         if(setWeight < default_min_weight) setWeight = default_min_weight;
         
-        if(START_BUTTON() == true && longPress == false) state = GRINDING_GBW;
+        if(START_BUTTON() == true && longPress == false) {
+            if(shouldOpenDriveSelector()) openDriveSelector(IDLE_GBW);
+            else state = GRINDING_GBW;
+        }
 
         //ENC BUTTON
         if(ENC_BUTTON() == true && dimmed == false) { 
             notReleasedYet = false;
             if(longPress == false) { 
-                if(error == 0 || error == 1 || error == 2) state = MENU1;
-                lastIdle = false;
-                if(error > 2) { 
-                    error = 0;
-                    commCounter = 0;
+                if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
+                    openDriveSelector(IDLE_GBW);
+                } else {
+                    if(error == 0 || error == 1 || error == 2) state = MENU1;
+                    lastIdle = false;
+                    if(error > 2) { 
+                        error = 0;
+                        commCounter = 0;
+                    }
+                    disp_updateRequired = true;
                 }
-                disp_updateRequired = true;
             }
         } else { // enc_button == false
             if(longPress == true && notReleasedYet == false) {  //when we're still holding longPress 
@@ -121,7 +200,10 @@ void do_io() {
         //OTHER
         if(pressedLong() == true && dimmed == false) { 
             longPress = true;
-        } else longPress = false;
+        } else {
+            longPress = false;
+            longPressActionHandled = false;
+        }
         
         if(setWeight != storedSetWeight && lastActivity + 10000 < millis()) {
             storedSetWeight = setWeight;
@@ -141,9 +223,12 @@ void do_io() {
         if(setRPM < Menu1[SETMIN].value) setRPM = Menu1[SETMIN].value;
 
         if(START_BUTTON() == true) { 
+            purge_mark_started();
             state = (Menu2[SETBUTTONPURGE].value == true? PURGING : IDLE);
+            if(state == IDLE) purge_cancel_pending();
         }
         if(ENC_BUTTON() == true) { 
+            purge_cancel_pending();
             state = IDLE;
             motor_setRPM = 0;
         }
@@ -154,6 +239,7 @@ void do_io() {
         setRPM += encoder_change()*rpm_scalar;
 
         if(START_BUTTON() == true || ENC_BUTTON() == true) { 
+            purge_cancel_pending();
             state = IDLE;
             motor_setRPM = 0;
         }
@@ -181,6 +267,12 @@ void do_io() {
             Menu1[menu1Selected].value += encoder_change() * Menu1[menu1Selected].scalar;
             if(Menu1[menu1Selected].value > Menu1[menu1Selected].maxValue) Menu1[menu1Selected].value = Menu1[menu1Selected].maxValue;
             if(Menu1[menu1Selected].value < Menu1[menu1Selected].minValue) Menu1[menu1Selected].value = Menu1[menu1Selected].minValue;
+            if(menu1Selected == Menu1Items::SETMAX && Menu1[SETMAX].value < Menu1[SETMIN].value) {
+                Menu1[SETMAX].value = Menu1[SETMIN].value;
+            }
+            if(menu1Selected == Menu1Items::SETMIN && Menu1[SETMIN].value > Menu1[SETMAX].value) {
+                Menu1[SETMIN].value = Menu1[SETMAX].value;
+            }
             if(menu1Selected == Menu1Items::CALIBRATE) { 
                 //DISPLAY press start to continue
                 ledAction(2);
@@ -195,7 +287,6 @@ void do_io() {
                 lastIdle? state = IDLE : state = IDLE_GBW; 
             } else { 
                 enterMenu = false;
-                menu1Selected = EXITMENU;
                 Menu1[menu1Selected].value = OriginalValue;
             }
         }
@@ -204,25 +295,24 @@ void do_io() {
             if(enterMenu == false) { 
                 if(menu1Selected == Menu1Items::PURGESETTINGS) state = MENU2;
                 if(menu1Selected == Menu1Items::GBWSETTINGS) state = MENU3;
+                if(menu1Selected == Menu1Items::JMCBAUDMENU) state = MENU4;
                 if(menu1Selected == Menu1Items::EXITMENU) lastIdle? state = IDLE : state = IDLE_GBW; 
-                if(menu1Selected != Menu1Items::PURGESETTINGS && menu1Selected != Menu1Items::GBWSETTINGS && menu1Selected != Menu1Items::EXITMENU) enterMenu = true; //entering settings adjustment
+                if(menu1Selected != Menu1Items::PURGESETTINGS && menu1Selected != Menu1Items::GBWSETTINGS && menu1Selected != Menu1Items::JMCBAUDMENU && menu1Selected != Menu1Items::EXITMENU) enterMenu = true; //entering settings adjustment
                 OriginalValue = Menu1[menu1Selected].value;
             } else { 
                 enterMenu = false;
                 if(menu1Selected != Menu1Items::RESET) pdata_write(2);
+                pdata_normalize();
                 if(menu1Selected == Menu1Items::RESET && Menu1[menu1Selected].value == 1) { 
                     pdata_write(8);  // Reset the build ID so it resets on boot.
-                    #ifdef JMC_DRIVE 
-                        motorReset();
-                        delay(1000);
-                        sleep_init();
-                    #else 
-                        delay(1000);
-                        ESP.restart();
-                    #endif
+                    motorReset();
+                    delay(1000);
+                    if(motor_get_drive_type() == DRIVE_TYPE_JMC) sleep_init();
+                    else ESP.restart();
                 }
             }
-        } else if(longPress == true && menu1Selected == Menu1Items::CALIBRATE) { 
+        } else if(longPress == true && !longPressActionHandled && menu1Selected == Menu1Items::CALIBRATE) { 
+            longPressActionHandled = true;
             state = CALIBRATING;  
             enterMenu = false;
             disp_updateRequired = true;
@@ -232,7 +322,10 @@ void do_io() {
         //OTHER
         if(pressedLong() == true) { 
             longPress = true;
-        } else longPress = false;
+        } else {
+            longPress = false;
+            longPressActionHandled = false;
+        }
         
     }
 
@@ -275,6 +368,7 @@ void do_io() {
             } else { 
                 enterMenu = false;
                 pdata_write(2);
+                pdata_normalize();
             }
         }
     }
@@ -290,6 +384,16 @@ void do_io() {
             Menu3[menu3Selected].value += encoder_change()* Menu3[menu3Selected].scalar;
             if(Menu3[menu3Selected].value > Menu3[menu3Selected].maxValue) Menu3[menu3Selected].value = Menu3[menu3Selected].maxValue;
             if(Menu3[menu3Selected].value < Menu3[menu3Selected].minValue) Menu3[menu3Selected].value = Menu3[menu3Selected].minValue;
+            if(menu3Selected == Menu3Items::GBW_RPM_SET) {
+                int16_t slowLimit = Menu3[GBW_SLOW_RPM].value;
+                if(slowLimit > Menu1[SETMAX].value) slowLimit = Menu1[SETMAX].value;
+                if(Menu3[GBW_RPM_SET].value > Menu1[SETMAX].value) Menu3[GBW_RPM_SET].value = Menu1[SETMAX].value;
+                if(Menu3[GBW_RPM_SET].value < slowLimit) Menu3[GBW_RPM_SET].value = slowLimit;
+            }
+            if(menu3Selected == Menu3Items::GBW_SLOW_RPM) {
+                if(Menu3[GBW_SLOW_RPM].value > Menu1[SETMAX].value) Menu3[GBW_SLOW_RPM].value = Menu1[SETMAX].value;
+                if(Menu3[GBW_SLOW_RPM].value > Menu3[GBW_RPM_SET].value) Menu3[GBW_SLOW_RPM].value = Menu3[GBW_RPM_SET].value;
+            }
         }
 
         //Button routes
@@ -332,10 +436,57 @@ void do_io() {
                     }
                 } else 
                 pdata_write(2);
+                pdata_normalize();
 
             
             }
         } 
+    }
+
+    if(state == MOTOR_SELECT) {
+        ledAction(0);
+        motorSelectSelected += Menu1[INVERT_SCROLL].value ? encoder_change() : -encoder_change();
+        if(motorSelectSelected >= NUM_MOTOR_SELECT_ITEMS) motorSelectSelected = 0;
+        if(motorSelectSelected < 0) motorSelectSelected = NUM_MOTOR_SELECT_ITEMS - 1;
+
+        if(START_BUTTON() == true) {
+            state = motorSelectReturnState;
+            disp_updateRequired = true;
+        }
+
+        if(ENC_BUTTON() == true) {
+            applyDriveSelection();
+        }
+    }
+
+    if(state == MENU4) {
+        ledAction(0);
+        if(enterMenu == false) menu4Selected += Menu1[INVERT_SCROLL].value ? encoder_change() : -encoder_change();
+        if(menu4Selected > Menu4Items::NUM_MENU4_ITEMS - 1) menu4Selected = 0;
+        if(menu4Selected < 0) menu4Selected = Menu4Items::NUM_MENU4_ITEMS - 1;
+
+        if(START_BUTTON() == true) {
+            if(enterMenu == false) {
+                menu4Selected = Menu4Items::RETURN_FROM_JMC_BAUD;
+                state = MENU1;
+            } else {
+                enterMenu = false;
+            }
+        }
+
+        if(ENC_BUTTON() == true) {
+            if(enterMenu == false) {
+                if(menu4Selected == Menu4Items::RETURN_FROM_JMC_BAUD) {
+                    state = MENU1;
+                } else {
+                    enterMenu = true;
+                }
+            } else {
+                motor_run_jmc_baud_switch(baudForJmcMenuItem(menu4Selected));
+                disp_updateRequired = true;
+                update_display();
+            }
+        }
     }
 
     if(state == CALIBRATING) { 

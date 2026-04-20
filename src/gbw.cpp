@@ -3,14 +3,8 @@
 #include "io.h"
 #include "pdata.h"
 #include "display.h"
-
-#ifdef JMC_DRIVE
-#include "motorcontrol_jmc.h"
-#endif
-
-#ifdef RT_DRIVE
-#include "motorcontrol_rt.h"
-#endif
+#include "motor_hal.h"
+#include "ble_console.h"
 
 // #define DEBUG_GBW
 unsigned long startOfShot = 0;
@@ -31,6 +25,14 @@ uint16_t slow_phase_at = 0;
 bool grindingComplete = false;
 bool gbw_started = false;
 unsigned long shotStopped = 0;
+
+namespace {
+int16_t clamp_gbw_rpm(int16_t rpm) {
+    if(rpm < 0) return 0;
+    if(rpm > Menu1[SETMAX].value) return Menu1[SETMAX].value;
+    return rpm;
+}
+}
 
 
 // MUTEX >>
@@ -54,6 +56,7 @@ uint16_t last_shot_updated;
 //SEPARATE TASK!!
 void scales_init() { 
     NimBLEDevice::init("GbWService");
+    ble_console_init();
     if (xSemaphoreTake(scaleMutex, portMAX_DELAY)) {
         mac_local = scale_connect_mac;
         xSemaphoreGive(scaleMutex);
@@ -66,6 +69,11 @@ void gbwVitals()
     static uint8_t prevScaleStatus;
     static unsigned long lastConnected;
     static int32_t prevWeight;
+    const bool scaleModeActive = (state == IDLE_GBW || state == GRINDING_GBW);
+
+    connect = scaleModeActive;
+    maintain = scaleModeActive;
+    ble_console_set_advertising_enabled(!scaleModeActive);
 
     if(scale.manage(connect, maintain, mac_local) == true) { 
         scaleStatus = SCALE_CONNECTED;
@@ -105,17 +113,6 @@ void gbwVitals()
         newWeightAvail = true;
         disp_updateRequired = true;
     } else newWeightAvail = false; //Here coz thats one round!
-
-    // Manage connection states 
-    if(state == IDLE_GBW || state == GRINDING_GBW) {
-        connect = true;
-        maintain = true;
-    } else {
-        if(state == IDLE || state == GRINDING || state == SLEEPING)  {
-            maintain = false;
-        }
-        connect = false;
-    }
 
     if(scaleStatus != prevScaleStatus) { 
         disp_updateRequired = true;
@@ -251,13 +248,13 @@ static int32_t lastWeight;
 
     //Actually grinding! Menu5 = button swing delay
     if(gbw_started == true && startOfShot + Menu3[GBW_BUTTON_DELAY].value < millis() && grindingComplete == false && slow_phase == false) { 
-        motor_setRPM = Menu3[GBW_RPM_SET].value; //This is the GBW set RPM in menu
+        motor_setRPM = clamp_gbw_rpm(Menu3[GBW_RPM_SET].value); //This is the GBW set RPM in menu
     }
 
     if(Menu3[GBW_SLOW_MG].value > 0) {
         // Switch to slow phase if applicable
         if(!slow_phase && (abs(currentWeight)) >= (setWeight - Menu3[GBW_SLOW_MG].value) && grindingComplete == false && gbw_started == true) { 
-            motor_setRPM = Menu3[GBW_SLOW_RPM].value;
+            motor_setRPM = clamp_gbw_rpm(min(Menu3[GBW_SLOW_RPM].value, Menu3[GBW_RPM_SET].value));
             slow_phase = true;
             slow_phase_at = millis() - startOfShot; 
             #ifdef DEBUG_GBW
@@ -419,7 +416,7 @@ int32_t gbw_predict() {
             if(speed > 0.0f && speed < 20.0f) {
                 predictedTime = (int32_t)(stillToGrind / speed);
             } else { 
-                predictedTime =  (int32_t)(stillToGrind / ((Menu3[GBW_SPEEDMOD].value/10000.f) * (Menu3[GBW_RPM_SET].value / 60.f)));
+                predictedTime =  (int32_t)(stillToGrind / ((Menu3[GBW_SPEEDMOD].value/10000.f) * (clamp_gbw_rpm(Menu3[GBW_RPM_SET].value) / 60.f)));
             }
 
             lastPredictionAt = millis();
@@ -507,7 +504,7 @@ void gbw_learn() {
     
  
     float grindSpeed = test_weight_diff / float(test_time_diff);
-    float rpm = Menu3[GBW_RPM_SET].value;
+    float rpm = clamp_gbw_rpm(Menu3[GBW_RPM_SET].value);
 
     if (rpm == 0) return; // Prevent division by zero
     float ground_per_rotation = grindSpeed / (rpm / 60.f); // g/s / rot/s = g * rot
@@ -524,6 +521,9 @@ void gbw_learn() {
     #endif
 
     // Calculating expected stop time
+    if(Menu3[GBW_OFFSET].value <= 0) {
+        return;
+    }
     int16_t actualDeltaWeight = _shot[last_shot_updated].weight - stopWeight; 
     float endingSpeed = float(actualDeltaWeight) / float(Menu3[GBW_OFFSET].value);
     int16_t grindOvershoot = setWeight - stopWeight; 
@@ -568,4 +568,3 @@ void gbw_learn() {
         #endif
     }
 }
-
