@@ -34,7 +34,6 @@ int16_t clamp_gbw_rpm(int16_t rpm) {
 }
 }
 
-
 // MUTEX >>
 SemaphoreHandle_t scaleMutex;
 String scale_connect_mac = "";
@@ -348,7 +347,7 @@ static int32_t lastWeight;
 
     // flash accordingly
     if(gbw_started == false) ledAction(0);
-    if(gbw_started == true && grindingComplete == false) ledAction(100 + 50*(float(currentWeight)/float(setWeight)));
+    if(gbw_started == true && grindingComplete == false) ledAction(100 + 50.f*(float(currentWeight)/float(setWeight)));
     else if(grindingComplete == true) ledAction(1);
 }
 
@@ -508,6 +507,10 @@ void gbw_learn() {
 
     if (rpm == 0) return; // Prevent division by zero
     float ground_per_rotation = grindSpeed / (rpm / 60.f); // g/s / rot/s = g * rot
+
+    if(Menu3[GBW_OFFSET].value <= 0) {
+        return;
+    }
 
     if(speedModifier != 0.5f) speedModifier = (ground_per_rotation + speedModifier) / 2.0f;
     else speedModifier = ground_per_rotation;

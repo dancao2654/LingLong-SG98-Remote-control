@@ -288,6 +288,7 @@ void do_io() {
             } else { 
                 enterMenu = false;
                 Menu1[menu1Selected].value = OriginalValue;
+                menu1Selected = EXITMENU;
             }
         }
 
