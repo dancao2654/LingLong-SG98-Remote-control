@@ -1,0 +1,5 @@
+assets/esptool.exe
+assets/sg98-firmware.bin
+publish/
+obj/
+bin/
