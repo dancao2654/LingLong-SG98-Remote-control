@@ -32,15 +32,6 @@ uint32_t sanitize_jmc_baud(uint32_t baud_rate) {
 }
 }
 
-namespace {
-bool clamp_menu_entry(menuEntry& entry) {
-    int16_t original = entry.value;
-    if(entry.value < entry.minValue) entry.value = entry.minValue;
-    if(entry.value > entry.maxValue) entry.value = entry.maxValue;
-    return entry.value != original;
-}
-}
-
 void pdata_init() { 
     preferences.begin("settings", false);
 

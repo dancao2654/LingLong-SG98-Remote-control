@@ -14,6 +14,7 @@
 #include <Fonts/FreeSans24pt7b.h>
 #include "comm.h"
 #include "motor_hal.h"
+#include "wifi_ui.h"
 
 #define COLOR_NAVY 0x0010
 #define COLOR_BRIGHT_BLUE 0x55FF
@@ -48,6 +49,7 @@ uint16_t getCommStatusColor(SYSTEM_STATUS status);
 namespace {
 const GFXfont* const HEADER_FONT = &FreeSans12pt7b;
 const GFXfont* const SCALE_NAME_FONT = &FreeSans9pt7b;
+const GFXfont* const WIFI_STATUS_FONT = &FreeSans9pt7b;
 constexpr unsigned long MOTOR_SPLASH_DURATION_MS = 5000;
 constexpr unsigned long MOTOR_SPLASH_VISIBLE_MS = 1800;
 constexpr unsigned long MOTOR_SPLASH_BLANK_MS = 250;
@@ -347,6 +349,39 @@ void drawRightAlignedLine(int rightX, int baselineY, const String& text, const G
   tft->print(text);
 }
 
+bool getLeftLineBounds(int leftX, int baselineY, const String& text, const GFXfont* font, int16_t* x, int16_t* y, uint16_t* w, uint16_t* h) {
+  if (text.length() == 0 || x == nullptr || y == nullptr || w == nullptr || h == nullptr) {
+    return false;
+  }
+
+  tft->setFont(font);
+  tft->getTextBounds(text, leftX, baselineY, x, y, w, h);
+  return true;
+}
+
+void clearLeftAlignedLine(int leftX, int baselineY, const String& text, const GFXfont* font) {
+  int16_t x, y;
+  uint16_t w, h;
+  if (!getLeftLineBounds(leftX, baselineY, text, font, &x, &y, &w, &h)) {
+    return;
+  }
+
+  tft->fillRect(x - 2, y - 1, w + 4, h + 2, ST77XX_BLACK);
+}
+
+void drawLeftAlignedLine(int leftX, int baselineY, const String& text, const GFXfont* font, uint16_t textColor) {
+  int16_t x, y;
+  uint16_t w, h;
+  if (!getLeftLineBounds(leftX, baselineY, text, font, &x, &y, &w, &h)) {
+    return;
+  }
+
+  tft->setFont(font);
+  tft->setTextColor(textColor);
+  tft->setCursor(leftX, baselineY);
+  tft->print(text);
+}
+
 void drawRightAlignedPill(int rightX, int baselineY, const String& text, const GFXfont* font, uint16_t textColor, uint16_t pillColor) {
   int16_t x, y;
   uint16_t w, h;
@@ -373,23 +408,35 @@ void drawRightAlignedPill(int rightX, int baselineY, const String& text, const G
 void drawTopIndicators(int screenId) {
   static int prevScreenId = -1;
   static String prevMotorLabel = "";
+  static String prevWifiLabel = "";
 
   const bool forceRedraw = prevScreenId != screenId;
+  const int leftMargin = 8;
   const int rightMargin = 20;
   const int regionWidth = 156;
   const int motorBaselineY = 18;
+  const int wifiBaselineY = 18;
   const int rightX = SCREEN_WIDTH - rightMargin;
   const int regionX = SCREEN_WIDTH - (regionWidth + 20);
+  const int leftRegionWidth = regionX - leftMargin - 8;
   const String motorLabel = fitHeaderLabel(getMotorDisplayLabel(), regionWidth);
+  const String wifiLabel = fitLabelToFont(wifi_ui_lcd_status(), leftRegionWidth, WIFI_STATUS_FONT);
+  const uint16_t wifiColor = wifi_ui_sta_connected() ? COLOR_GREEN : COLOR_YELLOW;
 
   if (forceRedraw || motorLabel != prevMotorLabel) {
     tft->fillRect(regionX, 0, SCREEN_WIDTH - regionX, HEADER_HEIGHT, ST77XX_BLACK);
   }
+  if (forceRedraw || wifiLabel != prevWifiLabel) {
+    clearLeftAlignedLine(leftMargin, wifiBaselineY, prevWifiLabel, WIFI_STATUS_FONT);
+    clearLeftAlignedLine(leftMargin, wifiBaselineY, wifiLabel, WIFI_STATUS_FONT);
+  }
 
+  drawLeftAlignedLine(leftMargin, wifiBaselineY, wifiLabel, WIFI_STATUS_FONT, wifiColor);
   drawRightAlignedPill(rightX, motorBaselineY, motorLabel, HEADER_FONT, COLOR_BRIGHT_BLUE, COLOR_NAVY);
 
   prevScreenId = screenId;
   prevMotorLabel = motorLabel;
+  prevWifiLabel = wifiLabel;
 }
 
 void drawScaleNameLegend(const String& label, const String& previousLabel) {
@@ -1812,7 +1859,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                     tft->setCursor((SCREEN_WIDTH - w) / 2, 200);
                     tft->print(macCopy); 
                   } 
-                } else if(menuNum == 1 && selectedIdx == Menu1Items::RESET) { 
+                } else if(menuNum == 1 && (selectedIdx == Menu1Items::RESET || selectedIdx == Menu1Items::RESETNETWORK)) { 
                   tft->getTextBounds(alt_label2[i], 0, 0, &x1, &y1, &w, &h);
                   int y = 100 + i * 50;
                   tft->setCursor((SCREEN_WIDTH - w) / 2, y);
