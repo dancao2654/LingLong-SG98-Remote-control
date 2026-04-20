@@ -48,6 +48,70 @@ To avoid disturbing the scale connection, BLE console advertising pauses while t
 
 The ring buffer stores the latest 1024 recorded events only. Fetching the dump does not clear the history; it is a rolling log.
 
+#### USB-C web console
+
+The firmware now also exposes a structured USB-C console API so a local browser page can render a real control UI instead of plain serial text.
+
+The browser app lives in:
+
+- `tools/web_console`
+
+Run it locally:
+
+```bash
+python3 -m http.server 8080 -d tools/web_console
+```
+
+Then open in Chrome or Edge:
+
+```text
+http://localhost:8080
+```
+
+What it gives you:
+
+- live status over USB-C
+- quick start/stop and drive-selection controls
+- set RPM / target weight controls
+- Menu 1 to Menu 4 rendered as a browser UI, including the JMC baud submenu
+
+Notes:
+
+- This path uses Web Serial over USB-C, so use Chrome or Edge on desktop.
+- Bluefy is still relevant for the BLE path, not the USB-C path.
+- The browser UI talks to `src/diag_console.cpp` through `api ...` commands.
+
+#### Onboard WiFi web console
+
+The board now also hosts its own phone-friendly web UI over the ESP32-S3 WiFi radio.
+
+How it works:
+
+- the board always starts its own access point:
+  - `SG98-XXXXXX`
+- connect your phone to that WiFi
+- open:
+  - `http://192.168.4.1/`
+
+What the onboard page gives you:
+
+- live grinding screen graphics
+- quick start/stop and drive controls
+- full Menu 1 to Menu 4 browser control
+- WiFi settings page to save home SSID/password
+
+Home-network mode:
+
+- the board keeps its own AP up
+- you can also save home WiFi credentials in the web UI
+- after that, the board will also join your LAN and show its home-network IP in the page
+
+USB-C serial boot log now prints the AP details too:
+
+```text
+[wifi] ap_ssid=SG98-XXXXXX ap_ip=192.168.4.1
+```
+
 #### BOM
 - ESP32 PCB board + 90 degree 2.54 pins
 - 1.69" round corner SPI color display + 2.54 female header

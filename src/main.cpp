@@ -10,6 +10,7 @@
 #include "display.h"
 #include "io.h"
 #include "comm.h"
+#include "wifi_ui.h"
 
 States state = IDLE;
 int8_t menu1Selected = EXITMENU;
@@ -35,7 +36,8 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 10
     {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, //11
     {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 12
-    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},
+    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 13
+    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 14
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {
@@ -213,6 +215,7 @@ void setup() {
     motor_init();
     Serial.println("motor_init");
     diag_console_init();
+    wifi_ui_init();
     vitals_init();
     lastActivity = millis();
 }
@@ -221,6 +224,7 @@ void loop() {
     doVitals();
     do_comm();
     diag_console_poll();
+    wifi_ui_poll();
     do_io();
     sleepTimeCheck();
     update_display();
