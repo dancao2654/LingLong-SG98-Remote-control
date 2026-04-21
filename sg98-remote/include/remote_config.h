@@ -5,6 +5,7 @@
 namespace remote_config {
 
 constexpr uint8_t kEspNowChannel = 1;
+constexpr uint16_t kWebSocketPort = 81;
 
 // Replace this with the SG98 controller board's STA MAC address.
 constexpr uint8_t kTargetMac[6] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
@@ -15,6 +16,10 @@ constexpr uint32_t kVisibleMenuPollMs = 1800;
 constexpr uint32_t kBackgroundMenuPollMs = 6000;
 constexpr uint32_t kBatteryPollMs = 5000;
 constexpr uint32_t kTargetCommitDelayMs = 220;
+constexpr uint32_t kTransportSwitchDelayMs = 350;
+constexpr uint32_t kTransportSearchWindowMs = 4500;
+constexpr uint32_t kMdnsQueryMs = 3500;
+constexpr uint32_t kWebSocketReconnectMs = 2000;
 constexpr uint32_t kToastHoldMs = 2200;
 constexpr uint32_t kDangerConfirmMs = 3000;
 constexpr uint32_t kLinkTimeoutMs = 2200;
