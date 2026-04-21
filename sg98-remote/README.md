@@ -19,6 +19,7 @@ environment.
 - `remote-universal-s3` = one universal remote image for these supported
   `ESP32-S3` handheld boards:
   - Elecrow CrowPanel 1.28 rotary/touch knob display
+  - Elecrow CrowPanel 2.1 rotary/touch knob display
   - Waveshare 1.75 AMOLED round touch display
 
 The remote app is shared across boards through a small board HAL:

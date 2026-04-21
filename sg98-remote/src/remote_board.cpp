@@ -46,6 +46,7 @@ const RemoteBoardDriver* g_activeDriver = nullptr;
 
 const RemoteBoardDriver* const kDrivers[] = {
     remote_board_crowpanel_driver(),
+    remote_board_crowpanel_rotary21_driver(),
     remote_board_waveshare_amoled175_driver(),
 };
 

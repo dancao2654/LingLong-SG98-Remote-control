@@ -10,6 +10,7 @@ class HardwareSerial;
 
 enum class RemoteBoardId : uint8_t {
     CrowPanelRotary,
+    CrowPanelRotary21,
     WaveshareAmoled175,
 };
 

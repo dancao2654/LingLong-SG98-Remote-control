@@ -19,4 +19,5 @@ struct RemoteBoardDriver {
 };
 
 const RemoteBoardDriver* remote_board_crowpanel_driver();
+const RemoteBoardDriver* remote_board_crowpanel_rotary21_driver();
 const RemoteBoardDriver* remote_board_waveshare_amoled175_driver();
