@@ -366,12 +366,14 @@ How it works:
 
 ### Sleep Control
 
-GPIOs used directly by sleep logic:
+Automatic idle timeout now keeps the controller fully awake and only turns off the LCD/backlight while the radio stays alive.
+
+GPIOs used directly by deep-sleep logic:
 
 - `4` as wake input
 - `15`, `16`, `21` held in a safe state through RTC GPIO hold
 
-When sleeping:
+When deep sleep is entered explicitly:
 
 - `RS485RE` is driven high
 - `RS485DE` is driven low

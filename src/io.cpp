@@ -105,9 +105,8 @@ void applyDriveSelection() {
     error = 0;
     errorCode = 0;
     commCounter = 0;
-    lastActivity = millis();
+    controller_note_activity();
     state = motorSelectReturnState;
-    disp_updateRequired = true;
 }
 
 bool isJmcBaudMenuItem(int selectedIdx) {
@@ -164,7 +163,7 @@ void do_io() {
     pollEncoderButton();
 
     if(state == IDLE) { 
-        ledAction(3);
+        controller_idle_sleep_active() ? ledAction(0) : ledAction(3);
         setRPM += encoder_change()*rpm_scalar;
 
         if(setRPM > Menu1[SETMAX].value) setRPM = Menu1[SETMAX].value;
@@ -205,7 +204,7 @@ void do_io() {
     }
 
     if(state == IDLE_GBW) { 
-        ledAction(3);
+        controller_idle_sleep_active() ? ledAction(0) : ledAction(3);
         setWeight += encoder_change() * 100;
         
         if(setWeight > default_max_weight) setWeight = default_max_weight;
@@ -552,8 +551,7 @@ bool pressedLong() {
     if(encButtonLongPressEvent) {
         encButtonLongPressEvent = false;
         encButtonPressEvent = false;
-        lastActivity = millis();
-        disp_updateRequired = true;
+        controller_note_activity();
         return true;
     }
 
@@ -570,8 +568,7 @@ int16_t encoder_change() {
     lastV = v;
 
     if(change != 0) { 
-        lastActivity = millis();
-        disp_updateRequired = true;
+        controller_note_activity();
     }
     return change;
 }
@@ -588,8 +585,7 @@ bool ENC_BUTTON_DOWN() {
     if(encButtonPressEvent) {
         encButtonPressEvent = false;
         encButtonLongPressLatched = true;
-        lastActivity = millis();
-        disp_updateRequired = true;
+        controller_note_activity();
         return true;
     }
     return false;
@@ -599,8 +595,7 @@ bool ENC_BUTTON() {
     if(encButtonShortReleaseEvent) {
         encButtonShortReleaseEvent = false;
         encButtonPressEvent = false;
-        lastActivity = millis();
-        disp_updateRequired = true;
+        controller_note_activity();
         return true;
     }
     return false;
@@ -609,8 +604,7 @@ bool ENC_BUTTON() {
 bool START_BUTTON() {
     start_button.read();
     if (start_button.wasPressed()) {
-        lastActivity = millis();
-        disp_updateRequired = true;
+        controller_note_activity();
         return true;
     }
     return false;

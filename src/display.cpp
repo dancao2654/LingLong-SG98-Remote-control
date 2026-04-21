@@ -42,6 +42,8 @@ int initializedScreenId = -1;
 bool dimmed = false;
 bool disp_updateRequired = true;
 unsigned long drawnErrorAt;
+bool displayDisabled = false;
+uint8_t appliedBrightness = 0;
 
 const char* getCommStatusText(SYSTEM_STATUS status);
 uint16_t getCommStatusColor(SYSTEM_STATUS status);
@@ -502,11 +504,12 @@ void display_init() {
   ledcSetup(1,4000,8);
   ledcAttachPin(DISP_BL, 1);
   ledcWrite(1, 0);
+  appliedBrightness = 0;
+  displayDisabled = false;
   update_display();
 }
 
 void setBrightness() { 
-  static uint8_t lastBrightness;
   uint8_t newBrightness;
   static int dimTime = 15; 
 
@@ -518,15 +521,16 @@ void setBrightness() {
       dimmed = false;
   }
 
-  if(lastBrightness != newBrightness) { 
+  if(appliedBrightness != newBrightness) { 
     ledcWrite(1, newBrightness);
-    lastBrightness = newBrightness;
+    appliedBrightness = newBrightness;
   }
 }
 
 void update_display() { 
   static unsigned long lastUpdate;
   if(newData == true) disp_updateRequired = true;
+  if(displayDisabled) return;
 
   if(disp_updateRequired != true) return; //This is mostly functional for testing.
   if(lastUpdate + 1000/DISP_REFRESH_RATE > millis()) return;
@@ -589,11 +593,35 @@ void update_display() {
 }
 
 void display_off() {
+    if(displayDisabled) {
+        return;
+    }
+
     if (tft) {
         tft->fillScreen(ST77XX_BLACK);
         tft->enableDisplay(false); // turn off display output (if supported)
     }
     ledcWrite(1,0);
+    appliedBrightness = 0;
+    displayDisabled = true;
+}
+
+void display_on() {
+    if(!displayDisabled) {
+        setBrightness();
+        disp_updateRequired = true;
+        return;
+    }
+
+    displayDisabled = false;
+    if (tft) {
+        tft->enableDisplay(true);
+        tft->fillScreen(ST77XX_BLACK);
+    }
+    initializedScreenId = -1;
+    appliedBrightness = 0;
+    setBrightness();
+    disp_updateRequired = true;
 }
 
 void display_show_motor_probe_splash(const char* motorLabel) {

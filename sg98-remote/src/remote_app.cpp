@@ -1,6 +1,7 @@
 #include "remote_app.h"
 
 #include <math.h>
+#include <string.h>
 
 #include <ESPmDNS.h>
 #include <WebSocketsClient.h>
@@ -32,6 +33,8 @@ constexpr uint16_t kColorText = 0xFFFF;
 
 constexpr uint16_t kTapMoveThreshold = 10;
 constexpr uint8_t kMaxVisibleRows = 6;
+constexpr uint32_t kWheelAnimationFrameMs = 33;
+constexpr float kWheelVisualRpmPerTurnPerSecond = 360.0f;
 
 enum class Screen : uint8_t {
     Home = 0,
@@ -139,6 +142,16 @@ struct TouchTracker {
     uint32_t startedAt = 0;
 };
 
+struct HomePalette {
+    uint16_t background = kColorBg;
+    uint16_t panel = kColorPanel;
+    uint16_t panelHi = kColorPanelHi;
+    uint16_t accent = kColorAccent;
+    uint16_t accent2 = kColorAccent2;
+    uint16_t muted = kColorMuted;
+    uint16_t modeFill = kColorAccent;
+};
+
 struct AppState {
     Screen screen = Screen::Home;
     uint8_t selection[5] = {};
@@ -176,12 +189,50 @@ struct AppState {
     uint8_t dangerSelection = 0;
     uint32_t lastUserActivityAt = 0;
     uint32_t lastBatteryPollAt = 0;
+    uint32_t homeWheelAnimatedAt = 0;
+    uint32_t homeWheelFrameAt = 0;
     RemoteBatteryStatus battery;
+    float homeWheelAngle = 0.0f;
     String wsHost;
     String wsEndpointLabel;
     String mdnsHostName;
     uint16_t wsPort = remote_config::kWebSocketPort;
     String toast = "Booting";
+};
+
+struct PersistedStatusFrame {
+    char state[24] = {};
+    char drive[16] = {};
+    char comm[20] = {};
+    char motor[20] = {};
+    char scale[32] = {};
+    int32_t error = 0;
+    int32_t setRpm = 0;
+    int32_t motorSetRpm = 0;
+    int32_t currentRpm = 0;
+    int32_t torquePercent = 0;
+    int32_t setWeightMg = 0;
+    int32_t currentWeightMg = 0;
+    int32_t currentMenu = 0;
+    bool enterMenu = false;
+    int32_t jmcBaud = 0;
+    int32_t preferredJmcBaud = 0;
+};
+
+struct SleepSnapshot {
+    uint32_t magic = 0;
+    uint16_t version = 0;
+    uint8_t screen = 0;
+    uint8_t selection[5] = {};
+    int32_t manualRpm = default_setRPM;
+    int32_t weightMg = default_setWeight;
+    int32_t menuValues[5][sg98_protocol::kMaxMenuValues] = {};
+    uint8_t menuSyncedMask = 0;
+    uint8_t transport = 0;
+    bool preferGbw = false;
+    bool radioModeKnown = false;
+    bool hasStatus = false;
+    PersistedStatusFrame status = {};
 };
 
 template <size_t N>
@@ -259,6 +310,15 @@ constexpr const char* kTabLabels[] = {"RUN", "MAIN", "PURGE", "GBW", "DRIVE"};
 AppState app;
 TouchTracker touchTracker;
 WebSocketsClient wsClient;
+RTC_DATA_ATTR SleepSnapshot g_sleepSnapshot;
+
+constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
+constexpr uint16_t kSleepSnapshotVersion = 1;
+
+template <size_t N>
+void copyStringToBuffer(const String& value, char (&dest)[N]) {
+    value.toCharArray(dest, N);
+}
 
 const char* transportName(LinkTransport transport) {
     switch(transport) {
@@ -271,6 +331,19 @@ const char* transportName(LinkTransport transport) {
 LinkTransport transportFromRadioMode(int32_t radioMode) {
     return radioMode == 0 ? LinkTransport::WebSocket : LinkTransport::EspNow;
 }
+
+LinkTransport sanitizeTransport(uint8_t raw) {
+    switch(static_cast<LinkTransport>(raw)) {
+        case LinkTransport::EspNow:
+        case LinkTransport::WebSocket:
+            return static_cast<LinkTransport>(raw);
+        case LinkTransport::None:
+        default:
+            return LinkTransport::None;
+    }
+}
+
+void setToast(const String& text, uint32_t durationMs);
 
 bool prefersWebSocket() {
     return (app.radioModeKnown && transportFromRadioMode(app.menuValues[1][RADIOMODE]) == LinkTransport::WebSocket) ||
@@ -301,6 +374,45 @@ int32_t clampValue(int32_t value, int32_t minValue, int32_t maxValue) {
     if(value < minValue) return minValue;
     if(value > maxValue) return maxValue;
     return value;
+}
+
+float clampUnit(float value) {
+    if(value < 0.0f) return 0.0f;
+    if(value > 1.0f) return 1.0f;
+    return value;
+}
+
+float smoothUnit(float value) {
+    const float clamped = clampUnit(value);
+    return clamped * clamped * (3.0f - (2.0f * clamped));
+}
+
+uint16_t packColor565(uint8_t red, uint8_t green, uint8_t blue) {
+    return static_cast<uint16_t>(((red & 0xF8) << 8) |
+                                 ((green & 0xFC) << 3) |
+                                 (blue >> 3));
+}
+
+uint8_t expand5To8(uint8_t value) {
+    return static_cast<uint8_t>((value << 3) | (value >> 2));
+}
+
+uint8_t expand6To8(uint8_t value) {
+    return static_cast<uint8_t>((value << 2) | (value >> 4));
+}
+
+uint16_t blendColor565(uint16_t from, uint16_t to, float amount) {
+    const float t = clampUnit(amount);
+    const uint8_t fromR = expand5To8(static_cast<uint8_t>((from >> 11) & 0x1F));
+    const uint8_t fromG = expand6To8(static_cast<uint8_t>((from >> 5) & 0x3F));
+    const uint8_t fromB = expand5To8(static_cast<uint8_t>(from & 0x1F));
+    const uint8_t toR = expand5To8(static_cast<uint8_t>((to >> 11) & 0x1F));
+    const uint8_t toG = expand6To8(static_cast<uint8_t>((to >> 5) & 0x3F));
+    const uint8_t toB = expand5To8(static_cast<uint8_t>(to & 0x1F));
+    const uint8_t mixedR = static_cast<uint8_t>(roundf(fromR + (toR - fromR) * t));
+    const uint8_t mixedG = static_cast<uint8_t>(roundf(fromG + (toG - fromG) * t));
+    const uint8_t mixedB = static_cast<uint8_t>(roundf(fromB + (toB - fromB) * t));
+    return packColor565(mixedR, mixedG, mixedB);
 }
 
 bool isLargeCanvas() {
@@ -381,6 +493,80 @@ bool isRunningState() {
            (app.status.state == "GRINDING" || app.status.state == "GRINDING_GBW" || app.status.state == "PURGING");
 }
 
+float manualRpmWarningLevel() {
+    if(isGbwState()) {
+        return 0.0f;
+    }
+
+    const int32_t minRpm = app.menuValues[1][SETMIN] > 0 ? app.menuValues[1][SETMIN] : default_minRPM;
+    int32_t maxRpm = app.menuValues[1][SETMAX] > minRpm ? app.menuValues[1][SETMAX] : default_maxRPM;
+    if(maxRpm <= minRpm) {
+        maxRpm = minRpm + rpm_scalar;
+    }
+
+    const int32_t targetRpm = clampValue(app.manualRpm, minRpm, maxRpm);
+    const float normalized = static_cast<float>(targetRpm - minRpm) / static_cast<float>(maxRpm - minRpm);
+    return smoothUnit(normalized);
+}
+
+uint16_t rpmWarningHeatColor(float warningLevel) {
+    const uint16_t lowColor = packColor565(66, 216, 128);
+    const uint16_t midColor = packColor565(255, 194, 74);
+    const uint16_t highColor = packColor565(255, 84, 52);
+    const float clamped = clampUnit(warningLevel);
+    if(clamped <= 0.58f) {
+        return blendColor565(lowColor, midColor, clamped / 0.58f);
+    }
+    return blendColor565(midColor, highColor, (clamped - 0.58f) / 0.42f);
+}
+
+HomePalette buildHomePalette() {
+    HomePalette palette = {};
+    if(isGbwState()) {
+        palette.modeFill = kColorWarn;
+        return palette;
+    }
+
+    const float warningLevel = manualRpmWarningLevel();
+    const uint16_t heat = rpmWarningHeatColor(warningLevel);
+    palette.background = blendColor565(kColorBg, heat, 0.18f + warningLevel * 0.18f);
+    palette.panel = blendColor565(kColorPanel, heat, 0.28f + warningLevel * 0.30f);
+    palette.panelHi = blendColor565(kColorPanelHi, heat, 0.22f + warningLevel * 0.28f);
+    palette.accent = blendColor565(kColorGood, heat, 0.82f);
+    palette.accent2 = blendColor565(kColorAccent2, heat, 0.72f);
+    palette.muted = blendColor565(kColorMuted, heat, 0.18f + warningLevel * 0.20f);
+    palette.modeFill = blendColor565(kColorGood, heat, 0.68f);
+    return palette;
+}
+
+int16_t homeWheelDisplayRpm() {
+    if(!app.hasStatus) {
+        return 0;
+    }
+    if(app.status.currentRpm != 0) {
+        return app.status.currentRpm;
+    }
+    if(isRunningState()) {
+        return app.status.setRpm;
+    }
+    return 0;
+}
+
+int8_t homeWheelSpinDirection() {
+    const int16_t rpm = homeWheelDisplayRpm();
+    if(rpm > 0) {
+        return 1;
+    }
+    if(rpm < 0) {
+        return -1;
+    }
+    return 0;
+}
+
+float homeWheelTurnsPerSecond() {
+    return fabsf(static_cast<float>(homeWheelDisplayRpm())) / kWheelVisualRpmPerTurnPerSecond;
+}
+
 String batteryPillLabel(const String& fallback) {
     const RemoteBatteryStatus& battery = app.battery;
     if(!battery.supported) {
@@ -449,6 +635,152 @@ uint8_t currentBacklightLevel() {
         return static_cast<uint8_t>(clampValue(configured, 1, 255));
     }
     return static_cast<uint8_t>(default_brightness);
+}
+
+void persistStatusFrame(PersistedStatusFrame* out, const sg98_protocol::StatusFrame& status) {
+    if(out == nullptr) {
+        return;
+    }
+
+    copyStringToBuffer(status.state, out->state);
+    copyStringToBuffer(status.drive, out->drive);
+    copyStringToBuffer(status.comm, out->comm);
+    copyStringToBuffer(status.motor, out->motor);
+    copyStringToBuffer(status.scale, out->scale);
+    out->error = status.error;
+    out->setRpm = status.setRpm;
+    out->motorSetRpm = status.motorSetRpm;
+    out->currentRpm = status.currentRpm;
+    out->torquePercent = status.torquePercent;
+    out->setWeightMg = status.setWeightMg;
+    out->currentWeightMg = status.currentWeightMg;
+    out->currentMenu = status.currentMenu;
+    out->enterMenu = status.enterMenu;
+    out->jmcBaud = status.jmcBaud;
+    out->preferredJmcBaud = status.preferredJmcBaud;
+}
+
+void restoreStatusFrame(const PersistedStatusFrame& in, sg98_protocol::StatusFrame* out) {
+    if(out == nullptr) {
+        return;
+    }
+
+    out->state = String(in.state);
+    out->drive = String(in.drive);
+    out->comm = String(in.comm);
+    out->motor = String(in.motor);
+    out->scale = String(in.scale);
+    out->error = in.error;
+    out->setRpm = in.setRpm;
+    out->motorSetRpm = in.motorSetRpm;
+    out->currentRpm = in.currentRpm;
+    out->torquePercent = in.torquePercent;
+    out->setWeightMg = in.setWeightMg;
+    out->currentWeightMg = in.currentWeightMg;
+    out->currentMenu = in.currentMenu;
+    out->enterMenu = in.enterMenu;
+    out->jmcBaud = in.jmcBaud;
+    out->preferredJmcBaud = in.preferredJmcBaud;
+}
+
+void saveSleepSnapshot() {
+    g_sleepSnapshot.magic = kSleepSnapshotMagic;
+    g_sleepSnapshot.version = kSleepSnapshotVersion;
+    g_sleepSnapshot.screen = static_cast<uint8_t>(app.screen);
+    memcpy(g_sleepSnapshot.selection, app.selection, sizeof(g_sleepSnapshot.selection));
+    g_sleepSnapshot.manualRpm = app.manualRpm;
+    g_sleepSnapshot.weightMg = app.weightMg;
+    memcpy(g_sleepSnapshot.menuValues, app.menuValues, sizeof(g_sleepSnapshot.menuValues));
+    g_sleepSnapshot.menuSyncedMask = 0;
+    for(uint8_t menu = 0; menu < 5; ++menu) {
+        if(app.menuSynced[menu]) {
+            g_sleepSnapshot.menuSyncedMask |= static_cast<uint8_t>(1u << menu);
+        }
+    }
+    const LinkTransport persistedTransport = app.currentTransport == LinkTransport::None ? initialTransport() : app.currentTransport;
+    g_sleepSnapshot.transport = static_cast<uint8_t>(persistedTransport);
+    g_sleepSnapshot.preferGbw = app.preferGbw;
+    g_sleepSnapshot.radioModeKnown = app.radioModeKnown;
+    g_sleepSnapshot.hasStatus = app.hasStatus;
+    if(app.hasStatus) {
+        persistStatusFrame(&g_sleepSnapshot.status, app.status);
+    } else {
+        g_sleepSnapshot.status = {};
+    }
+}
+
+bool restoreSleepSnapshot(LinkTransport* restoredTransport) {
+    if(g_sleepSnapshot.magic != kSleepSnapshotMagic ||
+       g_sleepSnapshot.version != kSleepSnapshotVersion ||
+       esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED) {
+        return false;
+    }
+
+    const uint8_t screenIndex = g_sleepSnapshot.screen;
+    if(screenIndex <= static_cast<uint8_t>(Screen::Drive)) {
+        app.screen = static_cast<Screen>(screenIndex);
+    }
+    memcpy(app.selection, g_sleepSnapshot.selection, sizeof(app.selection));
+    app.manualRpm = g_sleepSnapshot.manualRpm;
+    app.weightMg = g_sleepSnapshot.weightMg;
+    memcpy(app.menuValues, g_sleepSnapshot.menuValues, sizeof(app.menuValues));
+    for(uint8_t menu = 0; menu < 5; ++menu) {
+        app.menuSynced[menu] = (g_sleepSnapshot.menuSyncedMask & static_cast<uint8_t>(1u << menu)) != 0;
+    }
+    app.preferGbw = g_sleepSnapshot.preferGbw;
+    app.radioModeKnown = g_sleepSnapshot.radioModeKnown;
+    app.hasStatus = g_sleepSnapshot.hasStatus;
+    if(app.hasStatus) {
+        restoreStatusFrame(g_sleepSnapshot.status, &app.status);
+        app.lastStatusAt = millis();
+    }
+    if(restoredTransport != nullptr) {
+        *restoredTransport = sanitizeTransport(g_sleepSnapshot.transport);
+    }
+    setToast("Awake", remote_config::kWakeToastMs);
+    app.redraw = true;
+    app.lastUserActivityAt = millis();
+    return true;
+}
+
+bool addDeepSleepWakePin(uint64_t* mask, int8_t gpioNum, RemoteWakeSource source) {
+    if(mask == nullptr || gpioNum < 0 || !remote_board_wake_supported(source)) {
+        return false;
+    }
+
+    const gpio_num_t gpio = static_cast<gpio_num_t>(gpioNum);
+    if(!esp_sleep_is_valid_wakeup_gpio(gpio)) {
+        return false;
+    }
+
+    *mask |= uint64_t{1} << static_cast<unsigned>(gpioNum);
+    return true;
+}
+
+uint64_t deepSleepWakeMask() {
+    const RemoteBoardPins& pins = remote_board_pins();
+    uint64_t mask = 0;
+    addDeepSleepWakePin(&mask, pins.touchInt, RemoteWakeSource::Touch);
+    addDeepSleepWakePin(&mask, pins.primaryButton, RemoteWakeSource::PrimaryButton);
+    addDeepSleepWakePin(&mask, pins.encoderSwitch, RemoteWakeSource::EncoderSwitch);
+    return mask;
+}
+
+bool idleDeepSleepSupported() {
+    return remote_board_support_present(remote_board_feature_map().power.deepSleep) &&
+           deepSleepWakeMask() != 0;
+}
+
+uint32_t currentStatusPollIntervalMs() {
+    if(isRunningState()) {
+        return remote_config::kStatusPollRunningMs;
+    }
+
+    if(app.targetDirty || (millis() - app.lastUserActivityAt) < remote_config::kStatusPollBoostMs) {
+        return remote_config::kStatusPollInteractiveMs;
+    }
+
+    return remote_config::kStatusPollIdleMs;
 }
 
 void markUserActivity() {
@@ -745,6 +1077,38 @@ float normalizeAngle(float angle) {
     return angle;
 }
 
+void updateHomeWheelAnimation() {
+    const uint32_t now = millis();
+    if(app.homeWheelAnimatedAt == 0) {
+        app.homeWheelAnimatedAt = now;
+    }
+
+    if(app.screen != Screen::Home || !isRunningState()) {
+        app.homeWheelAnimatedAt = now;
+        app.homeWheelFrameAt = 0;
+        return;
+    }
+
+    if(app.homeWheelFrameAt != 0 && (now - app.homeWheelFrameAt) < kWheelAnimationFrameMs) {
+        return;
+    }
+
+    const uint32_t elapsedMs = now - app.homeWheelAnimatedAt;
+    app.homeWheelAnimatedAt = now;
+    app.homeWheelFrameAt = now;
+
+    const int8_t direction = homeWheelSpinDirection();
+    const float turnsPerSecond = homeWheelTurnsPerSecond();
+    if(direction == 0 || turnsPerSecond <= 0.0f) {
+        return;
+    }
+
+    const float deltaTurns = turnsPerSecond * (static_cast<float>(elapsedMs) / 1000.0f);
+    app.homeWheelAngle = normalizeAngle(app.homeWheelAngle +
+                                        (static_cast<float>(direction) * deltaTurns * static_cast<float>(2.0 * PI)));
+    app.redraw = true;
+}
+
 void drawPill(RemoteCanvas& canvas,
               const Rect& rect,
               const String& text,
@@ -794,6 +1158,87 @@ void drawDialTicks(RemoteCanvas& canvas,
     }
 }
 
+void drawRotorBlade(RemoteCanvas& canvas,
+                    int16_t centerX,
+                    int16_t centerY,
+                    int16_t innerRadius,
+                    int16_t outerRadius,
+                    float angle,
+                    uint16_t color) {
+    const float px = -sinf(angle);
+    const float py = cosf(angle);
+    const int16_t x0 = static_cast<int16_t>(centerX + cosf(angle) * innerRadius);
+    const int16_t y0 = static_cast<int16_t>(centerY + sinf(angle) * innerRadius);
+    const int16_t x1 = static_cast<int16_t>(centerX + cosf(angle) * outerRadius);
+    const int16_t y1 = static_cast<int16_t>(centerY + sinf(angle) * outerRadius);
+    for(int8_t offset = -1; offset <= 1; ++offset) {
+        const int16_t ox = static_cast<int16_t>(roundf(px * static_cast<float>(offset)));
+        const int16_t oy = static_cast<int16_t>(roundf(py * static_cast<float>(offset)));
+        canvas.drawLine(x0 + ox, y0 + oy, x1 + ox, y1 + oy, color);
+    }
+}
+
+void drawWheelMarker(RemoteCanvas& canvas,
+                     int16_t centerX,
+                     int16_t centerY,
+                     int16_t radius,
+                     float angle,
+                     int16_t markerRadius,
+                     uint16_t color) {
+    const int16_t x = static_cast<int16_t>(centerX + cosf(angle) * radius);
+    const int16_t y = static_cast<int16_t>(centerY + sinf(angle) * radius);
+    canvas.fillCircle(x, y, markerRadius, color);
+}
+
+void drawHomeWheel(RemoteCanvas& canvas, const Layout& layout) {
+    const HomePalette palette = buildHomePalette();
+    const int16_t bladeInnerRadius = static_cast<int16_t>(layout.homeDialInnerRadius + (isLargeCanvas() ? 8 : 6));
+    const int16_t bladeOuterRadius = static_cast<int16_t>(layout.homeDialOuterRadius - (isLargeCanvas() ? 10 : 8));
+    const int16_t markerRadius = static_cast<int16_t>(bladeOuterRadius - (isLargeCanvas() ? 2 : 1));
+    const uint16_t leadColor = palette.accent2;
+    const float phase = app.homeWheelAngle;
+    const float speed = homeWheelTurnsPerSecond();
+    const int8_t direction = homeWheelSpinDirection();
+    const float offsets[] = {0.0f, 1.11f, 2.47f, 3.74f, 5.18f};
+    const int8_t bladeTrim[] = {0, -7, -2, -9, -4};
+    const uint16_t bladeColors[] = {leadColor, palette.accent, palette.panelHi, palette.muted, palette.panelHi};
+
+    for(size_t i = 0; i < (sizeof(offsets) / sizeof(offsets[0])); ++i) {
+        drawRotorBlade(canvas,
+                       layout.homeDialCx,
+                       layout.homeDialCy,
+                       bladeInnerRadius,
+                       static_cast<int16_t>(bladeOuterRadius + bladeTrim[i]),
+                       phase + offsets[i],
+                       bladeColors[i]);
+    }
+
+    if(direction != 0 && speed > 0.0f) {
+        const float trailStep = 0.24f + min(speed * 0.025f, 0.22f);
+        drawWheelMarker(canvas,
+                        layout.homeDialCx,
+                        layout.homeDialCy,
+                        markerRadius,
+                        phase,
+                        isLargeCanvas() ? 5 : 4,
+                        leadColor);
+        drawWheelMarker(canvas,
+                        layout.homeDialCx,
+                        layout.homeDialCy,
+                        markerRadius,
+                        phase - (static_cast<float>(direction) * trailStep),
+                        isLargeCanvas() ? 4 : 3,
+                        kColorAccent);
+        drawWheelMarker(canvas,
+                        layout.homeDialCx,
+                        layout.homeDialCy,
+                        markerRadius,
+                        phase - (static_cast<float>(direction) * trailStep * 2.0f),
+                        2,
+                        kColorPanelHi);
+    }
+}
+
 void drawTabs(RemoteCanvas& canvas, const Layout& layout) {
     for(uint8_t i = 0; i < 5; ++i) {
         const bool active = static_cast<uint8_t>(app.screen) == i;
@@ -834,7 +1279,8 @@ void drawFooter(RemoteCanvas& canvas, const Layout& layout) {
 }
 
 void drawHome(RemoteCanvas& canvas, const Layout& layout) {
-    canvas.fillScreen(kColorBg);
+    const HomePalette palette = buildHomePalette();
+    canvas.fillScreen(palette.background);
 
     drawPill(canvas,
              layout.topLeft,
@@ -844,18 +1290,18 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
     drawPill(canvas,
              layout.topCenter,
              app.hasStatus ? app.status.drive : "?",
-             kColorPanel,
+             palette.panel,
              kColorText);
     drawPill(canvas,
              layout.topRight,
              batteryPillLabel(app.hasStatus ? app.status.comm : "NO DATA"),
-             batteryPillFill(kColorPanel),
+             batteryPillFill(palette.panel),
              batteryPillTextColor(kColorText));
 
     drawPill(canvas,
              layout.modeBadge,
              isGbwState() ? "GRIND BY WEIGHT" : "MANUAL RPM",
-             isGbwState() ? kColorWarn : kColorAccent,
+             palette.modeFill,
              kColorBlack);
 
     drawDialTicks(canvas,
@@ -864,36 +1310,39 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                   static_cast<int16_t>(layout.homeDialOuterRadius + 6),
                   static_cast<int16_t>(layout.homeDialOuterRadius + 14),
                   isLargeCanvas() ? 24 : 18,
-                  kColorPanelHi);
-    canvas.fillCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius, kColorPanel);
-    canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius + 2, kColorAccent);
-    canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius + 6, kColorPanelHi);
-    canvas.fillCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialInnerRadius, kColorBg);
-    canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialInnerRadius + 1, kColorPanelHi);
+                  palette.panelHi);
+    canvas.fillCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius, palette.panel);
+    canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius + 2, palette.accent);
+    canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius + 6, palette.panelHi);
+    if(isRunningState() && homeWheelDisplayRpm() != 0) {
+        drawHomeWheel(canvas, layout);
+    }
+    canvas.fillCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialInnerRadius, palette.background);
+    canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialInnerRadius + 1, palette.panelHi);
 
     canvas.drawCenteredText(isGbwState() ? weightLabel(app.weightMg) : String(app.manualRpm),
                             layout.homeDialCx,
                             static_cast<int16_t>(layout.homeDialCy - (isLargeCanvas() ? 22 : 12)),
                             heroTextStyle(),
                             kColorText,
-                            kColorBg);
+                            palette.background);
     canvas.drawCenteredText(isGbwState() ? "Target dose" : "Set RPM",
                             layout.homeDialCx,
                             static_cast<int16_t>(layout.homeDialCy + (isLargeCanvas() ? 28 : 18)),
                             bodyTextStyle(),
-                            kColorMuted,
-                            kColorBg);
+                            palette.muted,
+                            palette.background);
     canvas.drawCenteredText("Drag the ring to adjust",
                             layout.homeDialCx,
                             static_cast<int16_t>(layout.homeDialCy + (isLargeCanvas() ? 58 : 34)),
                             tinyTextStyle(),
-                            kColorMuted,
-                            kColorBg);
+                            palette.muted,
+                            palette.background);
 
     drawButton(canvas,
                layout.homeModeButton,
                isGbwState() ? "MANUAL" : "GBW",
-               stateAllowsModeToggle() ? kColorAccent : kColorPanel,
+               stateAllowsModeToggle() ? palette.accent : palette.panel,
                stateAllowsModeToggle() ? kColorBlack : kColorMuted);
     drawButton(canvas,
                layout.homeActionButton,
@@ -915,19 +1364,19 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                             static_cast<int16_t>(layout.homeActionButton.y + layout.homeActionButton.h + layout.gap + 10),
                             bodyTextStyle(),
                             kColorText,
-                            kColorBg);
+                            palette.background);
     canvas.drawCenteredText(telemetryLine,
                             layout.width / 2,
                             static_cast<int16_t>(layout.homeActionButton.y + layout.homeActionButton.h + layout.gap + (isLargeCanvas() ? 38 : 22)),
                             tinyTextStyle(),
-                            kColorMuted,
-                            kColorBg);
+                            palette.muted,
+                            palette.background);
     canvas.drawCenteredText(detailLine,
                             layout.width / 2,
                             static_cast<int16_t>(layout.homeActionButton.y + layout.homeActionButton.h + layout.gap + (isLargeCanvas() ? 58 : 36)),
                             tinyTextStyle(),
-                            kColorMuted,
-                            kColorBg);
+                            palette.muted,
+                            palette.background);
 
     drawTabs(canvas, layout);
 }
@@ -1540,7 +1989,7 @@ void manageTransport() {
 }
 
 void syncPolling() {
-    if(millis() - app.lastStatusPollAt >= remote_config::kStatusPollMs) {
+    if(millis() - app.lastStatusPollAt >= currentStatusPollIntervalMs()) {
         requestStatus();
         app.lastStatusPollAt = millis();
     }
@@ -1763,12 +2212,30 @@ bool idleSleepAllowed() {
     return (millis() - app.lastUserActivityAt) >= remote_config::kIdleSleepAfterMs;
 }
 
-void enterIdleSleepIfNeeded() {
-    if(!idleSleepAllowed()) {
-        return;
+void prepareForIdleSleep() {
+    remote_board_set_backlight(0);
+    remote_board_apply_indicator({});
+    stopWebSocketSession();
+    if(remote_wifi_is_active()) {
+        remote_wifi_stop();
     }
+    stopEspNowSession();
+    app.currentTransport = LinkTransport::None;
+}
 
-    const LinkTransport resumeTransport = app.currentTransport == LinkTransport::None ? initialTransport() : app.currentTransport;
+void resumeAfterIdleLightSleep(LinkTransport resumeTransport) {
+    remote_board_set_backlight(currentBacklightLevel());
+    switchTransportNow(resumeTransport);
+    requestStatus();
+    requestVisibleMenuIfNeeded(true);
+    app.lastStatusPollAt = millis();
+    app.lastBackgroundMenuPollAt = millis();
+    refreshBatteryStatus(true);
+    markUserActivity();
+    setToast("Awake", remote_config::kWakeToastMs);
+}
+
+void enterIdleLightSleep(LinkTransport resumeTransport) {
     const RemoteBoardPins& pins = remote_board_pins();
     bool wakeConfigured = false;
     wakeConfigured = configureWakePin(pins.touchInt) || wakeConfigured;
@@ -1778,14 +2245,7 @@ void enterIdleSleepIfNeeded() {
         return;
     }
 
-    remote_board_set_backlight(0);
-    remote_board_apply_indicator({});
-    stopWebSocketSession();
-    if(remote_wifi_is_active()) {
-        remote_wifi_stop();
-    }
-    stopEspNowSession();
-    app.currentTransport = LinkTransport::None;
+    prepareForIdleSleep();
 
     esp_sleep_enable_gpio_wakeup();
     Serial.flush();
@@ -1796,15 +2256,52 @@ void enterIdleSleepIfNeeded() {
     clearWakePin(pins.primaryButton);
     clearWakePin(pins.encoderSwitch);
 
-    remote_board_set_backlight(currentBacklightLevel());
-    switchTransportNow(resumeTransport);
-    requestStatus();
-    requestVisibleMenuIfNeeded(true);
-    app.lastStatusPollAt = millis();
-    app.lastBackgroundMenuPollAt = millis();
-    refreshBatteryStatus(true);
-    markUserActivity();
-    setToast("Awake", remote_config::kWakeToastMs);
+    resumeAfterIdleLightSleep(resumeTransport);
+}
+
+bool enterIdleDeepSleep(uint64_t wakeMask) {
+    if(wakeMask == 0) {
+        return false;
+    }
+
+    const RemoteBoardPins& pins = remote_board_pins();
+    if(pins.touchInt >= 0 &&
+       (wakeMask & (uint64_t{1} << static_cast<unsigned>(pins.touchInt))) != 0) {
+        pinMode(pins.touchInt, INPUT_PULLUP);
+    }
+    if(pins.primaryButton >= 0 &&
+       (wakeMask & (uint64_t{1} << static_cast<unsigned>(pins.primaryButton))) != 0) {
+        pinMode(pins.primaryButton, INPUT_PULLUP);
+    }
+    if(pins.encoderSwitch >= 0 &&
+       (wakeMask & (uint64_t{1} << static_cast<unsigned>(pins.encoderSwitch))) != 0) {
+        pinMode(pins.encoderSwitch, INPUT_PULLUP);
+    }
+
+    esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
+    if(esp_sleep_enable_ext1_wakeup(wakeMask, ESP_EXT1_WAKEUP_ANY_LOW) != ESP_OK) {
+        return false;
+    }
+
+    saveSleepSnapshot();
+    prepareForIdleSleep();
+    Serial.flush();
+    esp_deep_sleep_start();
+    return true;
+}
+
+void enterIdleSleepIfNeeded() {
+    if(!idleSleepAllowed()) {
+        return;
+    }
+
+    const LinkTransport resumeTransport = app.currentTransport == LinkTransport::None ? initialTransport() : app.currentTransport;
+    const uint64_t wakeMask = idleDeepSleepSupported() ? deepSleepWakeMask() : 0;
+    if(wakeMask != 0 && enterIdleDeepSleep(wakeMask)) {
+        return;
+    }
+
+    enterIdleLightSleep(resumeTransport);
 }
 
 void handlePrimaryLongPress() {
@@ -2042,9 +2539,11 @@ void remote_app_setup() {
     app.lastUserActivityAt = millis();
     app.currentTransport = LinkTransport::None;
     app.lastTransportSwitchAt = millis();
+    LinkTransport startupTransport = initialTransport();
+    restoreSleepSnapshot(&startupTransport);
     refreshBatteryStatus(true);
 
-    switchTransportNow(initialTransport());
+    switchTransportNow(startupTransport);
     requestStatus();
     requestMenu(1);
     requestMenu(2);
@@ -2076,6 +2575,7 @@ void remote_app_loop() {
     handleSendCompletion();
     updateSyncFromStatusFallback();
     remote_board_apply_indicator(currentIndicator());
+    updateHomeWheelAnimation();
     enterIdleSleepIfNeeded();
 
     if(app.redraw) {
