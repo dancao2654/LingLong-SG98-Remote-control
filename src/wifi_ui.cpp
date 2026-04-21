@@ -18,6 +18,8 @@ bool setupDone = false;
 String staSsid;
 String staPassword;
 unsigned long lastStaAttemptAt = 0;
+bool wifiUiRoutesConfigured = false;
+bool wifiUiActive = false;
 
 constexpr uint32_t STA_RETRY_MS = 15000;
 constexpr uint16_t DNS_PORT = 53;
@@ -865,7 +867,7 @@ void beginStaConnect(bool forceRetry = false) {
 }
 
 void stopSta() {
-    WiFi.disconnect(true, true);
+    WiFi.disconnect(false, false);
 }
 
 String wifiJson() {
@@ -1107,6 +1109,10 @@ void handleWifi() {
 }
 
 void configureRoutes() {
+    if(wifiUiRoutesConfigured) {
+        return;
+    }
+
     server.on("/", HTTP_GET, servePortalPage);
     server.on("/hotspot-detect.html", HTTP_GET, serveCaptiveAwarePage);
     server.on("/library/test/success.html", HTTP_GET, serveCaptiveAwarePage);
@@ -1132,7 +1138,7 @@ void configureRoutes() {
         }
         servePortalPage();
     });
-    server.begin();
+    wifiUiRoutesConfigured = true;
 }
 }
 
@@ -1143,23 +1149,64 @@ void wifi_ui_init() {
     apSsid = String("SG98-") + suffix;
 
     loadStaConfig();
-
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.setAutoReconnect(true);
-    WiFi.softAP(apSsid.c_str());
-    dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
-    beginStaConnect(true);
-    startWifiScan(true);
     configureRoutes();
-    Serial.printf("[wifi] ap_ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
+
     if(staEnabled && !staSsid.isEmpty()) {
-        Serial.printf("[wifi] sta_saved=%s status=%s\n", staSsid.c_str(), wifiStatusText().c_str());
+        Serial.printf("[wifi] sta_saved=%s\n", staSsid.c_str());
     } else {
         Serial.println("[wifi] sta_saved=<none>");
     }
 }
 
+bool wifi_ui_start() {
+    if(wifiUiActive) {
+        return true;
+    }
+
+    configureRoutes();
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setAutoReconnect(true);
+    // BLE is always initialized for the scale/console path, so WiFi must keep
+    // modem sleep enabled for ESP32-S3 BT/WiFi coexistence.
+    WiFi.setSleep(true);
+    WiFi.softAP(apSsid.c_str());
+    dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+    beginStaConnect(true);
+    startWifiScan(true);
+    server.begin();
+    wifiUiActive = true;
+
+    Serial.printf("[wifi] ap_ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
+    Serial.println("[wifi] modem_sleep=on for BLE coexistence");
+    if(staEnabled && !staSsid.isEmpty()) {
+        Serial.printf("[wifi] sta_saved=%s status=%s\n", staSsid.c_str(), wifiStatusText().c_str());
+    } else {
+        Serial.println("[wifi] sta_saved=<none>");
+    }
+
+    return true;
+}
+
+void wifi_ui_stop() {
+    if(!wifiUiActive) {
+        return;
+    }
+
+    dnsServer.stop();
+    server.stop();
+    WiFi.scanDelete();
+    WiFi.softAPdisconnect(false);
+    stopSta();
+    WiFi.mode(WIFI_MODE_NULL);
+    lastStaAttemptAt = 0;
+    wifiUiActive = false;
+}
+
 void wifi_ui_poll() {
+    if(!wifiUiActive) {
+        return;
+    }
+
     dnsServer.processNextRequest();
     server.handleClient();
     if(staEnabled && WiFi.status() != WL_CONNECTED) {
@@ -1167,7 +1214,14 @@ void wifi_ui_poll() {
     }
 }
 
+bool wifi_ui_is_active() {
+    return wifiUiActive;
+}
+
 bool wifi_ui_sta_connected() {
+    if(!wifiUiActive) {
+        return false;
+    }
     return staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
 }
 
@@ -1176,6 +1230,9 @@ String wifi_ui_sta_ip() {
 }
 
 String wifi_ui_lcd_status() {
+    if(!wifiUiActive) {
+        return "Web off";
+    }
     return wifi_ui_sta_connected() ? staIpString() : "AP only";
 }
 
@@ -1187,6 +1244,8 @@ void wifi_ui_reset_network_settings() {
     saveStaConfig();
     stopSta();
     lastStaAttemptAt = 0;
-    startWifiScan(true);
+    if(wifiUiActive) {
+        startWifiScan(true);
+    }
     Serial.println("[wifi] network settings reset to onboarding defaults");
 }

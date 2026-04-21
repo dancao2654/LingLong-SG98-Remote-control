@@ -1,0 +1,264 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "PlatformIO: Build SG98 Controller Firmware",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "run",
+        "-e",
+        "adafruit_feather_esp32s3"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PlatformIO: Upload SG98 Controller Firmware",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "run",
+        "-e",
+        "adafruit_feather_esp32s3",
+        "-t",
+        "upload"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PlatformIO: Build SG98 Universal Remote Firmware",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "run",
+        "-e",
+        "remote-universal-s3"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PlatformIO: Upload SG98 Universal Remote Firmware",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "run",
+        "-e",
+        "remote-universal-s3",
+        "-t",
+        "upload"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PlatformIO: Update Packages",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "run",
+        "-e",
+        "adafruit_feather_esp32s3",
+        "-t",
+        "update_packages"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PlatformIO: Update, Clean, Build",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "run",
+        "-e",
+        "adafruit_feather_esp32s3",
+        "-t",
+        "update_clean_build"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PlatformIO: Bundle Windows Updater",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "run",
+        "-e",
+        "adafruit_feather_esp32s3",
+        "-t",
+        "bundle_windows_updater"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PlatformIO: Bundle macOS Updater",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "run",
+        "-e",
+        "adafruit_feather_esp32s3",
+        "-t",
+        "bundle_macos_updater"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "group": "build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    }
+  ]
+}

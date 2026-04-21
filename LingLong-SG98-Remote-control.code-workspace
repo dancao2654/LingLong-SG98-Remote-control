@@ -1,0 +1,18 @@
+{
+  "folders": [
+    {
+      "name": "Linglong-SG98",
+      "path": "."
+    },
+    {
+      "name": "Linglong-SG98-Remote",
+      "path": "sg98-remote"
+    }
+  ],
+  "settings": {
+    "platformio-ide.autoPreloadEnvTasks": true,
+    "files.exclude": {
+      "sg98-remote": true
+    }
+  }
+}

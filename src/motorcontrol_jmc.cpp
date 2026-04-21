@@ -800,6 +800,9 @@ void motor_jmc_sleep_backend() {
   #ifdef DEBUG_MOTORCONTROL
   Serial.print("Motor sleep..");
   #endif
+    // Match the previous sleep flow first, then drop to the lowest-power
+    // CiA-402 control word state documented by the JMC manual.
+    motor_jmc_off_backend();
     for(int i = 0; i < 10; i++) {
       delay(200);
       if(writeConfirm(0x6040, 0)) { //Set control word to 0 = lowest power state possible.

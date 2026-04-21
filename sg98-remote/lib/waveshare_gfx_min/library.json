@@ -1,0 +1,7 @@
+{
+  "name": "waveshare_gfx_min",
+  "version": "1.0.0",
+  "build": {
+    "includeDir": "src"
+  }
+}

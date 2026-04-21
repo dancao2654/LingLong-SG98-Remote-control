@@ -1,0 +1,595 @@
+#include "remote_board_driver.h"
+
+#include <Adafruit_NeoPixel.h>
+#include <ESP32Encoder.h>
+#include <LovyanGFX.hpp>
+#include <Wire.h>
+
+namespace {
+
+constexpr uint8_t kDisplayWidth = 240;
+constexpr uint8_t kDisplayHeight = 240;
+
+constexpr uint8_t kLedRingCount = 5;
+
+constexpr uint32_t kButtonDebounceMs = 18;
+constexpr uint32_t kLongPressMs = 750;
+constexpr uint16_t kColorBlack = 0x0000;
+
+const RemoteBoardPins kBoardPins = [] {
+    RemoteBoardPins pins = {};
+    pins.touchSda = 6;
+    pins.touchScl = 7;
+    pins.touchInt = 5;
+    pins.touchReset = 13;
+    pins.displaySclk = 10;
+    pins.displayMosi = 11;
+    pins.displayDc = 3;
+    pins.displayCs = 9;
+    pins.displayReset = 14;
+    pins.backlight = 46;
+    pins.powerEnable = 40;
+    pins.encoderA = 45;
+    pins.encoderB = 42;
+    pins.encoderSwitch = 41;
+    pins.primaryButton = 41;
+    pins.indicatorData = 48;
+    pins.expansionI2cSda = 38;
+    pins.expansionI2cScl = 39;
+    pins.expansionGpio0 = 4;
+    pins.expansionGpio1 = 12;
+    return pins;
+}();
+
+class CrowPanelDisplay : public lgfx::LGFX_Device {
+  public:
+    CrowPanelDisplay() {
+        {
+            auto cfg = bus_.config();
+            cfg.spi_host = SPI2_HOST;
+            cfg.spi_mode = 0;
+            cfg.freq_write = 80000000;
+            cfg.freq_read = 20000000;
+            cfg.spi_3wire = true;
+            cfg.use_lock = true;
+            cfg.dma_channel = SPI_DMA_CH_AUTO;
+            cfg.pin_sclk = kBoardPins.displaySclk;
+            cfg.pin_mosi = kBoardPins.displayMosi;
+            cfg.pin_miso = kBoardPins.displayMiso;
+            cfg.pin_dc = kBoardPins.displayDc;
+            bus_.config(cfg);
+            panel_.setBus(&bus_);
+        }
+        {
+            auto cfg = panel_.config();
+            cfg.pin_cs = kBoardPins.displayCs;
+            cfg.pin_rst = kBoardPins.displayReset;
+            cfg.pin_busy = -1;
+            cfg.memory_width = kDisplayWidth;
+            cfg.memory_height = kDisplayHeight;
+            cfg.panel_width = kDisplayWidth;
+            cfg.panel_height = kDisplayHeight;
+            cfg.offset_x = 0;
+            cfg.offset_y = 0;
+            cfg.offset_rotation = 0;
+            cfg.dummy_read_pixel = 8;
+            cfg.dummy_read_bits = 1;
+            cfg.readable = false;
+            cfg.invert = true;
+            cfg.rgb_order = false;
+            cfg.dlen_16bit = false;
+            cfg.bus_shared = false;
+            panel_.config(cfg);
+        }
+        setPanel(&panel_);
+    }
+
+  private:
+    lgfx::Panel_GC9A01 panel_;
+    lgfx::Bus_SPI bus_;
+};
+
+class Cst816Touch {
+  public:
+    bool probe() {
+        resetController();
+        Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, 400000U);
+        return pingAddress();
+    }
+
+    bool begin() {
+        pinMode(kBoardPins.touchInt, INPUT_PULLUP);
+        resetController();
+        Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, 400000U);
+        return pingAddress();
+    }
+
+    bool readPoint(uint16_t* x, uint16_t* y) {
+        uint8_t data[6] = {};
+        if(!readRegisters(0x01, data, sizeof(data))) {
+            return false;
+        }
+
+        const uint8_t touchPoints = data[1] & 0x0F;
+        if(touchPoints == 0) {
+            return false;
+        }
+
+        const uint16_t rawX = static_cast<uint16_t>(((data[2] & 0x0F) << 8) | data[3]);
+        const uint16_t rawY = static_cast<uint16_t>(((data[4] & 0x0F) << 8) | data[5]);
+        if(rawX >= kDisplayWidth || rawY >= kDisplayHeight) {
+            return false;
+        }
+
+        if(x != nullptr) *x = rawX;
+        if(y != nullptr) *y = rawY;
+        return true;
+    }
+
+  private:
+    static constexpr uint8_t kAddress = 0x15;
+
+    void resetController() {
+        pinMode(kBoardPins.touchReset, OUTPUT);
+        digitalWrite(kBoardPins.touchReset, LOW);
+        delay(5);
+        digitalWrite(kBoardPins.touchReset, HIGH);
+        delay(50);
+    }
+
+    bool pingAddress() {
+        Wire.beginTransmission(kAddress);
+        return Wire.endTransmission() == 0;
+    }
+
+    bool readRegisters(uint8_t reg, uint8_t* data, size_t len) {
+        Wire.beginTransmission(kAddress);
+        Wire.write(reg);
+        if(Wire.endTransmission(false) != 0) {
+            return false;
+        }
+
+        const size_t received = Wire.requestFrom(static_cast<int>(kAddress), static_cast<int>(len));
+        if(received != len) {
+            while(Wire.available()) {
+                Wire.read();
+            }
+            return false;
+        }
+
+        for(size_t i = 0; i < len; ++i) {
+            data[i] = static_cast<uint8_t>(Wire.read());
+        }
+        return true;
+    }
+};
+
+struct ButtonState {
+    bool lastRaw = true;
+    bool stablePressed = false;
+    bool releaseEvent = false;
+    bool longEvent = false;
+    bool longLatched = false;
+    uint32_t debounceStartedAt = 0;
+    uint32_t stableChangedAt = 0;
+    bool idleLevel = true;
+};
+
+class CrowPanelCanvas : public RemoteCanvas {
+  public:
+    explicit CrowPanelCanvas(CrowPanelDisplay* display) : display_(display) {}
+
+    uint16_t width() const override {
+        return display_->width();
+    }
+
+    uint16_t height() const override {
+        return display_->height();
+    }
+
+    void fillScreen(uint16_t color) override {
+        display_->fillScreen(color);
+    }
+
+    void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
+        display_->fillRect(x, y, w, h, color);
+    }
+
+    void drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
+        display_->drawRect(x, y, w, h, color);
+    }
+
+    void fillRoundRect(int16_t x,
+                       int16_t y,
+                       int16_t w,
+                       int16_t h,
+                       int16_t radius,
+                       uint16_t color) override {
+        display_->fillRoundRect(x, y, w, h, radius, color);
+    }
+
+    void drawRoundRect(int16_t x,
+                       int16_t y,
+                       int16_t w,
+                       int16_t h,
+                       int16_t radius,
+                       uint16_t color) override {
+        display_->drawRoundRect(x, y, w, h, radius, color);
+    }
+
+    void fillCircle(int16_t x, int16_t y, int16_t radius, uint16_t color) override {
+        display_->fillCircle(x, y, radius, color);
+    }
+
+    void drawCircle(int16_t x, int16_t y, int16_t radius, uint16_t color) override {
+        display_->drawCircle(x, y, radius, color);
+    }
+
+    void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) override {
+        display_->drawLine(x0, y0, x1, y1, color);
+    }
+
+    void drawCenteredText(const String& text,
+                          int16_t x,
+                          int16_t y,
+                          RemoteTextStyle style,
+                          uint16_t textColor,
+                          uint16_t bgColor) override {
+        configureText(style, textColor, bgColor);
+        display_->setTextDatum(middle_center);
+        display_->drawString(text, x, y);
+    }
+
+    void drawTextTopLeft(const String& text,
+                         int16_t x,
+                         int16_t y,
+                         RemoteTextStyle style,
+                         uint16_t textColor,
+                         uint16_t bgColor) override {
+        configureText(style, textColor, bgColor);
+        display_->setTextDatum(top_left);
+        display_->drawString(text, x, y);
+    }
+
+    void drawTextTopRight(const String& text,
+                          int16_t x,
+                          int16_t y,
+                          RemoteTextStyle style,
+                          uint16_t textColor,
+                          uint16_t bgColor) override {
+        configureText(style, textColor, bgColor);
+        display_->setTextDatum(top_right);
+        display_->drawString(text, x, y);
+    }
+
+  private:
+    uint8_t sizeForStyle(RemoteTextStyle style) const {
+        switch(style) {
+            case RemoteTextStyle::Tiny: return 1;
+            case RemoteTextStyle::Small: return 1;
+            case RemoteTextStyle::Medium: return 2;
+            case RemoteTextStyle::Large: return 3;
+            case RemoteTextStyle::Hero: return 4;
+            default: return 1;
+        }
+    }
+
+    void configureText(RemoteTextStyle style, uint16_t textColor, uint16_t bgColor) {
+        display_->setFont(nullptr);
+        display_->setTextSize(sizeForStyle(style));
+        display_->setTextColor(textColor, bgColor);
+        display_->setTextPadding(0);
+    }
+
+    CrowPanelDisplay* display_;
+};
+
+CrowPanelDisplay g_display;
+CrowPanelCanvas g_canvas(&g_display);
+Cst816Touch g_touch;
+TwoWire g_expansionI2c(1);
+ESP32Encoder g_encoder;
+Adafruit_NeoPixel g_ring(kLedRingCount, kBoardPins.indicatorData, NEO_GRB + NEO_KHZ800);
+ButtonState g_button;
+RemoteTouchState g_touchState;
+RemoteIndicatorState g_lastIndicator;
+bool g_indicatorValid = false;
+int32_t g_lastEncoderRaw = 0;
+
+const RemoteBoardInfo kBoardInfo = {
+    RemoteBoardId::CrowPanelRotary,
+    "CrowPanel Rotary 1.28",
+    kDisplayWidth,
+    kDisplayHeight,
+    true,
+    true,
+    static_cast<uint32_t>(RemoteBoardCapability::Touch) |
+        static_cast<uint32_t>(RemoteBoardCapability::Encoder) |
+    static_cast<uint32_t>(RemoteBoardCapability::Indicator) |
+        static_cast<uint32_t>(RemoteBoardCapability::Backlight) |
+        static_cast<uint32_t>(RemoteBoardCapability::I2c) |
+        static_cast<uint32_t>(RemoteBoardCapability::DeepSleep) |
+        static_cast<uint32_t>(RemoteBoardCapability::WakeSource) |
+        static_cast<uint32_t>(RemoteBoardCapability::UsbConsole) |
+        static_cast<uint32_t>(RemoteBoardCapability::ExpansionGpio) |
+        static_cast<uint32_t>(RemoteBoardCapability::ExpansionI2c),
+};
+
+const RemoteBoardServices kBoardServices = {
+    &Wire,
+    nullptr,
+    nullptr,
+    &Serial,
+    kBoardPins.touchSda,
+    kBoardPins.touchScl,
+    kBoardPins.displaySclk,
+    kBoardPins.displayMosi,
+    kBoardPins.displayMiso,
+    kBoardPins.displayCs,
+    -1,
+    -1,
+    &g_expansionI2c,
+    nullptr,
+    nullptr,
+    kBoardPins.expansionI2cSda,
+    kBoardPins.expansionI2cScl,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    true,
+};
+
+const RemoteBoardFeatureMap kBoardFeatureMap = {
+    {
+        RemoteBoardSupportLevel::Implemented,
+        RemoteBoardSupportLevel::Implemented,
+        RemoteBoardSupportLevel::None,
+        RemoteBoardSupportLevel::Present,
+        static_cast<uint32_t>(RemoteWakeSource::Touch) |
+            static_cast<uint32_t>(RemoteWakeSource::PrimaryButton) |
+            static_cast<uint32_t>(RemoteWakeSource::EncoderSwitch),
+    },
+    {},
+    {},
+    {},
+    {},
+    {
+        RemoteBoardSupportLevel::Mapped,
+        RemoteBoardSupportLevel::None,
+        RemoteBoardSupportLevel::Present,
+        2,
+    },
+    {
+        RemoteBoardSupportLevel::Implemented,
+        true,
+    },
+    {
+        RemoteBoardSupportLevel::Implemented,
+        RemoteBoardSupportLevel::Implemented,
+        RemoteBoardSupportLevel::Implemented,
+        RemoteBoardSupportLevel::None,
+        true,
+        true,
+    },
+};
+
+void initBacklight() {
+    pinMode(kBoardPins.powerEnable, OUTPUT);
+    digitalWrite(kBoardPins.powerEnable, HIGH);
+    ledcSetup(1, 5000, 8);
+    ledcAttachPin(kBoardPins.backlight, 1);
+    ledcWrite(1, 255);
+}
+
+void initEncoderButton() {
+    pinMode(kBoardPins.encoderSwitch, INPUT);
+    g_button.idleLevel = digitalRead(kBoardPins.encoderSwitch);
+    g_button.lastRaw = g_button.idleLevel;
+    g_button.debounceStartedAt = millis();
+    g_button.stableChangedAt = g_button.debounceStartedAt;
+}
+
+void updateEncoderButton(RemoteInputState* input) {
+    const uint32_t now = millis();
+    const bool raw = digitalRead(kBoardPins.encoderSwitch);
+    input->primaryShortPress = false;
+    input->primaryLongPress = false;
+
+    if(raw != g_button.lastRaw) {
+        g_button.lastRaw = raw;
+        g_button.debounceStartedAt = now;
+    }
+
+    if(now - g_button.debounceStartedAt < kButtonDebounceMs) {
+        return;
+    }
+
+    const bool pressed = (raw != g_button.idleLevel);
+    if(pressed != g_button.stablePressed) {
+        g_button.stablePressed = pressed;
+        g_button.stableChangedAt = now;
+        if(pressed) {
+            g_button.longLatched = false;
+        } else if(!g_button.longLatched) {
+            input->primaryShortPress = true;
+        }
+    }
+
+    if(g_button.stablePressed && !g_button.longLatched &&
+       now - g_button.stableChangedAt >= kLongPressMs) {
+        g_button.longLatched = true;
+        input->primaryLongPress = true;
+    }
+}
+
+int consumeEncoderDelta() {
+    const int32_t raw = g_encoder.getCount();
+    const int delta = static_cast<int>(g_lastEncoderRaw - raw);
+    g_lastEncoderRaw = raw;
+    return delta;
+}
+
+void updateTouch(RemoteInputState* input) {
+    uint16_t x = 0;
+    uint16_t y = 0;
+    const bool touched = g_touch.readPoint(&x, &y);
+    input->touch.justPressed = touched && !g_touchState.pressed;
+    input->touch.justReleased = !touched && g_touchState.pressed;
+    input->touch.pressed = touched;
+
+    if(touched) {
+        input->touch.x = static_cast<int16_t>(x);
+        input->touch.y = static_cast<int16_t>(y);
+    } else {
+        input->touch.x = g_touchState.x;
+        input->touch.y = g_touchState.y;
+    }
+
+    g_touchState = input->touch;
+}
+
+uint32_t indicatorColor(const RemoteIndicatorState& indicator) {
+    if(!indicator.linkOnline) {
+        return g_ring.Color(70, 0, 0);
+    }
+    if(indicator.hasError) {
+        return g_ring.Color(90, 30, 0);
+    }
+    if(indicator.running) {
+        return g_ring.Color(0, 70, 15);
+    }
+    if(indicator.gbwMode) {
+        return g_ring.Color(80, 45, 0);
+    }
+    return g_ring.Color(0, 30, 90);
+}
+
+}  // namespace
+
+bool crowpanel_probe() {
+    return g_touch.probe();
+}
+
+bool crowpanel_init() {
+    g_display.init();
+    g_display.setRotation(0);
+    g_display.fillScreen(kColorBlack);
+
+    initBacklight();
+
+    if(!g_touch.begin()) {
+        return false;
+    }
+
+    pinMode(kBoardPins.powerEnable, OUTPUT);
+    digitalWrite(kBoardPins.powerEnable, HIGH);
+
+    g_ring.begin();
+    g_ring.clear();
+    g_ring.show();
+
+    initEncoderButton();
+    pinMode(kBoardPins.encoderA, INPUT);
+    pinMode(kBoardPins.encoderB, INPUT);
+    ESP32Encoder::useInternalWeakPullResistors = puType::up;
+    g_encoder.attachHalfQuad(kBoardPins.encoderA, kBoardPins.encoderB);
+    g_encoder.setFilter(100);
+    g_encoder.setCount(0);
+    g_lastEncoderRaw = 0;
+    g_touchState = {};
+    g_indicatorValid = false;
+    return true;
+}
+
+void crowpanel_poll_input(RemoteInputState* input) {
+    if(input == nullptr) {
+        return;
+    }
+
+    *input = {};
+    input->dialDelta = consumeEncoderDelta();
+    updateEncoderButton(input);
+    updateTouch(input);
+}
+
+RemoteCanvas& crowpanel_canvas() {
+    return g_canvas;
+}
+
+const RemoteBoardInfo& crowpanel_info() {
+    return kBoardInfo;
+}
+
+const RemoteBoardServices& crowpanel_services() {
+    return kBoardServices;
+}
+
+const RemoteBoardPins& crowpanel_pins() {
+    return kBoardPins;
+}
+
+const RemoteBoardFeatureMap& crowpanel_feature_map() {
+    return kBoardFeatureMap;
+}
+
+void crowpanel_apply_indicator(const RemoteIndicatorState& indicator) {
+    if(g_indicatorValid &&
+       g_lastIndicator.linkOnline == indicator.linkOnline &&
+       g_lastIndicator.running == indicator.running &&
+       g_lastIndicator.gbwMode == indicator.gbwMode &&
+       g_lastIndicator.hasError == indicator.hasError) {
+        if(!indicator.linkOnline && ((millis() / 250) % 2 == 1)) {
+            for(uint8_t i = 0; i < kLedRingCount; ++i) {
+                g_ring.setPixelColor(i, 0);
+            }
+            g_ring.show();
+        }
+        return;
+    }
+
+    g_lastIndicator = indicator;
+    g_indicatorValid = true;
+
+    const bool blinkOff = !indicator.linkOnline && ((millis() / 250) % 2 == 1);
+    const uint32_t color = indicatorColor(indicator);
+    for(uint8_t i = 0; i < kLedRingCount; ++i) {
+        g_ring.setPixelColor(i, blinkOff ? 0 : color);
+    }
+    g_ring.show();
+}
+
+bool crowpanel_set_backlight(uint8_t level) {
+    ledcWrite(1, level);
+    return true;
+}
+
+RemoteBatteryStatus crowpanel_battery_status() {
+    return {};
+}
+
+int32_t crowpanel_battery_millivolts() {
+    return -1;
+}
+
+const RemoteBoardDriver kCrowPanelDriver = {
+    "crowpanel_rotary_128",
+    crowpanel_probe,
+    crowpanel_init,
+    crowpanel_poll_input,
+    crowpanel_canvas,
+    crowpanel_info,
+    crowpanel_services,
+    crowpanel_pins,
+    crowpanel_feature_map,
+    crowpanel_apply_indicator,
+    crowpanel_set_backlight,
+    crowpanel_battery_status,
+    crowpanel_battery_millivolts,
+};
+
+const RemoteBoardDriver* remote_board_crowpanel_driver() {
+    return &kCrowPanelDriver;
+}
