@@ -1,12 +1,51 @@
-# LingLong SG98 Remote control
-A remote control PCB & software to control a grinder with a servo motor.
-Currently being built for Linglong SG98 using RT and JMC servo drive.
+# LingLong SG98 Firmware Workspace
+Controller and handheld-remote firmware for the LingLong SG98 grinder platform,
+covering both the main SG98 controller board and the standalone ESP32-S3 remote.
 
 #### Developer documentation
 
 For a full project walkthrough, architecture guide, workflow explanation, and motor protocol notes, start with:
 
 - `Documentation/Developer-Guide.md`
+- `Documentation/IO-Reference.md`
+
+#### Firmware targets
+
+This repo contains two different ESP32-S3 firmware projects:
+
+- repo root `.` = the SG98 controller box firmware
+- `sg98-remote/` = the standalone SG98 hand-remote firmware project
+
+For PlatformIO in the repo root `Project Tasks`:
+
+- `adafruit_feather_esp32s3` = controller box
+- `remote-universal-s3` = universal handheld remote firmware for supported
+  ESP32-S3 remote boards
+
+The remote code still lives as a separate project in `sg98-remote/`, but the
+root `platformio.ini` exposes thin remote build aliases so you can build both
+controller and remote firmware from one PlatformIO task tree.
+
+The current universal remote image auto-detects these boards at boot:
+
+- Elecrow CrowPanel 1.28 rotary/touch remote
+- Waveshare 1.75 AMOLED touch remote
+
+The supported remote boards now share:
+
+- a common remote HAL for board detect, input, display, power, and debug
+- on-screen battery status for the Waveshare `AXP2101` PMIC path
+- idle light-sleep with wake by touch/button on supported boards
+
+Do not flash `sg98-remote` onto the SG98 controller box.
+
+If the box boots with serial or screen text such as `SG98 remote`, `Set target MAC`, `MANUAL`, or `ESP-NOW ch1`, the remote firmware is on the wrong device.
+
+To recover the box, flash the controller environment from the repo root:
+
+```bash
+~/.platformio/penv/bin/platformio run -e adafruit_feather_esp32s3 -t upload
+```
 
 #### How to use
 Aquire a PCB (order through JLCPCB with the provided files or buy a readymade one). and wire it up correctly.

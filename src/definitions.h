@@ -23,7 +23,7 @@
 
 #define rpm_scalar 25
 #define SIZEOFCALIBRATEARRAY (2*(absolute_max_rpm - absolute_min_rpm)/rpm_scalar)
-#define LONGPRESS 500 //after Xms a long press is registered
+#define LONGPRESS 750 // after Xms a long press is registered
 #define DISP_REFRESH_RATE 50 //Hz
 
 // COMM PINS
@@ -91,6 +91,8 @@
 #define default_minRPM 100
 #define default_motor_torque 100
 #define default_led_brightness 100
+#define default_radio_mode 0
+#define default_espnow_channel 1
 
 #define default_motor_ramp 1
 

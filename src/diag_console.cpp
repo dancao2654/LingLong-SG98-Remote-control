@@ -11,6 +11,7 @@
 #include "comm.h"
 #include "motor_hal.h"
 #include "pdata.h"
+#include "radio_mode.h"
 
 namespace {
 bool streamEnabled = false;
@@ -398,6 +399,10 @@ uint8_t apiTargetMenu(uint8_t menuNum, uint8_t itemIdx) {
 }
 
 bool apiMenuItemWritable(uint8_t menuNum, uint8_t itemIdx) {
+    if(menuNum == 1 && itemIdx == Menu1Items::RADIOMODE) {
+        return false;
+    }
+
     const char* kind = apiMenuItemKind(menuNum, itemIdx);
     return strcmp(kind, "value") == 0 || strcmp(kind, "bool") == 0;
 }
@@ -642,12 +647,25 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
     }
 
     if(menuNum == 1) {
+        const int16_t originalValue = Menu1[itemIdx].value;
         Menu1[itemIdx].value = clampMenuValue(Menu1[itemIdx], requestedValue);
         if(itemIdx == Menu1Items::SETMAX && Menu1[SETMAX].value < Menu1[SETMIN].value) {
             Menu1[SETMAX].value = Menu1[SETMIN].value;
         }
         if(itemIdx == Menu1Items::SETMIN && Menu1[SETMIN].value > Menu1[SETMAX].value) {
             Menu1[SETMIN].value = Menu1[SETMAX].value;
+        }
+        if(itemIdx == Menu1Items::RADIOMODE) {
+            if(!radio_mode_can_switch_now()) {
+                Menu1[itemIdx].value = originalValue;
+                *message = "radio mode can only switch while idle";
+                return false;
+            }
+            if(!radio_mode_apply()) {
+                Menu1[itemIdx].value = originalValue;
+                *message = "radio mode switch failed";
+                return false;
+            }
         }
         persistMenuValue(menuNum, itemIdx);
     } else if(menuNum == 2) {
@@ -871,6 +889,10 @@ void appendStatusJson(String& out) {
     appendJsonQuoted(out, motorText(currentStatus));
     out += ",\"scale\":";
     appendJsonQuoted(out, scaleText(scaleStatus));
+    out += ",\"radioMode\":";
+    appendJsonQuoted(out, radio_mode_label(radio_mode_current()));
+    out += ",\"radioStatus\":";
+    appendJsonQuoted(out, radio_mode_status_text());
     out += ",\"error\":";
     out += String(static_cast<unsigned>(error));
     out += ",\"errorText\":";

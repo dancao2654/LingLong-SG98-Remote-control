@@ -10,8 +10,59 @@
 #include "comm.h"
 #include "motor_hal.h"
 #include "wifi_ui.h"
+#include "radio_mode.h"
 
 namespace {
+constexpr uint32_t START_BUTTON_DEBOUNCE_MS = 12;
+constexpr uint32_t ENC_BUTTON_DEBOUNCE_MS = 12;
+
+bool encButtonIdleLevel = true;
+bool encButtonLastRawLevel = true;
+bool encButtonPressed = false;
+bool encButtonChanged = false;
+bool encButtonPressEvent = false;
+bool encButtonLongPressLatched = false;
+bool encButtonShortReleaseEvent = false;
+bool encButtonLongPressEvent = false;
+unsigned long encButtonDebounceStartedAt = 0;
+unsigned long encButtonLastStableChangeAt = 0;
+
+void pollEncoderButton() {
+    const unsigned long now = millis();
+    const bool rawLevel = digitalRead(ENC_BTN);
+
+    encButtonChanged = false;
+    if(rawLevel != encButtonLastRawLevel) {
+        encButtonLastRawLevel = rawLevel;
+        encButtonDebounceStartedAt = now;
+    }
+
+    if(now - encButtonDebounceStartedAt < ENC_BUTTON_DEBOUNCE_MS) {
+        return;
+    }
+
+    const bool pressed = (rawLevel != encButtonIdleLevel);
+    if(pressed != encButtonPressed) {
+        encButtonPressed = pressed;
+        encButtonChanged = true;
+        encButtonLastStableChangeAt = now;
+        if(pressed) {
+            encButtonPressEvent = true;
+            encButtonLongPressLatched = false;
+        } else {
+            encButtonPressEvent = false;
+            if(!encButtonLongPressLatched) {
+                encButtonShortReleaseEvent = true;
+            }
+        }
+    }
+
+    if(encButtonPressed && !encButtonLongPressLatched && now - encButtonLastStableChangeAt >= LONGPRESS) {
+        encButtonLongPressLatched = true;
+        encButtonLongPressEvent = true;
+    }
+}
+
 bool shouldOpenDriveSelector() {
     return motor_get_drive_type() == DRIVE_TYPE_UNKNOWN || error == 1;
 }
@@ -74,24 +125,30 @@ uint32_t baudForJmcMenuItem(int selectedIdx) {
     }
 }
 }
-
-
-Button enc_button(ENC_BTN);
-Button start_button(BTN);
 ESP32Encoder encoder;
+Button start_button(BTN, START_BUTTON_DEBOUNCE_MS);
 
-bool longPress = false;
 int16_t storedSetRPM = 0;
 uint32_t storedSetWeight = 0;
 
 void io_init() { 
-    pinMode(BTN, INPUT);
+    start_button.begin();
     pinMode(ENC_BTN, INPUT);
+    encButtonIdleLevel = digitalRead(ENC_BTN);
+    encButtonLastRawLevel = encButtonIdleLevel;
+    encButtonPressed = false;
+    encButtonChanged = false;
+    encButtonPressEvent = false;
+    encButtonLongPressLatched = false;
+    encButtonShortReleaseEvent = false;
+    encButtonLongPressEvent = false;
+    encButtonDebounceStartedAt = millis();
+    encButtonLastStableChangeAt = encButtonDebounceStartedAt;
     pinMode(start_button_led, OUTPUT);
 
     pinMode(ENC_A, INPUT);
     pinMode(ENC_B, INPUT);
-    
+    ESP32Encoder::useInternalWeakPullResistors = puType::up;
     encoder.attachHalfQuad(ENC_A, ENC_B);
     encoder.setFilter(100);
     encoder.setCount(0);
@@ -104,8 +161,7 @@ void do_io() {
     static bool lastIdle = false; //lastIdle true means it was on normal Idle before, false means idle_GBW
     static int16_t OriginalValue = 0;
     static bool notReleasedYet = false;
-    static bool longPressActionHandled = false;
-    
+    pollEncoderButton();
 
     if(state == IDLE) { 
         ledAction(3);
@@ -115,7 +171,7 @@ void do_io() {
         if(setRPM < Menu1[SETMIN].value) setRPM = Menu1[SETMIN].value;
         
         //START BUTTON
-        if(START_BUTTON() == true && longPress == false && dimmed == false) {
+        if(START_BUTTON() == true && dimmed == false) {
             if(shouldOpenDriveSelector()) openDriveSelector(IDLE);
             else {
                 purge_prepare_for_grinding();
@@ -123,36 +179,22 @@ void do_io() {
             }
         }
 
-        //ENC BUTTON
-        if(ENC_BUTTON() == true && dimmed == false) { 
-            notReleasedYet = false;
-            if(longPress == false) { 
-                if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
-                    openDriveSelector(IDLE);
-                } else {
-                    if(error == 0 || error == 1 || error == 2) state = MENU1;
-                    lastIdle = true;
-                    if(error > 2) { 
-                        error = 0;
-                        commCounter = 0;
-                    }
-                    disp_updateRequired = true;
-                }
-            }
-        } else { // enc_button == false
-            if(longPress == true && notReleasedYet == false) {  //when we're still holding longPress 
+        if(pressedLong() == true && dimmed == false) {
             state = IDLE_GBW;
             disp_updateRequired = true;
-            notReleasedYet = true;
             pdata_write(5);
+        } else if(ENC_BUTTON() == true && dimmed == false) {
+            if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
+                openDriveSelector(IDLE);
+            } else {
+                if(error == 0 || error == 1 || error == 2) state = MENU1;
+                lastIdle = true;
+                if(error > 2) { 
+                    error = 0;
+                    commCounter = 0;
+                }
+                disp_updateRequired = true;
             }
-        }
-        //OTHER
-        if(pressedLong() == true) { 
-            longPress = true;
-        } else {
-            longPress = false;
-            longPressActionHandled = false;
         }
 
         if(setRPM != storedSetRPM && lastActivity + 10000 < millis()) {
@@ -169,41 +211,27 @@ void do_io() {
         if(setWeight > default_max_weight) setWeight = default_max_weight;
         if(setWeight < default_min_weight) setWeight = default_min_weight;
         
-        if(START_BUTTON() == true && longPress == false) {
+        if(START_BUTTON() == true) {
             if(shouldOpenDriveSelector()) openDriveSelector(IDLE_GBW);
             else state = GRINDING_GBW;
         }
 
-        //ENC BUTTON
-        if(ENC_BUTTON() == true && dimmed == false) { 
-            notReleasedYet = false;
-            if(longPress == false) { 
-                if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
-                    openDriveSelector(IDLE_GBW);
-                } else {
-                    if(error == 0 || error == 1 || error == 2) state = MENU1;
-                    lastIdle = false;
-                    if(error > 2) { 
-                        error = 0;
-                        commCounter = 0;
-                    }
-                    disp_updateRequired = true;
-                }
-            }
-        } else { // enc_button == false
-            if(longPress == true && notReleasedYet == false) {  //when we're still holding longPress 
+        if(pressedLong() == true && dimmed == false) {
             state = IDLE;
             disp_updateRequired = true;
-            notReleasedYet = true;
             pdata_write(5);
+        } else if(ENC_BUTTON() == true && dimmed == false) {
+            if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
+                openDriveSelector(IDLE_GBW);
+            } else {
+                if(error == 0 || error == 1 || error == 2) state = MENU1;
+                lastIdle = false;
+                if(error > 2) { 
+                    error = 0;
+                    commCounter = 0;
+                }
+                disp_updateRequired = true;
             }
-        }
-        //OTHER
-        if(pressedLong() == true && dimmed == false) { 
-            longPress = true;
-        } else {
-            longPress = false;
-            longPressActionHandled = false;
         }
         
         if(setWeight != storedSetWeight && lastActivity + 10000 < millis()) {
@@ -228,7 +256,7 @@ void do_io() {
             state = (Menu2[SETBUTTONPURGE].value == true? PURGING : IDLE);
             if(state == IDLE) purge_cancel_pending();
         }
-        if(ENC_BUTTON() == true) { 
+        if(ENC_BUTTON_DOWN() == true) { 
             purge_cancel_pending();
             state = IDLE;
             motor_setRPM = 0;
@@ -239,7 +267,7 @@ void do_io() {
         ledAction(1);
         setRPM += encoder_change()*rpm_scalar;
 
-        if(START_BUTTON() == true || ENC_BUTTON() == true) { 
+        if(START_BUTTON() == true || ENC_BUTTON_DOWN() == true) { 
             purge_cancel_pending();
             state = IDLE;
             motor_setRPM = 0;
@@ -249,7 +277,7 @@ void do_io() {
     if(state == GRINDING_GBW) { 
         //setWeight += encoder_change();
 
-        if(START_BUTTON() == true || ENC_BUTTON() == true) { 
+        if(START_BUTTON() == true || ENC_BUTTON_DOWN() == true) { 
             state = IDLE_GBW;
             motor_setRPM = 0;
         }
@@ -293,7 +321,7 @@ void do_io() {
             }
         }
 
-        if(ENC_BUTTON() == true) { 
+        if(ENC_BUTTON_DOWN() == true) { 
             if(enterMenu == false) { 
                 if(menu1Selected == Menu1Items::PURGESETTINGS) state = MENU2;
                 if(menu1Selected == Menu1Items::GBWSETTINGS) state = MENU3;
@@ -303,7 +331,16 @@ void do_io() {
                 OriginalValue = Menu1[menu1Selected].value;
             } else { 
                 enterMenu = false;
-                if(menu1Selected != Menu1Items::RESET && menu1Selected != Menu1Items::RESETNETWORK) pdata_write(2);
+                if(menu1Selected == Menu1Items::RADIOMODE) {
+                    if(radio_mode_apply()) {
+                        pdata_write(2);
+                    } else {
+                        Menu1[menu1Selected].value = OriginalValue;
+                        disp_updateRequired = true;
+                    }
+                } else if(menu1Selected != Menu1Items::RESET && menu1Selected != Menu1Items::RESETNETWORK) {
+                    pdata_write(2);
+                }
                 pdata_normalize();
                 if(menu1Selected == Menu1Items::RESETNETWORK && Menu1[menu1Selected].value == 1) {
                     wifi_ui_reset_network_settings();
@@ -320,20 +357,11 @@ void do_io() {
                     Menu1[menu1Selected].value = 0;
                 }
             }
-        } else if(longPress == true && !longPressActionHandled && menu1Selected == Menu1Items::CALIBRATE) { 
-            longPressActionHandled = true;
+        } else if(pressedLong() == true && menu1Selected == Menu1Items::CALIBRATE) {
             state = CALIBRATING;  
             enterMenu = false;
             disp_updateRequired = true;
             notReleasedYet = true;
-            }
-
-        //OTHER
-        if(pressedLong() == true) { 
-            longPress = true;
-        } else {
-            longPress = false;
-            longPressActionHandled = false;
         }
         
     }
@@ -369,7 +397,7 @@ void do_io() {
             }
         } 
 
-        if(ENC_BUTTON() == true) { 
+        if(ENC_BUTTON_DOWN() == true) { 
             if(enterMenu == false) { 
                 if(menu2Selected == Menu2Items::RETURN_FROM_PURGE) state = MENU1;
                 if(menu2Selected != Menu2Items::RETURN_FROM_PURGE) enterMenu = true;
@@ -416,7 +444,7 @@ void do_io() {
             }
         } 
 
-        if(ENC_BUTTON() == true) { 
+        if(ENC_BUTTON_DOWN() == true) { 
             if(enterMenu == false) { 
                 if(menu3Selected == RETURN_FROM_GBW) state = MENU1;
                 if(menu3Selected != RETURN_FROM_GBW) enterMenu = true;
@@ -463,7 +491,7 @@ void do_io() {
             disp_updateRequired = true;
         }
 
-        if(ENC_BUTTON() == true) {
+        if(ENC_BUTTON_DOWN() == true) {
             applyDriveSelection();
         }
     }
@@ -483,7 +511,7 @@ void do_io() {
             }
         }
 
-        if(ENC_BUTTON() == true) {
+        if(ENC_BUTTON_DOWN() == true) {
             if(enterMenu == false) {
                 if(menu4Selected == Menu4Items::RETURN_FROM_JMC_BAUD) {
                     state = MENU1;
@@ -499,7 +527,6 @@ void do_io() {
     }
 
     if(state == CALIBRATING) { 
-        longPress = false;
         if(ENC_BUTTON() == true) { 
             if(notReleasedYet == true) notReleasedYet = false;
             else {
@@ -522,7 +549,11 @@ void do_io() {
 }
 
 bool pressedLong() { 
-    if(enc_button.pressedFor(LONGPRESS)) {
+    if(encButtonLongPressEvent) {
+        encButtonLongPressEvent = false;
+        encButtonPressEvent = false;
+        lastActivity = millis();
+        disp_updateRequired = true;
         return true;
     }
 
@@ -546,14 +577,28 @@ int16_t encoder_change() {
 }
 
 bool check_io() { //returns true immediately when a button is pressed - normal control uses wasReleased to prevent double feedback.
-    if(enc_button.isPressed() || enc_button.wasReleased()) return true;
-    if(start_button.isPressed() || start_button.wasReleased()) return true;
+    pollEncoderButton();
+    start_button.read();
+    if(encButtonPressed || encButtonPressEvent || encButtonShortReleaseEvent || encButtonLongPressEvent) return true;
+    if(start_button.isPressed() || start_button.wasPressed() || start_button.wasReleased()) return true;
+    return false;
+}
+
+bool ENC_BUTTON_DOWN() {
+    if(encButtonPressEvent) {
+        encButtonPressEvent = false;
+        encButtonLongPressLatched = true;
+        lastActivity = millis();
+        disp_updateRequired = true;
+        return true;
+    }
     return false;
 }
 
 bool ENC_BUTTON() { 
-  enc_button.read();
-    if (enc_button.wasReleased()) { 
+    if(encButtonShortReleaseEvent) {
+        encButtonShortReleaseEvent = false;
+        encButtonPressEvent = false;
         lastActivity = millis();
         disp_updateRequired = true;
         return true;
@@ -563,7 +608,7 @@ bool ENC_BUTTON() {
 
 bool START_BUTTON() {
     start_button.read();
-    if (start_button.wasReleased()) { 
+    if (start_button.wasPressed()) {
         lastActivity = millis();
         disp_updateRequired = true;
         return true;

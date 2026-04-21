@@ -1,0 +1,7 @@
+{
+  "name": "sg98_remote_protocol",
+  "version": "1.0.0",
+  "build": {
+    "includeDir": "src"
+  }
+}
