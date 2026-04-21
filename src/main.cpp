@@ -109,6 +109,22 @@ int16_t purgeFrames = 0;
 uint8_t purgePhase = 0;
 uint8_t purgeLastPhase = 0xFF;
 bool purgeSequenceNeedsInit = true;
+bool idleSleepActive = false;
+
+bool controllerCanIdleSleep() {
+    return state == IDLE || state == IDLE_GBW;
+}
+
+void printWakeSummary() {
+    Serial.print("Wakeup cause: ");
+    Serial.println(esp_sleep_get_wakeup_cause());
+    Serial.print("Reset reason: ");
+    Serial.println(esp_reset_reason());
+
+    if(esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT0) {
+        Serial.println("[sleep] source=start button");
+    }
+}
 }
 
 void purge_prepare_for_grinding() {
@@ -204,10 +220,7 @@ void setup() {
     );
 
     #ifdef DEBUG
-    Serial.print("Wakeup cause: ");
-    Serial.println(esp_sleep_get_wakeup_cause());
-    Serial.print("Reset reason: ");
-    Serial.println(esp_reset_reason());
+    printWakeSummary();
     #endif
 
     display_init();
@@ -231,17 +244,10 @@ void loop() {
     diag_console_poll();
     radio_mode_poll();
     sleepTimeCheck();
-    update_display();
-    
-
-    if(state == SLEEPING){ 
-        esp_task_wdt_deinit();
-        ledAction(0);
-        display_off();
-        // Drive-specific sleep handlers own the final low-power transition.
-        motorSleep();
-        sleep_init();
+    if(idleSleepActive && !controllerCanIdleSleep()) {
+        controller_exit_idle_sleep();
     }
+    update_display();
     
     if(state == IDLE)
     { 
@@ -453,6 +459,47 @@ void vitals_init() {
   esp_task_wdt_add(NULL); // Add current task (loop task)
 }
 
+bool controller_idle_sleep_active() {
+    return idleSleepActive;
+}
+
+void controller_enter_idle_sleep() {
+    if(idleSleepActive || !controllerCanIdleSleep()) {
+        return;
+    }
+
+    idleSleepActive = true;
+    ledAction(0);
+    display_off();
+    disp_updateRequired = false;
+
+    #ifdef DEBUG
+    Serial.println("[sleep] idle display sleep active");
+    #endif
+}
+
+void controller_exit_idle_sleep() {
+    if(!idleSleepActive) {
+        return;
+    }
+
+    idleSleepActive = false;
+    display_on();
+    disp_updateRequired = true;
+
+    #ifdef DEBUG
+    Serial.println("[sleep] idle display sleep cleared");
+    #endif
+}
+
+void controller_note_activity() {
+    lastActivity = millis();
+    if(idleSleepActive) {
+        controller_exit_idle_sleep();
+    }
+    disp_updateRequired = true;
+}
+
 
 void sleep_init() { 
     delay(100); //Allow shit to pass
@@ -471,11 +518,11 @@ void sleep_init() {
     rtc_gpio_hold_en((gpio_num_t)RS485DE);
     rtc_gpio_hold_en((gpio_num_t)DISP_BL);
 
-
-    rtc_gpio_hold_dis((gpio_num_t)BTN); // Release hold just in case for wake btn
+    rtc_gpio_hold_dis((gpio_num_t)BTN);
     rtc_gpio_init((gpio_num_t)BTN);
     rtc_gpio_set_direction((gpio_num_t)BTN, RTC_GPIO_MODE_INPUT_ONLY);
     rtc_gpio_pullup_en((gpio_num_t)BTN);
+    rtc_gpio_pulldown_dis((gpio_num_t)BTN);
 
     // Configure EXT0 wakeup on BTN (GPIO 4), wake on LOW level (button press)
     esp_sleep_enable_ext0_wakeup(WAKE_BTN, 0); // 0 = wake on LOW
@@ -497,6 +544,7 @@ void sleep_release() {
     rtc_gpio_hold_dis((gpio_num_t)RS485RE);
     rtc_gpio_hold_dis((gpio_num_t)RS485DE);
     rtc_gpio_hold_dis((gpio_num_t)DISP_BL);
+    rtc_gpio_deinit((gpio_num_t)BTN);
 
     // Disable EXT0 wakeup source (optional, for clarity)
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT0);
@@ -522,12 +570,19 @@ void doVitals() {
 
 
 void sleepTimeCheck() { 
+    if(idleSleepActive) {
+        if(Menu1[SETSLEEP].value == 0 || !controllerCanIdleSleep()) {
+            controller_exit_idle_sleep();
+        }
+        return;
+    }
+
     if(Menu1[SETSLEEP].value == 0) return;
-    if(state == GRINDING || state == GRINDING_GBW) return;
+    if(!controllerCanIdleSleep()) return;
 
     if(lastActivity + (Menu1[SETSLEEP].value * 60000) < millis() && millis() > (Menu1[SETSLEEP].value * 60000)) { 
         rtc_state = state; // save last state
-        state = SLEEPING;
+        controller_enter_idle_sleep();
         #ifdef DEBUG
             Serial.println("sleep!");
         #endif

@@ -62,7 +62,7 @@ Vendor hardware references for the supported remote boards are cached under:
 - encoder-driven navigation on CrowPanel
 - touch-driven dial, taps, and menu scrolling on Waveshare AMOLED
 - native USB-C serial debug console exposed through the board HAL
-- idle light-sleep with wake on supported touch/button inputs
+- idle deep-sleep with RTC state restore on boards whose HAL advertises deep-sleep wake support
 - remote-side Wi-Fi onboarding portal with captive AP, saved STA credentials,
   LAN reconnect, and mDNS controller discovery
 

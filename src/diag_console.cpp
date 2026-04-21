@@ -693,8 +693,7 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
         return false;
     }
 
-    lastActivity = millis();
-    disp_updateRequired = true;
+    controller_note_activity();
     *message = "ok";
     return true;
 }
@@ -704,8 +703,7 @@ bool apiSetRpmValue(int32_t requestedValue, const char** message) {
     if(setRPM > Menu1[SETMAX].value) setRPM = Menu1[SETMAX].value;
     if(setRPM < Menu1[SETMIN].value) setRPM = Menu1[SETMIN].value;
     persistSetValue(IDLE);
-    lastActivity = millis();
-    disp_updateRequired = true;
+    controller_note_activity();
     *message = "ok";
     return true;
 }
@@ -715,8 +713,7 @@ bool apiSetWeightValue(int32_t requestedValue, const char** message) {
     if(requestedValue > static_cast<int32_t>(default_max_weight)) requestedValue = default_max_weight;
     setWeight = static_cast<uint32_t>(requestedValue);
     persistSetValue(IDLE_GBW);
-    lastActivity = millis();
-    disp_updateRequired = true;
+    controller_note_activity();
     *message = "ok";
     return true;
 }
@@ -737,8 +734,7 @@ bool apiActionStart(const char** message) {
         return false;
     }
 
-    lastActivity = millis();
-    disp_updateRequired = true;
+    controller_note_activity();
     *message = "ok";
     return true;
 }
@@ -760,8 +756,7 @@ bool apiActionStop(const char** message) {
         return false;
     }
 
-    lastActivity = millis();
-    disp_updateRequired = true;
+    controller_note_activity();
     *message = "ok";
     return true;
 }
@@ -774,8 +769,7 @@ bool apiActionIdle(States nextState, const char** message) {
     menu4Selected = RETURN_FROM_JMC_BAUD;
     motor_setRPM = 0;
     state = nextState;
-    lastActivity = millis();
-    disp_updateRequired = true;
+    controller_note_activity();
     *message = "ok";
     return true;
 }
@@ -800,8 +794,7 @@ bool apiActionDrive(const char* mode, const char** message) {
     error = 0;
     errorCode = 0;
     commCounter = 0;
-    lastActivity = millis();
-    disp_updateRequired = true;
+    controller_note_activity();
     *message = "ok";
     return true;
 }
@@ -814,8 +807,7 @@ bool apiActionCalibrate(const char** message) {
 
     state = CALIBRATING;
     enterMenu = false;
-    disp_updateRequired = true;
-    lastActivity = millis();
+    controller_note_activity();
     *message = "ok";
     return true;
 }
@@ -1056,8 +1048,7 @@ void forceIdleMode(States nextState) {
     menu4Selected = RETURN_FROM_JMC_BAUD;
     motor_setRPM = 0;
     state = nextState;
-    lastActivity = millis();
-    disp_updateRequired = true;
+    controller_note_activity();
 }
 
 void printProbeReport() {

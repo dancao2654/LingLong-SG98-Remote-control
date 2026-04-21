@@ -11,6 +11,7 @@ void display_init();
 void setBrightness();
 void update_display();
 void display_off();
+void display_on();
 void display_show_motor_probe_splash(const char* motorLabel);
 
 void drawErrorOverlay();
