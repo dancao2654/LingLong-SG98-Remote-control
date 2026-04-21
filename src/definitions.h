@@ -26,6 +26,59 @@
 #define LONGPRESS 750 // after Xms a long press is registered
 #define DISP_REFRESH_RATE 50 //Hz
 
+#if defined(SG98_CONTROLLER_BOARD_WAVESHARE_RS485_CAN)
+#define SG98_CONTROLLER_TARGET_NAME "waveshare_rs485_can"
+#define SG98_HAS_DISPLAY 0
+#define SG98_HAS_START_BUTTON 0
+#define SG98_HAS_START_LED 0
+#define SG98_HAS_ENCODER 0
+#define SG98_HAS_ENCODER_BUTTON 0
+
+// COMM PINS
+#define RS485_RXD 18
+#define RS485_TXD 17
+// Waveshare ties /RE and DE to a shared RS485_EN line.
+#define RS485RE 21
+#define RS485DE 21
+
+// IO PINS
+#define BTN 0
+#define start_button_led (-1)
+#define ENC_BTN (-1)
+#define ENC_A (-1)
+#define ENC_B (-1)
+
+// No onboard local display on this controller target.
+#define DISP_SCL (-1)
+#define DISP_SDA (-1)
+#define DISP_RST (-1)
+#define DISP_DC (-1)
+#define DISP_CS (-1)
+#define DISP_BL (-1)
+
+// EXIO header pins exposed on the board.
+#define EXSPI_MOSI (-1)
+#define EXSPI_MISO (-1)
+#define EXSPI_CLK (-1)
+#define EXPSI_CS (-1)
+#define EXSDA 1
+#define EXSCL 2
+
+// These must be the same as below!
+#define WAKE_BTN GPIO_NUM_0
+#define WAKE_ENC_BTN GPIO_NUM_0
+#define WAKE_ENC_A GPIO_NUM_0
+#define WAKE_ENC_B GPIO_NUM_0
+#define SLEEP_RE GPIO_NUM_21
+#define SLEEP_DE GPIO_NUM_21
+#else
+#define SG98_CONTROLLER_TARGET_NAME "controller_box"
+#define SG98_HAS_DISPLAY 1
+#define SG98_HAS_START_BUTTON 1
+#define SG98_HAS_START_LED 1
+#define SG98_HAS_ENCODER 1
+#define SG98_HAS_ENCODER_BUTTON 1
+
 // COMM PINS
 #define RS485_RXD 18 
 #define RS485_TXD 17
@@ -57,14 +110,6 @@
 #define EXSDA 8
 #define EXSCL 9
 
-// COMM SETTINGS
-#define COMMINTERVAL 60 // comm interval during normal operation
-#define COMM_DELAY_RECEIVE 50 //expect a respond 10ms after request send
-#define COMM_DELAY_IDLE 1000
-#define COMM_DELAY_SEND 60 //send every 50ms max 
-#define DISCONNECTED_AFTER 10000 //after Xms of not receiving comms, disconnected error shows
-#define SEND_RPM_EVERY 5 //send RPM every X frames
-
 // These must be the same as below!
 #define WAKE_BTN GPIO_NUM_4
 #define WAKE_ENC_BTN GPIO_NUM_42
@@ -72,6 +117,15 @@
 #define WAKE_ENC_B GPIO_NUM_40
 #define SLEEP_RE GPIO_NUM_15
 #define SLEEP_DE GPIO_NUM_16
+#endif
+
+// COMM SETTINGS
+#define COMMINTERVAL 60 // comm interval during normal operation
+#define COMM_DELAY_RECEIVE 50 //expect a respond 10ms after request send
+#define COMM_DELAY_IDLE 1000
+#define COMM_DELAY_SEND 60 //send every 50ms max
+#define DISCONNECTED_AFTER 10000 //after Xms of not receiving comms, disconnected error shows
+#define SEND_RPM_EVERY 5 //send RPM every X frames
 
 //Encoder ticks per physical tick
 #define ENC_TOL 1

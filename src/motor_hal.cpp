@@ -6,8 +6,8 @@
 #include "display.h"
 #include "error_history.h"
 #include "main.h"
-#include "motorcontrol_jmc.h"
-#include "motorcontrol_rt.h"
+#include "JMC/motorcontrol_jmc.h"
+#include "RT/motorcontrol_rt.h"
 #include "pdata.h"
 
 int16_t motor_setRPM = 0;

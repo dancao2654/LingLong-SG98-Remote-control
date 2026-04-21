@@ -490,6 +490,12 @@ void drawSeparatorLine(int x, int y, int width, bool animated) {
 
 
 void display_init() { 
+#if !SG98_HAS_DISPLAY
+  displayDisabled = true;
+  dimmed = false;
+  appliedBrightness = 0;
+  return;
+#else
   SPIClass *spi = new SPIClass(HSPI);
   spi->begin(DISP_SCL, -1, DISP_SDA, DISP_CS);
   tft = new Adafruit_ST7789(spi, DISP_CS, DISP_DC, DISP_RST);
@@ -507,9 +513,14 @@ void display_init() {
   appliedBrightness = 0;
   displayDisabled = false;
   update_display();
+#endif
 }
 
 void setBrightness() { 
+#if !SG98_HAS_DISPLAY
+  dimmed = false;
+  return;
+#else
   uint8_t newBrightness;
   static int dimTime = 15; 
 
@@ -525,9 +536,14 @@ void setBrightness() {
     ledcWrite(1, newBrightness);
     appliedBrightness = newBrightness;
   }
+#endif
 }
 
 void update_display() { 
+#if !SG98_HAS_DISPLAY
+  disp_updateRequired = false;
+  return;
+#else
   static unsigned long lastUpdate;
   if(newData == true) disp_updateRequired = true;
   if(displayDisabled) return;
@@ -590,9 +606,14 @@ void update_display() {
     if(state == MOTOR_SELECT) {
       drawMotorSelectScreen();
     }
+#endif
 }
 
 void display_off() {
+#if !SG98_HAS_DISPLAY
+    displayDisabled = true;
+    return;
+#else
     if(displayDisabled) {
         return;
     }
@@ -604,9 +625,16 @@ void display_off() {
     ledcWrite(1,0);
     appliedBrightness = 0;
     displayDisabled = true;
+#endif
 }
 
 void display_on() {
+#if !SG98_HAS_DISPLAY
+    displayDisabled = false;
+    dimmed = false;
+    disp_updateRequired = false;
+    return;
+#else
     if(!displayDisabled) {
         setBrightness();
         disp_updateRequired = true;
@@ -622,6 +650,7 @@ void display_on() {
     appliedBrightness = 0;
     setBrightness();
     disp_updateRequired = true;
+#endif
 }
 
 void display_show_motor_probe_splash(const char* motorLabel) {
@@ -1336,7 +1365,7 @@ void drawCalibratingScreen() {
 
 
     // Use global variables directly, do NOT redeclare or define them here!
-    // calibrateArray and currentCal are declared extern in motorcontrol_rt.h
+    // calibrateArray and currentCal are declared extern in RT/motorcontrol_rt.h
     int totalSteps = 1 + SIZEOFCALIBRATEARRAY / sizeof(uint16_t);
     int step = currentCal + 1; // Show as 1-based index
 
