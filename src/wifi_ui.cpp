@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 #include "diag_console.h"
+#include "remote_ws.h"
 
 namespace {
 WebServer server(80);
@@ -1174,6 +1175,7 @@ bool wifi_ui_start() {
     beginStaConnect(true);
     startWifiScan(true);
     server.begin();
+    remote_ws_start();
     wifiUiActive = true;
 
     Serial.printf("[wifi] ap_ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
@@ -1194,6 +1196,7 @@ void wifi_ui_stop() {
 
     dnsServer.stop();
     server.stop();
+    remote_ws_stop();
     WiFi.scanDelete();
     WiFi.softAPdisconnect(false);
     stopSta();
@@ -1209,6 +1212,7 @@ void wifi_ui_poll() {
 
     dnsServer.processNextRequest();
     server.handleClient();
+    remote_ws_poll();
     if(staEnabled && WiFi.status() != WL_CONNECTED) {
         beginStaConnect(false);
     }

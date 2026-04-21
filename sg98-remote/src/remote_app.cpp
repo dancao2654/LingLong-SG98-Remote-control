@@ -2,6 +2,8 @@
 
 #include <math.h>
 
+#include <ESPmDNS.h>
+#include <WebSocketsClient.h>
 #include <WiFi.h>
 #include <driver/gpio.h>
 #include <esp_now.h>
@@ -10,6 +12,7 @@
 
 #include "remote_board.h"
 #include "remote_config.h"
+#include "remote_wifi.h"
 #include "sg98_remote_defs.h"
 #include <sg98_remote_protocol.h>
 
@@ -43,6 +46,12 @@ enum class ItemKind : uint8_t {
     Toggle,
     Action,
     Danger,
+};
+
+enum class LinkTransport : uint8_t {
+    None = 0,
+    EspNow = 1,
+    WebSocket = 2,
 };
 
 struct SettingItem {
@@ -144,14 +153,23 @@ struct AppState {
     bool hasStatus = false;
     bool preferGbw = false;
     bool redraw = true;
+    bool radioModeKnown = false;
     bool espNowReady = false;
+    bool wsConnected = false;
+    bool wsClientStarted = false;
+    bool mdnsReady = false;
     bool sendComplete = false;
     bool sendOk = false;
+    LinkTransport currentTransport = LinkTransport::None;
+    LinkTransport pendingTransport = LinkTransport::None;
     uint32_t targetCommitAt = 0;
+    uint32_t pendingTransportAt = 0;
+    uint32_t lastTransportSwitchAt = 0;
     uint32_t toastUntil = 0;
     uint32_t lastStatusAt = 0;
     uint32_t lastStatusPollAt = 0;
     uint32_t lastBackgroundMenuPollAt = 0;
+    uint32_t lastMdnsQueryAt = 0;
     uint32_t lastMenuPollAt[5] = {};
     uint32_t dangerArmUntil = 0;
     Screen dangerScreen = Screen::Home;
@@ -159,6 +177,10 @@ struct AppState {
     uint32_t lastUserActivityAt = 0;
     uint32_t lastBatteryPollAt = 0;
     RemoteBatteryStatus battery;
+    String wsHost;
+    String wsEndpointLabel;
+    String mdnsHostName;
+    uint16_t wsPort = remote_config::kWebSocketPort;
     String toast = "Booting";
 };
 
@@ -236,6 +258,38 @@ constexpr const char* kTabLabels[] = {"RUN", "MAIN", "PURGE", "GBW", "DRIVE"};
 
 AppState app;
 TouchTracker touchTracker;
+WebSocketsClient wsClient;
+
+const char* transportName(LinkTransport transport) {
+    switch(transport) {
+        case LinkTransport::EspNow: return "ESP-NOW";
+        case LinkTransport::WebSocket: return "WebSocket";
+        default: return "None";
+    }
+}
+
+LinkTransport transportFromRadioMode(int32_t radioMode) {
+    return radioMode == 0 ? LinkTransport::WebSocket : LinkTransport::EspNow;
+}
+
+bool prefersWebSocket() {
+    return (app.radioModeKnown && transportFromRadioMode(app.menuValues[1][RADIOMODE]) == LinkTransport::WebSocket) ||
+           app.pendingTransport == LinkTransport::WebSocket;
+}
+
+bool webSocketCandidateAvailable() {
+    return remote_wifi_has_saved_network() || prefersWebSocket();
+}
+
+LinkTransport initialTransport() {
+    if(remote_wifi_has_saved_network()) {
+        return LinkTransport::WebSocket;
+    }
+    if(remote_config::kTargetMacConfigured) {
+        return LinkTransport::EspNow;
+    }
+    return LinkTransport::WebSocket;
+}
 
 int16_t clampI16(int16_t value, int16_t minValue, int16_t maxValue) {
     if(value < minValue) return minValue;
@@ -753,10 +807,30 @@ void drawFooter(RemoteCanvas& canvas, const Layout& layout, const String& text) 
     drawPill(canvas, layout.footer, text, kColorPanel, kColorMuted);
 }
 
+String transportStatusText() {
+    if(app.toastUntil > millis()) {
+        return app.toast;
+    }
+
+    if(app.currentTransport == LinkTransport::WebSocket) {
+        if(app.wsConnected) {
+            return app.wsEndpointLabel.length() > 0 ? app.wsEndpointLabel : String("WebSocket linked");
+        }
+        if(remote_wifi_sta_connected()) {
+            return "Searching LAN controller";
+        }
+        return String("Setup ") + remote_wifi_ap_ssid();
+    }
+
+    if(app.currentTransport == LinkTransport::EspNow) {
+        return "ESP-NOW remote";
+    }
+
+    return "Searching for controller";
+}
+
 void drawFooter(RemoteCanvas& canvas, const Layout& layout) {
-    drawFooter(canvas,
-               layout,
-               (app.toastUntil > millis()) ? app.toast : String("ESP-NOW remote"));
+    drawFooter(canvas, layout, transportStatusText());
 }
 
 void drawHome(RemoteCanvas& canvas, const Layout& layout) {
@@ -1003,10 +1077,121 @@ void redrawUi() {
     app.redraw = false;
 }
 
-void sendRaw(const String& command) {
+bool initEspNow();
+void stopEspNowSession();
+
+void clearPollSchedule() {
+    app.lastStatusPollAt = 0;
+    app.lastBackgroundMenuPollAt = 0;
+    for(size_t i = 0; i < (sizeof(app.lastMenuPollAt) / sizeof(app.lastMenuPollAt[0])); ++i) {
+        app.lastMenuPollAt[i] = 0;
+    }
+}
+
+String buildRemoteMdnsHostName() {
+    const uint64_t chipId = ESP.getEfuseMac();
+    char suffix[7];
+    snprintf(suffix, sizeof(suffix), "%06llX", static_cast<unsigned long long>(chipId & 0xFFFFFFULL));
+    return String("sg98-remote-") + suffix;
+}
+
+void stopMdnsClient() {
+    if(!app.mdnsReady) {
+        return;
+    }
+
+    MDNS.end();
+    app.mdnsReady = false;
+    Serial.println("[remote_ws] mdns stopped");
+}
+
+void stopWebSocketSession() {
+    if(app.wsClientStarted || app.wsConnected) {
+        wsClient.disconnect();
+    }
+    app.wsConnected = false;
+    app.wsClientStarted = false;
+    app.wsHost = "";
+    app.wsEndpointLabel = "";
+    stopMdnsClient();
+}
+
+void scheduleTransportSwitch(LinkTransport transport, uint32_t delayMs = 0) {
+    app.pendingTransport = transport;
+    app.pendingTransportAt = millis() + delayMs;
+}
+
+void ensureMdnsClientReady() {
+    if(app.mdnsReady || !remote_wifi_sta_connected()) {
+        return;
+    }
+
+    if(app.mdnsHostName.isEmpty()) {
+        app.mdnsHostName = buildRemoteMdnsHostName();
+    }
+
+    if(MDNS.begin(app.mdnsHostName.c_str())) {
+        app.mdnsReady = true;
+        Serial.printf("[remote_ws] mdns=%s.local\n", app.mdnsHostName.c_str());
+    } else {
+        Serial.println("[remote_ws] mdns init failed");
+    }
+}
+
+void connectWebSocketHost(const String& host, uint16_t port) {
+    if(host.isEmpty()) {
+        return;
+    }
+    if(app.wsClientStarted && app.wsHost == host && app.wsPort == port) {
+        return;
+    }
+
+    wsClient.disconnect();
+    app.wsConnected = false;
+    app.wsHost = host;
+    app.wsPort = port;
+    app.wsEndpointLabel = String("WS ") + host;
+    wsClient.begin(app.wsHost.c_str(), app.wsPort, "/");
+    wsClient.setReconnectInterval(remote_config::kWebSocketReconnectMs);
+    app.wsClientStarted = true;
+    Serial.printf("[remote_ws] connect %s:%u\n",
+                  app.wsHost.c_str(),
+                  static_cast<unsigned>(app.wsPort));
+}
+
+void discoverControllerService(bool force) {
+    if(!remote_wifi_sta_connected()) {
+        return;
+    }
+    ensureMdnsClientReady();
+    if(!app.mdnsReady) {
+        return;
+    }
+    if(!force && (app.lastMdnsQueryAt + remote_config::kMdnsQueryMs) > millis()) {
+        return;
+    }
+
+    app.lastMdnsQueryAt = millis();
+    const int serviceCount = MDNS.queryService("sg98", "tcp");
+    if(serviceCount <= 0) {
+        return;
+    }
+
+    for(int i = 0; i < serviceCount; ++i) {
+        const IPAddress ip = MDNS.IP(i);
+        const uint16_t port = MDNS.port(i);
+        if(ip[0] == 0 || port == 0) {
+            continue;
+        }
+        connectWebSocketHost(ip.toString(), port);
+        return;
+    }
+}
+
+bool sendEspNowRaw(const String& command) {
     if(!app.espNowReady) {
         setToast(remote_config::kTargetMacConfigured ? "ESP-NOW offline" : "Set target MAC");
-        return;
+        return false;
     }
 
     app.sendComplete = false;
@@ -1016,6 +1201,35 @@ void sendRaw(const String& command) {
                                       command.length() + 1);
     if(rc != ESP_OK) {
         setToast(String("TX error ") + String(static_cast<int>(rc)));
+        return false;
+    }
+    return true;
+}
+
+bool sendWebSocketRaw(const String& command) {
+    if(!app.wsConnected) {
+        if(remote_wifi_sta_connected()) {
+            setToast("WebSocket offline");
+        } else {
+            setToast(String("Setup ") + remote_wifi_ap_ssid());
+        }
+        return false;
+    }
+
+    String payload = command;
+    wsClient.sendTXT(payload);
+    return true;
+}
+
+bool sendRaw(const String& command) {
+    switch(app.currentTransport) {
+        case LinkTransport::WebSocket:
+            return sendWebSocketRaw(command);
+        case LinkTransport::EspNow:
+            return sendEspNowRaw(command);
+        default:
+            setToast("Searching for controller");
+            return false;
     }
 }
 
@@ -1024,8 +1238,7 @@ void requestStatus() {
 }
 
 void requestMenu(uint8_t menuNum) {
-    if(menuNum >= 1 && menuNum <= 4) {
-        sendRaw(sg98_protocol::getMenu(menuNum));
+    if(menuNum >= 1 && menuNum <= 4 && sendRaw(sg98_protocol::getMenu(menuNum))) {
         app.lastMenuPollAt[menuNum] = millis();
     }
 }
@@ -1052,12 +1265,304 @@ void sendAction(const char* actionName, const char* arg0 = nullptr) {
     sendRaw(sg98_protocol::action(actionName, arg0));
 }
 
+void switchTransportNow(LinkTransport transport) {
+    if(transport == LinkTransport::None) {
+        transport = initialTransport();
+    }
+
+    app.pendingTransport = LinkTransport::None;
+    app.pendingTransportAt = 0;
+    if(app.currentTransport == transport) {
+        return;
+    }
+
+    if(transport == LinkTransport::WebSocket) {
+        stopEspNowSession();
+        if(!remote_wifi_is_active()) {
+            remote_wifi_start();
+        }
+        if(remote_wifi_has_saved_network()) {
+            setToast(remote_wifi_sta_connected() ? "WebSocket mode" : "Connecting Wi-Fi", 1200);
+        } else {
+            setToast(String("Setup ") + remote_wifi_ap_ssid(), 2200);
+        }
+    } else if(transport == LinkTransport::EspNow) {
+        stopWebSocketSession();
+        if(remote_wifi_is_active()) {
+            remote_wifi_stop();
+        }
+        if(initEspNow()) {
+            setToast("ESP-NOW mode", 1200);
+        }
+    }
+
+    app.currentTransport = transport;
+    app.lastTransportSwitchAt = millis();
+    clearPollSchedule();
+}
+
+void applyPendingTransportSwitch() {
+    if(app.pendingTransport == LinkTransport::None || millis() < app.pendingTransportAt) {
+        return;
+    }
+
+    switchTransportNow(app.pendingTransport);
+}
+
+LinkTransport alternateTransport() {
+    if(app.currentTransport == LinkTransport::WebSocket) {
+        if(remote_wifi_has_saved_network() && remote_config::kTargetMacConfigured) {
+            return LinkTransport::EspNow;
+        }
+        return app.currentTransport;
+    }
+
+    if(app.currentTransport == LinkTransport::EspNow) {
+        if(webSocketCandidateAvailable()) {
+            return LinkTransport::WebSocket;
+        }
+        return app.currentTransport;
+    }
+
+    return initialTransport();
+}
+
+void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
+    app.status = status;
+    app.hasStatus = true;
+    app.lastStatusAt = millis();
+    app.preferGbw = status.state == "IDLE_GBW" || status.state == "GRINDING_GBW";
+    if(!app.targetDirty) {
+        app.manualRpm = status.setRpm;
+        app.weightMg = status.setWeightMg;
+    }
+    app.redraw = true;
+}
+
+void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
+    if(frame.menuNum >= 5) {
+        return;
+    }
+
+    for(uint8_t i = 0; i < frame.count && i < sg98_protocol::kMaxMenuValues; ++i) {
+        app.menuValues[frame.menuNum][i] = frame.values[i];
+    }
+    app.menuSynced[frame.menuNum] = true;
+
+    if(frame.menuNum == 1) {
+        app.radioModeKnown = true;
+        const LinkTransport expected = transportFromRadioMode(app.menuValues[1][RADIOMODE]);
+        if(expected != app.currentTransport) {
+            scheduleTransportSwitch(expected);
+        }
+    }
+
+    app.redraw = true;
+}
+
+void consumeProtocolFrame(const String& frame) {
+    sg98_protocol::StatusFrame statusFrame;
+    if(sg98_protocol::parseStatusFrame(frame, &statusFrame)) {
+        consumeStatusFrame(statusFrame);
+        return;
+    }
+
+    sg98_protocol::MenuFrame menuFrame;
+    if(sg98_protocol::parseMenuFrame(frame, &menuFrame)) {
+        consumeMenuFrame(menuFrame);
+        return;
+    }
+
+    sg98_protocol::AckFrame ackFrame;
+    if(sg98_protocol::parseAckFrame(frame, &ackFrame)) {
+        if(ackFrame.ok && ackFrame.message == "ok") {
+            return;
+        }
+        setToast(ackFrame.ok ? ackFrame.message : String("ERR: ") + ackFrame.message);
+    }
+}
+
+void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
+    switch(type) {
+        case WStype_CONNECTED:
+            app.wsConnected = true;
+            app.wsEndpointLabel = String("WS ") + app.wsHost;
+            clearPollSchedule();
+            requestStatus();
+            requestMenu(1);
+            requestMenu(2);
+            requestMenu(3);
+            break;
+        case WStype_DISCONNECTED:
+            app.wsConnected = false;
+            app.wsEndpointLabel = "WebSocket offline";
+            break;
+        case WStype_TEXT: {
+            String frame;
+            frame.reserve(length);
+            for(size_t i = 0; i < length; ++i) {
+                frame += static_cast<char>(payload[i]);
+            }
+            consumeProtocolFrame(frame);
+            break;
+        }
+        default:
+            break;
+    }
+}
+
+void onEspNowSent(const uint8_t*, esp_now_send_status_t status) {
+    app.sendOk = (status == ESP_NOW_SEND_SUCCESS);
+    app.sendComplete = true;
+}
+
+void onEspNowReceive(const uint8_t*, const uint8_t* data, int len) {
+    if(data == nullptr || len <= 0) {
+        return;
+    }
+
+    consumeProtocolFrame(String(reinterpret_cast<const char*>(data)));
+}
+
+bool initEspNow() {
+    if(app.espNowReady) {
+        return true;
+    }
+    if(!remote_config::kTargetMacConfigured) {
+        setToast("Set target MAC", 60000);
+        return false;
+    }
+
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
+
+    if(esp_wifi_set_channel(remote_config::kEspNowChannel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+        setToast("Channel setup failed");
+        return false;
+    }
+
+    if(esp_now_init() != ESP_OK) {
+        setToast("ESP-NOW init failed");
+        return false;
+    }
+
+    if(esp_now_register_send_cb(onEspNowSent) != ESP_OK) {
+        esp_now_deinit();
+        setToast("Send callback failed");
+        return false;
+    }
+
+    if(esp_now_register_recv_cb(onEspNowReceive) != ESP_OK) {
+        esp_now_deinit();
+        setToast("Receive callback failed");
+        return false;
+    }
+
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, remote_config::kTargetMac, sizeof(remote_config::kTargetMac));
+    peer.channel = remote_config::kEspNowChannel;
+    peer.ifidx = WIFI_IF_STA;
+    peer.encrypt = false;
+    if(!esp_now_is_peer_exist(remote_config::kTargetMac) && esp_now_add_peer(&peer) != ESP_OK) {
+        esp_now_deinit();
+        setToast("Add peer failed");
+        return false;
+    }
+
+    app.espNowReady = true;
+    return true;
+}
+
+void handleSendCompletion() {
+    if(!app.sendComplete) {
+        return;
+    }
+
+    app.sendComplete = false;
+    if(!app.sendOk) {
+        setToast("Send failed");
+    }
+}
+
+void updateSyncFromStatusFallback() {
+    if(app.hasStatus && !app.targetDirty) {
+        app.manualRpm = app.status.setRpm;
+        app.weightMg = app.status.setWeightMg;
+    }
+}
+
+void manageTransport() {
+    applyPendingTransportSwitch();
+    if(app.currentTransport == LinkTransport::None) {
+        switchTransportNow(initialTransport());
+    }
+
+    if(app.currentTransport == LinkTransport::WebSocket) {
+        if(app.espNowReady) {
+            stopEspNowSession();
+        }
+        if(!remote_wifi_is_active()) {
+            remote_wifi_start();
+        }
+        remote_wifi_poll();
+        if(remote_wifi_sta_connected()) {
+            ensureMdnsClientReady();
+            wsClient.loop();
+            if(!app.wsConnected || app.wsHost.isEmpty()) {
+                discoverControllerService(false);
+            } else if(!isLinkOnline() && (app.lastMdnsQueryAt + remote_config::kMdnsQueryMs) <= millis()) {
+                discoverControllerService(true);
+            }
+        } else {
+            if(app.wsClientStarted || app.wsConnected) {
+                wsClient.disconnect();
+                app.wsClientStarted = false;
+                app.wsConnected = false;
+            }
+            stopMdnsClient();
+        }
+    } else if(app.currentTransport == LinkTransport::EspNow) {
+        stopWebSocketSession();
+        if(remote_wifi_is_active()) {
+            remote_wifi_stop();
+        }
+        initEspNow();
+    }
+
+    if(!isLinkOnline() && (millis() - app.lastTransportSwitchAt) >= remote_config::kTransportSearchWindowMs) {
+        const LinkTransport fallback = alternateTransport();
+        if(fallback != app.currentTransport) {
+            switchTransportNow(fallback);
+        } else {
+            app.lastTransportSwitchAt = millis();
+        }
+    }
+}
+
+void syncPolling() {
+    if(millis() - app.lastStatusPollAt >= remote_config::kStatusPollMs) {
+        requestStatus();
+        app.lastStatusPollAt = millis();
+    }
+
+    if(millis() - app.lastBackgroundMenuPollAt >= remote_config::kBackgroundMenuPollMs) {
+        requestMenu(1);
+        app.lastBackgroundMenuPollAt = millis();
+    }
+
+    requestVisibleMenuIfNeeded(false);
+}
+
 void applyMenuValue(const SettingItem& item, int32_t value) {
     if(item.menuNum == 0) {
         return;
     }
 
     app.menuValues[item.menuNum][item.itemIdx] = value;
+    if(item.menuNum == 1 && item.itemIdx == RADIOMODE) {
+        app.radioModeKnown = true;
+        scheduleTransportSwitch(transportFromRadioMode(value), remote_config::kTransportSwitchDelayMs);
+    }
     sendRaw(sg98_protocol::setMenuValue(item.menuNum, item.itemIdx, value));
     app.lastMenuPollAt[item.menuNum] = 0;
     app.lastStatusPollAt = 0;
@@ -1200,139 +1705,6 @@ void handleDialDelta(int delta) {
     moveSelection(delta);
 }
 
-void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
-    app.status = status;
-    app.hasStatus = true;
-    app.lastStatusAt = millis();
-    app.preferGbw = status.state == "IDLE_GBW" || status.state == "GRINDING_GBW";
-    if(!app.targetDirty) {
-        app.manualRpm = status.setRpm;
-        app.weightMg = status.setWeightMg;
-    }
-    app.redraw = true;
-}
-
-void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
-    if(frame.menuNum >= 5) {
-        return;
-    }
-
-    for(uint8_t i = 0; i < frame.count && i < sg98_protocol::kMaxMenuValues; ++i) {
-        app.menuValues[frame.menuNum][i] = frame.values[i];
-    }
-    app.menuSynced[frame.menuNum] = true;
-    app.redraw = true;
-}
-
-void onEspNowSent(const uint8_t*, esp_now_send_status_t status) {
-    app.sendOk = (status == ESP_NOW_SEND_SUCCESS);
-    app.sendComplete = true;
-}
-
-void onEspNowReceive(const uint8_t*, const uint8_t* data, int len) {
-    if(data == nullptr || len <= 0) {
-        return;
-    }
-
-    const String frame = String(reinterpret_cast<const char*>(data));
-    sg98_protocol::StatusFrame statusFrame;
-    if(sg98_protocol::parseStatusFrame(frame, &statusFrame)) {
-        consumeStatusFrame(statusFrame);
-        return;
-    }
-
-    sg98_protocol::MenuFrame menuFrame;
-    if(sg98_protocol::parseMenuFrame(frame, &menuFrame)) {
-        consumeMenuFrame(menuFrame);
-        return;
-    }
-
-    sg98_protocol::AckFrame ackFrame;
-    if(sg98_protocol::parseAckFrame(frame, &ackFrame)) {
-        setToast(ackFrame.ok ? ackFrame.message : String("ERR: ") + ackFrame.message);
-        return;
-    }
-}
-
-bool initEspNow() {
-    if(!remote_config::kTargetMacConfigured) {
-        setToast("Set target MAC", 60000);
-        return false;
-    }
-
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
-
-    if(esp_wifi_set_channel(remote_config::kEspNowChannel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
-        setToast("Channel setup failed");
-        return false;
-    }
-
-    if(esp_now_init() != ESP_OK) {
-        setToast("ESP-NOW init failed");
-        return false;
-    }
-
-    if(esp_now_register_send_cb(onEspNowSent) != ESP_OK) {
-        esp_now_deinit();
-        setToast("Send callback failed");
-        return false;
-    }
-
-    if(esp_now_register_recv_cb(onEspNowReceive) != ESP_OK) {
-        esp_now_deinit();
-        setToast("Receive callback failed");
-        return false;
-    }
-
-    esp_now_peer_info_t peer = {};
-    memcpy(peer.peer_addr, remote_config::kTargetMac, sizeof(remote_config::kTargetMac));
-    peer.channel = remote_config::kEspNowChannel;
-    peer.ifidx = WIFI_IF_STA;
-    peer.encrypt = false;
-    if(!esp_now_is_peer_exist(remote_config::kTargetMac) && esp_now_add_peer(&peer) != ESP_OK) {
-        esp_now_deinit();
-        setToast("Add peer failed");
-        return false;
-    }
-
-    app.espNowReady = true;
-    setToast("ESP-NOW ready");
-    return true;
-}
-
-void handleSendCompletion() {
-    if(!app.sendComplete) {
-        return;
-    }
-
-    app.sendComplete = false;
-    if(!app.sendOk) {
-        setToast("Send failed");
-    }
-}
-
-void updateSyncFromStatusFallback() {
-    if(app.hasStatus && !app.targetDirty) {
-        app.manualRpm = app.status.setRpm;
-        app.weightMg = app.status.setWeightMg;
-    }
-}
-
-void syncPolling() {
-    if(millis() - app.lastStatusPollAt >= remote_config::kStatusPollMs) {
-        requestStatus();
-        app.lastStatusPollAt = millis();
-    }
-
-    if(millis() - app.lastBackgroundMenuPollAt >= remote_config::kBackgroundMenuPollMs) {
-        requestMenu(1);
-        app.lastBackgroundMenuPollAt = millis();
-    }
-
-    requestVisibleMenuIfNeeded(false);
-}
-
 void handlePrimaryShortPress() {
     if(app.screen == Screen::Home) {
         setScreen(Screen::Main);
@@ -1355,6 +1727,8 @@ void toggleModeAction() {
 
 void stopEspNowSession() {
     if(app.espNowReady) {
+        esp_now_unregister_recv_cb();
+        esp_now_unregister_send_cb();
         esp_now_deinit();
         app.espNowReady = false;
     }
@@ -1394,6 +1768,7 @@ void enterIdleSleepIfNeeded() {
         return;
     }
 
+    const LinkTransport resumeTransport = app.currentTransport == LinkTransport::None ? initialTransport() : app.currentTransport;
     const RemoteBoardPins& pins = remote_board_pins();
     bool wakeConfigured = false;
     wakeConfigured = configureWakePin(pins.touchInt) || wakeConfigured;
@@ -1405,7 +1780,12 @@ void enterIdleSleepIfNeeded() {
 
     remote_board_set_backlight(0);
     remote_board_apply_indicator({});
+    stopWebSocketSession();
+    if(remote_wifi_is_active()) {
+        remote_wifi_stop();
+    }
     stopEspNowSession();
+    app.currentTransport = LinkTransport::None;
 
     esp_sleep_enable_gpio_wakeup();
     Serial.flush();
@@ -1417,7 +1797,7 @@ void enterIdleSleepIfNeeded() {
     clearWakePin(pins.encoderSwitch);
 
     remote_board_set_backlight(currentBacklightLevel());
-    initEspNow();
+    switchTransportNow(resumeTransport);
     requestStatus();
     requestVisibleMenuIfNeeded(true);
     app.lastStatusPollAt = millis();
@@ -1652,15 +2032,19 @@ void remote_app_setup() {
         setToast("Board init failed", 60000);
     }
 
+    remote_wifi_init();
+    wsClient.onEvent(onWsEvent);
     seedMenuDefaults();
     app.manualRpm = default_setRPM;
     app.weightMg = default_setWeight;
     app.preferGbw = false;
     app.redraw = true;
     app.lastUserActivityAt = millis();
+    app.currentTransport = LinkTransport::None;
+    app.lastTransportSwitchAt = millis();
     refreshBatteryStatus(true);
 
-    initEspNow();
+    switchTransportNow(initialTransport());
     requestStatus();
     requestMenu(1);
     requestMenu(2);
@@ -1676,6 +2060,7 @@ void remote_app_loop() {
         markUserActivity();
     }
 
+    manageTransport();
     if(input.primaryLongPress) {
         handlePrimaryLongPress();
     }

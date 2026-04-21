@@ -1,7 +1,8 @@
 # SG98 Remote
 
-This is the separate PlatformIO project for SG98 handheld remotes that talk to
-the controller board over `ESP-NOW`.
+This is the separate PlatformIO project for SG98 handheld remotes that can talk
+to the controller board over `ESP-NOW` or over `WebSocket` when both devices
+are on the same home Wi-Fi.
 
 It is intentionally separate from the main grinder controller firmware:
 
@@ -25,7 +26,7 @@ environment.
 The remote app is shared across boards through a small board HAL:
 
 - display and touch/encoder input are board-specific
-- `ESP-NOW`, SG98 protocol parsing, menus, and screen flow are shared
+- `ESP-NOW`, `WebSocket`, SG98 protocol parsing, menus, and screen flow are shared
 - touch-only boards can simulate the rotary workflow with circular drag gestures
 - the runtime picks the board driver by probing the known peripheral set at boot
 
@@ -49,7 +50,9 @@ Vendor hardware references for the supported remote boards are cached under:
 
 ## Current behavior
 
-- bi-directional `ESP-NOW` remote for the SG98 controller
+- bi-directional SG98 remote transport over:
+  - `ESP-NOW` when the controller radio mode is `ESP-NOW`
+  - `WebSocket` when the controller radio mode is `WEB` and both devices are on the same LAN
 - live status, mode, RPM, weight, drive, comm, torque, and error display
 - live battery / USB / charging status on supported boards
 - screen switching for main control, purge settings, GBW settings, and system
@@ -60,6 +63,8 @@ Vendor hardware references for the supported remote boards are cached under:
 - touch-driven dial, taps, and menu scrolling on Waveshare AMOLED
 - native USB-C serial debug console exposed through the board HAL
 - idle light-sleep with wake on supported touch/button inputs
+- remote-side Wi-Fi onboarding portal with captive AP, saved STA credentials,
+  LAN reconnect, and mDNS controller discovery
 
 ## Configuration
 
@@ -68,6 +73,14 @@ Edit [include/remote_config.h](include/remote_config.h) before first use:
 - set `kTargetMac` to the SG98 controller board's `STA` MAC address
 - set `kTargetMacConfigured = true`
 - keep `kEspNowChannel = 1` unless the SG98 controller firmware changes too
+
+For `WebSocket` mode:
+
+- the remote brings up its own setup AP when it needs Wi-Fi onboarding
+- connect a phone or laptop to the remote AP and browse to `http://192.168.4.1/`
+- save the same home Wi-Fi SSID/password used by the controller
+- once both devices are on the same LAN, the remote discovers the controller
+  with mDNS and switches to `WebSocket` automatically
 
 ## Build
 
@@ -84,9 +97,9 @@ Edit [include/remote_config.h](include/remote_config.h) before first use:
 ## Notes
 
 - The controller-side receiver lives in the repo root under
-  `src/espnow_control.cpp`.
+  `src/espnow_control.cpp`, `src/remote_link.cpp`, and `src/remote_ws.cpp`.
 - Set the target controller MAC before first upload or the remote will stay in
-  pairing/config mode.
+  `ESP-NOW` pairing/config mode.
 - The Waveshare board is touch-only, so circular drag gestures replace the
   physical encoder.
 - This universal build is currently intended for the supported `ESP32-S3R8N16`
