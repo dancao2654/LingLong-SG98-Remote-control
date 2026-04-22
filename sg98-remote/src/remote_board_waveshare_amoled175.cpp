@@ -737,7 +737,9 @@ bool pingTouchController() {
     delay(30);
     digitalWrite(kBoardPins.touchReset, HIGH);
     delay(50);
+    Wire.end();
     Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, kI2cClock);
+    Wire.setTimeOut(20);
     for(uint8_t attempt = 1; attempt <= kTouchProbeAttempts; ++attempt) {
         Wire.beginTransmission(kTouchAddress);
         if(Wire.endTransmission() == 0) {
@@ -760,7 +762,9 @@ bool waveshare_probe() {
 
 bool waveshare_init() {
     Serial.println("[remote] waveshare init start");
+    Wire.end();
     Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, kI2cClock);
+    Wire.setTimeOut(20);
     pinMode(kBootButtonPin, INPUT_PULLUP);
 
     pinMode(kBoardPins.touchReset, OUTPUT);
@@ -774,7 +778,7 @@ bool waveshare_init() {
     g_touch.setPins(kBoardPins.touchReset, kBoardPins.touchInt);
     bool touchReady = false;
     for(uint8_t attempt = 1; attempt <= kTouchInitAttempts; ++attempt) {
-        if(g_touch.begin(Wire, kTouchAddress, kBoardPins.touchSda, kBoardPins.touchScl)) {
+        if(g_touch.begin(Wire, kTouchAddress)) {
             touchReady = true;
             if(attempt > 1) {
                 Serial.printf("[remote] waveshare touch init succeeded on attempt %u\n", attempt);
@@ -806,6 +810,7 @@ bool waveshare_init() {
         Serial.println("[remote] waveshare power button sense unavailable");
     }
 
+    Wire.end();
     g_pmicReady = g_pmic.begin(Wire, AXP2101_SLAVE_ADDRESS, kBoardPins.touchSda, kBoardPins.touchScl);
     if(g_pmicReady) {
         g_pmic.enableBattDetection();

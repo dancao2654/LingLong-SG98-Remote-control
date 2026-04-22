@@ -4,7 +4,7 @@ This folder builds self-contained updater executables for SG98.
 
 The updater bundles:
 
-- the SG98 application firmware image
+- the exact SG98 flash image set for the selected controller build
 - the updater app itself
 - and, on Windows, Espressif's official `esptool.exe`
 
@@ -20,11 +20,17 @@ On macOS, the updater now prefers `/dev/cu.usbmodem*` and `/dev/cu.usbserial*` d
 
 ## What it flashes
 
-This updater currently flashes the application image only:
+This updater now flashes the same image set PlatformIO expects for the selected
+controller environment:
 
-- `firmware.bin` -> `0x10000`
+- bootloader image at its PlatformIO offset
+- partition table image at its PlatformIO offset
+- `boot_app0.bin` at its PlatformIO offset
+- the application image at its PlatformIO offset
+- any additional board-specific flash images exported by PlatformIO
 
-That is the correct path for field upgrades on boxes that already have the proper bootloader and partition table.
+This avoids bundling a controller update that only writes `firmware.bin` while
+silently assuming the box already has a matching bootloader and partition table.
 
 ## Platform notes
 
@@ -55,7 +61,7 @@ If upload still fails after choosing the USB port, hold `BOOT0`, short-press `EN
 From the repo root:
 
 ```bash
-python3 tools/windows_updater/prepare_assets.py
+python3 tools/windows_updater/prepare_assets.py --env adafruit_feather_esp32s3
 python3 tools/windows_updater/build_updater.py --rid osx-arm64
 ```
 
@@ -65,11 +71,15 @@ Or through PlatformIO as a single custom target on an Apple Silicon Mac:
 ~/.platformio/penv/bin/pio run -e adafruit_feather_esp32s3 -t bundle_macos_updater
 ```
 
+The same target also works for remote environments such as `remote-universal-s3`.
+Those builds automatically emit `SG98-Remote-Updater-*` artifacts under
+`publish/remote/` and `publish/bundles/`.
+
 Output:
 
 ```text
-tools/windows_updater/publish/osx-arm64/SG98-Updater
-tools/windows_updater/publish/SG98-Updater-osx-arm64.zip
+tools/windows_updater/publish/controller/osx-arm64/SG98-Updater
+tools/windows_updater/publish/bundles/SG98-Updater-osx-arm64.zip
 ```
 
 Share the `.zip`, not just the bare binary. The archive includes the updater plus
@@ -82,8 +92,8 @@ From PowerShell in the repo root:
 
 ```powershell
 py tools/windows_updater/fetch_esptool.py
-py tools/windows_updater/prepare_assets.py
-py tools/windows_updater/build_updater.py
+py tools/windows_updater/prepare_assets.py --env adafruit_feather_esp32s3
+py tools/windows_updater/build_updater.py --rid win-x64
 ```
 
 Or through PlatformIO:
@@ -92,16 +102,19 @@ Or through PlatformIO:
 pio run -e adafruit_feather_esp32s3 -t bundle_windows_updater
 ```
 
+Remote environments use the same target name and automatically switch to the
+`SG98-Remote-Updater-*` output names.
+
 Output:
 
 ```text
-tools/windows_updater/publish/win-x64/SG98-Updater.exe
-tools/windows_updater/publish/SG98-Updater-win-x64.zip
+tools/windows_updater/publish/controller/win-x64/SG98-Updater.exe
+tools/windows_updater/publish/bundles/SG98-Updater-win-x64.zip
 ```
 
 ## Notes
 
 - The Windows updater embeds the flasher and firmware into one `.exe`.
-- The macOS updater embeds the firmware and shells out to local `python3 -m esptool`.
-- The build now also emits a `.zip` archive per runtime under `tools/windows_updater/publish/`.
-- `assets/esptool.exe` and `assets/sg98-firmware.bin` are intentionally not committed.
+- The macOS updater embeds the flash manifest and images, then shells out to local `python3 -m esptool`.
+- The build emits all distributable `.zip` bundles and matching `.md5` files under `tools/windows_updater/publish/bundles/`.
+- `assets/esptool.exe`, `assets/flash-*.bin`, and `assets/sg98-flash-manifest.json` are intentionally not committed.

@@ -8,3 +8,5 @@
 .vscode/launch-*.json
 .vscode/ipch
 firmware-backups/
+tools/windows_updater/assets/
+tools/windows_updater/__pycache__/

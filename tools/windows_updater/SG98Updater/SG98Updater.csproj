@@ -13,7 +13,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="..\assets\sg98-firmware.bin" LogicalName="Assets.sg98-firmware.bin" />
+    <EmbeddedResource Include="..\assets\sg98-flash-manifest.json" LogicalName="Assets.sg98-flash-manifest.json" />
+    <EmbeddedResource Include="..\assets\flash-*.bin" LogicalName="Assets.%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">

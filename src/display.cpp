@@ -421,8 +421,9 @@ void drawTopIndicators(int screenId) {
   // Reserve only as much of the header as the short motor badge needs so the
   // Wi-Fi status line has enough room for a full IPv4 address.
   const int regionWidth = 88;
-  const int motorBaselineY = 18;
-  const int wifiBaselineY = 18;
+  // Drop the header text slightly so the enclosure lip does not clip it.
+  const int motorBaselineY = 20;
+  const int wifiBaselineY = 20;
   const int rightX = SCREEN_WIDTH - rightMargin;
   const int regionX = SCREEN_WIDTH - (regionWidth + 12);
   const int leftRegionWidth = regionX - leftMargin - 8;

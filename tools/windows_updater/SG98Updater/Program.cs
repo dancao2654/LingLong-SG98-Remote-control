@@ -1,15 +1,15 @@
 using System.Diagnostics;
 using System.IO.Ports;
 using System.Reflection;
+using System.Text.Json;
 
 namespace SG98Updater;
 
 internal static class Program
 {
-    private const string FirmwareAddress = "0x10000";
     private const string DefaultBaud = "460800";
     private const string EsptoolResource = "Assets.esptool.exe";
-    private const string FirmwareResource = "Assets.sg98-firmware.bin";
+    private const string ManifestResource = "Assets.sg98-flash-manifest.json";
 
     private static int Main(string[] args)
     {
@@ -28,15 +28,18 @@ internal static class Program
             string workDir = Path.Combine(Path.GetTempPath(), "SG98Updater");
             Directory.CreateDirectory(workDir);
 
-            string firmwarePath = ExtractResource(FirmwareResource, Path.Combine(workDir, "sg98-firmware.bin"));
+            FlashManifest manifest = LoadManifest();
+            List<ExtractedSegment> segments = ExtractFlashSegments(manifest, workDir);
 
+            Console.WriteLine($"Bundle target: {DescribeBundle(manifest)}");
             Console.WriteLine($"Port: {port}");
-            Console.WriteLine("Flashing application image...");
+            Console.WriteLine("Flashing controller image set...");
             Console.WriteLine();
 
+            string imageArgs = string.Join(" ", segments.Select(static segment => $"{segment.Offset} \"{segment.Path}\""));
             string flasherArgs =
                 $"--chip esp32s3 --port {port} --baud {DefaultBaud} --before default_reset --after hard_reset " +
-                $"write_flash -z --flash_size detect {FirmwareAddress} \"{firmwarePath}\"";
+                $"write_flash -z --flash_size detect {imageArgs}";
 
             var flasher = ResolveFlasher(workDir);
             int exitCode = RunProcess(flasher.FileName, flasher.ArgumentsPrefix + flasherArgs);
@@ -68,6 +71,60 @@ internal static class Program
             PauseIfInteractive();
             return 1;
         }
+    }
+
+    private static FlashManifest LoadManifest()
+    {
+        using Stream? stream = Assembly.GetExecutingAssembly().GetManifestResourceStream(ManifestResource);
+        if (stream is null)
+        {
+            throw new InvalidOperationException($"Embedded resource not found: {ManifestResource}");
+        }
+
+        using StreamReader reader = new(stream);
+        FlashManifest? manifest = JsonSerializer.Deserialize<FlashManifest>(
+            reader.ReadToEnd(),
+            new JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true,
+            });
+
+        if (manifest is null || manifest.Segments.Count == 0)
+        {
+            throw new InvalidOperationException("Updater manifest is missing flash segment data.");
+        }
+
+        foreach (FlashSegment segment in manifest.Segments)
+        {
+            if (string.IsNullOrWhiteSpace(segment.Offset) || string.IsNullOrWhiteSpace(segment.FileName))
+            {
+                throw new InvalidOperationException("Updater manifest contains an incomplete flash segment entry.");
+            }
+        }
+
+        manifest.Segments = manifest.Segments
+            .OrderBy(static segment => ParseOffset(segment.Offset!))
+            .ToList();
+        return manifest;
+    }
+
+    private static List<ExtractedSegment> ExtractFlashSegments(FlashManifest manifest, string workDir)
+    {
+        List<ExtractedSegment> segments = new();
+        foreach (FlashSegment segment in manifest.Segments)
+        {
+            string safeFileName = Path.GetFileName(segment.FileName!);
+            if (!string.Equals(safeFileName, segment.FileName, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Invalid asset name in updater manifest: {segment.FileName}");
+            }
+
+            string resourceName = $"Assets.{safeFileName}";
+            string extractedPath = ExtractResource(resourceName, Path.Combine(workDir, safeFileName));
+            segments.Add(new ExtractedSegment(segment.Offset!, extractedPath, segment.Kind ?? "image"));
+        }
+
+        return segments;
     }
 
     private static (string FileName, string ArgumentsPrefix) ResolveFlasher(string workDir)
@@ -253,6 +310,18 @@ internal static class Program
         return process.ExitCode;
     }
 
+    private static string DescribeBundle(FlashManifest manifest)
+    {
+        string env = string.IsNullOrWhiteSpace(manifest.EnvName) ? "unknown-env" : manifest.EnvName!;
+        string board = string.IsNullOrWhiteSpace(manifest.BoardName) ? env : manifest.BoardName!;
+        return $"{env} [{board}]";
+    }
+
+    private static long ParseOffset(string value)
+    {
+        return Convert.ToInt64(value, 16);
+    }
+
     private static int PortPriority(string port)
     {
         if (IsLikelyUsbFlashingPort(port))
@@ -338,4 +407,22 @@ internal static class Program
             Console.ReadLine();
         }
     }
+
+    private sealed class FlashManifest
+    {
+        public string? EnvName { get; set; }
+        public string? BoardName { get; set; }
+        public string? ApplicationOffset { get; set; }
+        public List<FlashSegment> Segments { get; set; } = [];
+    }
+
+    private sealed class FlashSegment
+    {
+        public string? Offset { get; set; }
+        public string? FileName { get; set; }
+        public string? SourceName { get; set; }
+        public string? Kind { get; set; }
+    }
+
+    private sealed record ExtractedSegment(string Offset, string Path, string Kind);
 }

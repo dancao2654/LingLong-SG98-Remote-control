@@ -3673,6 +3673,90 @@ void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, cons
         return;
     }
 
+    if(count == 2) {
+        const uint8_t selected = selectionFor(app.screen);
+        const uint8_t other = static_cast<uint8_t>(wrapMenuItemIndex(selected, 1, count));
+        const Rect content = roundMenuContentRect(layout);
+        const int16_t centerX = static_cast<int16_t>(content.x + content.w / 2);
+        const int16_t centerY = static_cast<int16_t>(layout.menuRows[1].y + layout.menuRows[1].h / 2);
+        const int16_t stepDistance = max<int16_t>(1, abs(static_cast<int16_t>(layout.menuRows[1].y - layout.menuRows[0].y)));
+        const float offsetSteps = app.menuRollOffset / static_cast<float>(stepDistance);
+        const int16_t farInsetMax = clampI16(static_cast<int16_t>(content.w / 9), 12, 22);
+        const int relOrder[] = {-1, 1, 0};
+
+        drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+
+        for(size_t i = 0; i < arrayCount(relOrder); ++i) {
+            const int rel = relOrder[i];
+            const float visualOffset = static_cast<float>(rel) + offsetSteps;
+            const float distance = fabsf(visualOffset);
+            if(distance > 1.35f) {
+                continue;
+            }
+
+            float prominence = 1.0f - (distance / 1.35f);
+            if(prominence < 0.0f) {
+                prominence = 0.0f;
+            }
+            prominence *= prominence;
+
+            const bool focused = rel == 0;
+            const SettingItem& item = items[focused ? selected : other];
+            const bool dangerArmed = focused && item.kind == ItemKind::Danger && dangerIsArmed(app.screen, selected);
+            const uint16_t accent = dangerArmed ? kColorDanger : roundMenuItemAccentColor(item);
+            const int16_t inset =
+                focused ? 8 : clampI16(static_cast<int16_t>(8.0f + distance * static_cast<float>(farInsetMax)), 8, farInsetMax);
+            const int16_t rowW = focused ? max<int16_t>(200, static_cast<int16_t>(content.w - 16))
+                                         : max<int16_t>(180, static_cast<int16_t>(content.w - inset * 2));
+            const int16_t rowH = focused ? clampI16(static_cast<int16_t>(layout.rowH + 8), 52, 72)
+                                         : clampI16(static_cast<int16_t>(46.0f + prominence * 18.0f), 44, 62);
+            const int16_t rowX = static_cast<int16_t>(centerX - (rowW / 2));
+            const int16_t rowY =
+                static_cast<int16_t>(centerY + lroundf(visualOffset * static_cast<float>(stepDistance)) - (rowH / 2));
+            const Rect rowRect = {rowX, rowY, rowW, rowH};
+            const uint16_t baseFace = blendColor565(kColorPanel, accent, focused ? 0.28f : (0.10f + prominence * 0.20f));
+            const uint16_t face = blendColor565(kColorBg, baseFace, focused ? 0.84f : (0.18f + prominence * 0.70f));
+            const uint16_t border = focused ? blendColor565(accent, kColorText, 0.20f)
+                                            : blendColor565(face, accent, 0.10f + prominence * 0.12f);
+            const uint16_t textBase = blendColor565(kColorMuted, kColorBg, 0.16f);
+            const uint16_t textColor = focused ? blendColor565(kColorText, accent, 0.08f)
+                                               : blendColor565(textBase, kColorText, 0.18f + prominence * 0.72f);
+            const int16_t radius = clampI16(static_cast<int16_t>(rowRect.h / 2), 16, 28);
+            const String label = upperText(displayLabelForItem(item));
+            const RemoteTextStyle labelStyle =
+                focused ? chooseMenuHeroTextStyle(label, static_cast<int16_t>(rowRect.w - 20))
+                        : (distance < 1.05f ? chooseLabelTextStyle(label, static_cast<int16_t>(rowRect.w - 18))
+                                            : RemoteTextStyle::Small);
+
+            canvas.fillRoundRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, radius, face);
+            canvas.drawRoundRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, radius, border);
+            if(focused && rowRect.w > 8 && rowRect.h > 8) {
+                const int16_t innerRadius = clampI16(static_cast<int16_t>(radius - 2), 12, 24);
+                canvas.drawRoundRect(rowRect.x + 2,
+                                     rowRect.y + 2,
+                                     rowRect.w - 4,
+                                     rowRect.h - 4,
+                                     innerRadius,
+                                     blendColor565(border, kColorText, 0.18f));
+            }
+
+            drawSoftCenteredText(canvas,
+                                 fitTextToWidthNoTilde(label, static_cast<int16_t>(rowRect.w - 24), labelStyle, 4),
+                                 centerX,
+                                 static_cast<int16_t>(rowRect.y + rowRect.h / 2),
+                                 labelStyle,
+                                 textColor,
+                                 face,
+                                 accent,
+                                 !focused);
+        }
+
+        const String footerText = (app.toastUntil > millis()) ? upperText(app.toast) : String("SWIPE TO BROWSE");
+        drawFooter(canvas, layout, footerText);
+        drawRoundNav(canvas, layout);
+        return;
+    }
+
     for(int rel = -2; rel <= 2; ++rel) {
         const float visualOffset = static_cast<float>(rel) + offsetSteps;
         const float distance = fabsf(visualOffset);
