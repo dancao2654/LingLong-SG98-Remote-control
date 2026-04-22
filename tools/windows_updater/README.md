@@ -1,107 +1,79 @@
 # SG98 Desktop Updater
 
-This folder builds self-contained updater executables for SG98.
+This folder builds self-contained desktop updater bundles for the SG98
+controller and the SG98 handheld remote.
 
-The updater bundles:
+## PlatformIO Tasks
 
-- the SG98 application firmware image
-- the updater app itself
-- and, on Windows, Espressif's official `esptool.exe`
+In the PlatformIO sidebar, open the `Custom` group under these environments:
 
-The end-user flow is:
+- `adafruit_feather_esp32s3`
+- `waveshare_esp32_s3_rs485_can`
+- `remote-universal-s3`
 
-1. Connect the box to the computer over USB-C.
-2. Keep the main `+24V` supply disconnected during flashing.
-3. Run the updater.
-4. Pick the serial port if needed.
-5. Let the updater flash the board.
+Available updater tasks:
 
-On macOS, the updater now prefers `/dev/cu.usbmodem*` and `/dev/cu.usbserial*` devices and auto-selects the board when there is only one likely USB candidate.
+- `Bundle Windows Updater`
+- `Bundle macOS ARM64 Updater`
+- `Bundle All Windows Updaters`
+- `Bundle All macOS ARM64 Updaters`
+- `Bundle All Updaters`
 
-## What it flashes
+The aggregate tasks build the currently shipped updater set:
 
-This updater currently flashes the application image only:
+- controller updater from `adafruit_feather_esp32s3`
+- remote updater from `remote-universal-s3`
 
-- `firmware.bin` -> `0x10000`
+Bundle generation is pinned to the release runtimes:
 
-That is the correct path for field upgrades on boxes that already have the proper bootloader and partition table.
+- Windows bundles -> `win-x64`
+- macOS bundles -> `osx-arm64`
 
-## Platform notes
+That means the same PlatformIO task can be run on both Windows and macOS
+machines and will still emit the same release bundle set.
 
-### Windows
+## Output Layout
 
-Most Windows 10/11 systems should expose the ESP32-S3 as a `COM` port without extra setup.
+Unpacked runtime outputs are written under:
 
-If no COM port appears, install Espressif's ESP32-C3/S3 USB driver support:
+- `tools/windows_updater/publish/controller/`
+- `tools/windows_updater/publish/remote/`
+- `tools/windows_updater/publish/controller-waveshare/`
 
-- https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/jtag-debugging/configure-builtin-jtag.html
+Distributable zip bundles and checksums are written under:
 
-### macOS
+- `tools/windows_updater/publish/bundles/`
 
-The macOS updater is published as a native `osx-arm64` or `osx-x64` console binary depending on the machine that builds it.
+Examples:
 
-At runtime, the macOS updater uses the local Python `esptool` package instead of an embedded `.exe`.
+- `SG98-Updater-win-x64.zip`
+- `SG98-Updater-win-x64.zip.md5`
+- `SG98-Remote-Updater-osx-arm64.zip`
+- `SG98-Remote-Updater-osx-arm64.zip.md5`
+- `SG98-Updater-osx-arm64.zip`
+- `SG98-Remote-Updater-win-x64.zip`
 
-Install that once with:
+## Direct Script Usage
 
-```bash
-python3 -m pip install --user esptool
-```
-
-If upload still fails after choosing the USB port, hold `BOOT0`, short-press `EN`, then retry.
-
-## Build on macOS/Linux
-
-From the repo root:
-
-```bash
-python3 tools/windows_updater/prepare_assets.py
-python3 tools/windows_updater/build_updater.py --rid osx-arm64
-```
-
-Or through PlatformIO as a single custom target on an Apple Silicon Mac:
+Build a controller updater from the repo root:
 
 ```bash
-~/.platformio/penv/bin/pio run -e adafruit_feather_esp32s3 -t bundle_macos_updater
+python3 tools/windows_updater/prepare_assets.py --env adafruit_feather_esp32s3
+python3 tools/windows_updater/build_updater.py --rid win-x64 --output-base SG98-Updater --publish-subdir controller
+python3 tools/windows_updater/build_updater.py --rid osx-arm64 --output-base SG98-Updater --publish-subdir controller
 ```
 
-Output:
+Build a remote updater from the repo root:
 
-```text
-tools/windows_updater/publish/osx-arm64/SG98-Updater
-tools/windows_updater/publish/SG98-Updater-osx-arm64.zip
-```
-
-Share the `.zip`, not just the bare binary. The archive includes the updater plus
-any companion dylibs needed at runtime and preserves executable permissions when
-unpacked on macOS.
-
-## Build on Windows
-
-From PowerShell in the repo root:
-
-```powershell
-py tools/windows_updater/fetch_esptool.py
-py tools/windows_updater/prepare_assets.py
-py tools/windows_updater/build_updater.py
-```
-
-Or through PlatformIO:
-
-```powershell
-pio run -e adafruit_feather_esp32s3 -t bundle_windows_updater
-```
-
-Output:
-
-```text
-tools/windows_updater/publish/win-x64/SG98-Updater.exe
-tools/windows_updater/publish/SG98-Updater-win-x64.zip
+```bash
+python3 tools/windows_updater/prepare_assets.py --env remote-universal-s3
+python3 tools/windows_updater/build_updater.py --rid win-x64 --output-base SG98-Remote-Updater --publish-subdir remote
+python3 tools/windows_updater/build_updater.py --rid osx-arm64 --output-base SG98-Remote-Updater --publish-subdir remote
 ```
 
 ## Notes
 
-- The Windows updater embeds the flasher and firmware into one `.exe`.
-- The macOS updater embeds the firmware and shells out to local `python3 -m esptool`.
-- The build now also emits a `.zip` archive per runtime under `tools/windows_updater/publish/`.
-- `assets/esptool.exe` and `assets/sg98-firmware.bin` are intentionally not committed.
+- Windows bundles embed `esptool.exe`.
+- macOS bundles use the local `python3 -m esptool` path at runtime.
+- Each generated zip also gets a matching `.md5` file.
+- `tools/windows_updater/assets/` is a transient staging area.

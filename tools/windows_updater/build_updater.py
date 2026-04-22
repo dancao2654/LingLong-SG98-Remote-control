@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
 
 
 def run(cmd: list[str], cwd: Path) -> None:
@@ -27,19 +29,54 @@ def parse_args() -> argparse.Namespace:
         default="win-x64",
         help="dotnet runtime identifier to publish for, for example win-x64 or osx-arm64",
     )
+    parser.add_argument(
+        "--output-base",
+        default="SG98-Updater",
+        help="Base filename for the generated updater, without runtime suffix.",
+    )
+    parser.add_argument(
+        "--publish-subdir",
+        default="controller",
+        help="Subdirectory under publish/ where unpacked runtime outputs should be written.",
+    )
+    parser.add_argument(
+        "--bundle-subdir",
+        default="bundles",
+        help="Subdirectory under publish/ where zip bundles should be written.",
+    )
     return parser.parse_args()
 
 
-def output_name_for_rid(rid: str) -> str:
-    return "SG98-Updater.exe" if rid.startswith("win") else "SG98-Updater"
+def output_name_for_rid(output_base: str, rid: str) -> str:
+    return f"{output_base}.exe" if rid.startswith("win") else output_base
 
 
-def archive_name_for_rid(rid: str) -> str:
-    return f"SG98-Updater-{rid}.zip"
+def archive_name_for_rid(output_base: str, rid: str) -> str:
+    return f"{output_base}-{rid}.zip"
+
+
+def rename_published_outputs(publish_dir: Path, rid: str, output_base: str) -> Path:
+    default_base = "SG98-Updater"
+    default_output = publish_dir / output_name_for_rid(default_base, rid)
+    desired_output = publish_dir / output_name_for_rid(output_base, rid)
+
+    if default_output != desired_output and default_output.exists():
+        if desired_output.exists():
+            desired_output.unlink()
+        default_output.rename(desired_output)
+
+    default_pdb = publish_dir / f"{default_base}.pdb"
+    desired_pdb = publish_dir / f"{output_base}.pdb"
+    if default_pdb != desired_pdb and default_pdb.exists():
+        if desired_pdb.exists():
+            desired_pdb.unlink()
+        default_pdb.rename(desired_pdb)
+
+    return desired_output
 
 
 def vendor_homebrew_brotli(binary_path: Path, cwd: Path) -> None:
-    if binary_path.suffix == ".exe":
+    if binary_path.suffix == ".exe" or sys.platform != "darwin":
         return
 
     otool_output = read_stdout(["otool", "-L", str(binary_path)], cwd=cwd)
@@ -101,17 +138,16 @@ def vendor_homebrew_brotli(binary_path: Path, cwd: Path) -> None:
             cwd=cwd,
         )
 
-    # Ad-hoc sign the patched binaries so Gatekeeper and dyld accept the edits.
     for target in [*copied, binary_path]:
         run(["codesign", "--force", "--sign", "-", str(target)], cwd=cwd)
 
 
-def create_release_archive(publish_dir: Path, rid: str, cwd: Path) -> Path:
-    archive_path = publish_dir.parent / archive_name_for_rid(rid)
+def create_release_archive(bundle_root: Path, publish_dir: Path, output_base: str, rid: str, cwd: Path) -> Path:
+    archive_path = bundle_root / archive_name_for_rid(output_base, rid)
     if archive_path.exists():
         archive_path.unlink()
 
-    folder_name = f"SG98-Updater-{rid}"
+    folder_name = f"{output_base}-{rid}"
     with tempfile.TemporaryDirectory(prefix="sg98-updater-archive-") as temp_dir_str:
         temp_dir = Path(temp_dir_str)
         stage_dir = temp_dir / folder_name
@@ -125,9 +161,19 @@ def create_release_archive(publish_dir: Path, rid: str, cwd: Path) -> Path:
     return archive_path
 
 
+def write_md5_file(archive_path: Path) -> Path:
+    digest = hashlib.md5(archive_path.read_bytes()).hexdigest()
+    md5_path = archive_path.with_name(f"{archive_path.name}.md5")
+    md5_path.write_text(f"{digest}  {archive_path.name}\n", encoding="ascii")
+    return md5_path
+
+
 def main() -> int:
     args = parse_args()
     rid = args.rid
+    output_base = args.output_base.strip() or "SG98-Updater"
+    publish_subdir = args.publish_subdir.strip().strip("/\\")
+    bundle_subdir = args.bundle_subdir.strip().strip("/\\")
 
     root = Path(__file__).resolve().parent
     assets = root / "assets"
@@ -140,8 +186,19 @@ def main() -> int:
         raise FileNotFoundError(f"Missing updater assets: {', '.join(missing)}")
 
     project = root / "SG98Updater" / "SG98Updater.csproj"
-    publish_dir = root / "publish" / rid
+
+    publish_root = root / "publish"
+    if publish_subdir:
+        publish_root /= publish_subdir
+    publish_dir = publish_root / rid
+    if publish_dir.exists():
+        shutil.rmtree(publish_dir)
     publish_dir.mkdir(parents=True, exist_ok=True)
+
+    bundle_root = root / "publish"
+    if bundle_subdir:
+        bundle_root /= bundle_subdir
+    bundle_root.mkdir(parents=True, exist_ok=True)
 
     run(
         [
@@ -162,11 +219,13 @@ def main() -> int:
         ],
         cwd=root,
     )
-    output_path = publish_dir / output_name_for_rid(rid)
+    output_path = rename_published_outputs(publish_dir, rid, output_base)
     vendor_homebrew_brotli(output_path, cwd=root)
-    archive_path = create_release_archive(publish_dir, rid, cwd=root)
+    archive_path = create_release_archive(bundle_root, publish_dir, output_base, rid, cwd=root)
+    md5_path = write_md5_file(archive_path)
     print(f"[ok] {output_path}")
     print(f"[ok] {archive_path}")
+    print(f"[ok] {md5_path}")
     return 0
 
 
