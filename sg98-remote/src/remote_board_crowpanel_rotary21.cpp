@@ -13,7 +13,7 @@ constexpr uint16_t kDisplayWidth = 480;
 constexpr uint16_t kDisplayHeight = 480;
 constexpr uint16_t kColorBlack = 0x0000;
 
-constexpr uint32_t kI2cClock = 400000U;
+constexpr uint32_t kI2cClock = 100000U;
 constexpr uint8_t kI2cAddressExpander = 0x21;
 constexpr uint8_t kI2cAddressTouch = 0x15;
 
@@ -23,8 +23,12 @@ constexpr uint8_t kExpanderDisplayPower = 3;
 constexpr uint8_t kExpanderDisplayReset = 4;
 constexpr uint8_t kExpanderEncoderSwitch = 5;
 
-constexpr uint32_t kButtonDebounceMs = 18;
+constexpr uint32_t kButtonDebounceMs = 12;
 constexpr uint32_t kLongPressMs = 750;
+constexpr uint16_t kEncoderFilterUs = 40;
+constexpr bool kDebugEncoderButton = false;
+constexpr uint32_t kTouchProbeTimeoutMs = 900;
+constexpr uint32_t kTouchProbeIntervalMs = 40;
 
 constexpr uint8_t kBacklightPwmChannel = 2;
 constexpr uint8_t kBacklightDefault = 200;
@@ -278,13 +282,29 @@ struct ButtonState {
     bool stablePressed = false;
     uint32_t debounceStartedAt = 0;
     uint32_t stableChangedAt = 0;
+    uint32_t pressObservedAt = 0;
     bool longLatched = false;
+    bool pressObserved = false;
     bool idleLevel = true;
+    bool debugHaveLastRead = false;
+    bool debugLastReadOk = false;
+    uint8_t debugLastExpander = 0xFF;
 };
 
 class CrowPanelRotary21Canvas : public RemoteCanvas {
   public:
-    explicit CrowPanelRotary21Canvas(CrowPanelRotary21Display* display) : display_(display) {}
+    explicit CrowPanelRotary21Canvas(CrowPanelRotary21Display* display)
+        : display_(display),
+          sprite_(display) {}
+
+    bool begin() {
+        if(spriteReady_) {
+            return true;
+        }
+        sprite_.setPsram(true);
+        spriteReady_ = sprite_.createSprite(display_->width(), display_->height()) != nullptr;
+        return spriteReady_;
+    }
 
     uint16_t width() const override {
         return display_->width();
@@ -295,14 +315,26 @@ class CrowPanelRotary21Canvas : public RemoteCanvas {
     }
 
     void fillScreen(uint16_t color) override {
+        if(spriteReady_) {
+            sprite_.fillScreen(color);
+            return;
+        }
         display_->fillScreen(color);
     }
 
     void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
+        if(spriteReady_) {
+            sprite_.fillRect(x, y, w, h, color);
+            return;
+        }
         display_->fillRect(x, y, w, h, color);
     }
 
     void drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
+        if(spriteReady_) {
+            sprite_.drawRect(x, y, w, h, color);
+            return;
+        }
         display_->drawRect(x, y, w, h, color);
     }
 
@@ -312,6 +344,10 @@ class CrowPanelRotary21Canvas : public RemoteCanvas {
                        int16_t h,
                        int16_t radius,
                        uint16_t color) override {
+        if(spriteReady_) {
+            sprite_.fillRoundRect(x, y, w, h, radius, color);
+            return;
+        }
         display_->fillRoundRect(x, y, w, h, radius, color);
     }
 
@@ -321,18 +357,34 @@ class CrowPanelRotary21Canvas : public RemoteCanvas {
                        int16_t h,
                        int16_t radius,
                        uint16_t color) override {
+        if(spriteReady_) {
+            sprite_.drawRoundRect(x, y, w, h, radius, color);
+            return;
+        }
         display_->drawRoundRect(x, y, w, h, radius, color);
     }
 
     void fillCircle(int16_t x, int16_t y, int16_t radius, uint16_t color) override {
+        if(spriteReady_) {
+            sprite_.fillCircle(x, y, radius, color);
+            return;
+        }
         display_->fillCircle(x, y, radius, color);
     }
 
     void drawCircle(int16_t x, int16_t y, int16_t radius, uint16_t color) override {
+        if(spriteReady_) {
+            sprite_.drawCircle(x, y, radius, color);
+            return;
+        }
         display_->drawCircle(x, y, radius, color);
     }
 
     void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) override {
+        if(spriteReady_) {
+            sprite_.drawLine(x0, y0, x1, y1, color);
+            return;
+        }
         display_->drawLine(x0, y0, x1, y1, color);
     }
 
@@ -342,9 +394,68 @@ class CrowPanelRotary21Canvas : public RemoteCanvas {
                           RemoteTextStyle style,
                           uint16_t textColor,
                           uint16_t bgColor) override {
-        configureText(style, textColor, bgColor);
+        if(spriteReady_) {
+            configureText(&sprite_, style, textColor, bgColor);
+            sprite_.setTextDatum(middle_center);
+            sprite_.drawString(text, x, y);
+            return;
+        }
+        configureText(display_, style, textColor, bgColor);
         display_->setTextDatum(middle_center);
         display_->drawString(text, x, y);
+    }
+
+    void drawCenteredTextRotated(const String& text,
+                                 int16_t x,
+                                 int16_t y,
+                                 float angleDegrees,
+                                 RemoteTextStyle style,
+                                 uint16_t textColor,
+                                 uint16_t bgColor) override {
+        if(text.length() == 0) {
+            return;
+        }
+
+        configureText(display_, style, textColor, bgColor);
+        const int16_t textW = max<int16_t>(1, static_cast<int16_t>(display_->textWidth(text)));
+        const int16_t textH = max<int16_t>(1, static_cast<int16_t>(display_->fontHeight()));
+        const int16_t spriteW = static_cast<int16_t>(textW + 10);
+        const int16_t spriteH = static_cast<int16_t>(textH + 10);
+        uint16_t transparent = 0x0001;
+        if(transparent == textColor || transparent == bgColor) {
+            transparent = 0xF81F;
+        }
+
+        LGFX_Sprite glyph(display_);
+        glyph.setColorDepth(16);
+        if(glyph.createSprite(spriteW, spriteH) == nullptr) {
+            drawCenteredText(text, x, y, style, textColor, bgColor);
+            return;
+        }
+
+        configureText(&glyph, style, textColor, transparent);
+        glyph.fillSprite(transparent);
+        glyph.setTextDatum(middle_center);
+        glyph.drawString(text, spriteW / 2, spriteH / 2);
+        glyph.setPivot(spriteW / 2.0f, spriteH / 2.0f);
+        if(spriteReady_) {
+            glyph.pushRotateZoomWithAA(&sprite_,
+                                       static_cast<float>(x),
+                                       static_cast<float>(y),
+                                       angleDegrees,
+                                       1.0f,
+                                       1.0f,
+                                       transparent);
+        } else {
+            glyph.pushRotateZoomWithAA(display_,
+                                       static_cast<float>(x),
+                                       static_cast<float>(y),
+                                       angleDegrees,
+                                       1.0f,
+                                       1.0f,
+                                       transparent);
+        }
+        glyph.deleteSprite();
     }
 
     void drawTextTopLeft(const String& text,
@@ -353,7 +464,13 @@ class CrowPanelRotary21Canvas : public RemoteCanvas {
                          RemoteTextStyle style,
                          uint16_t textColor,
                          uint16_t bgColor) override {
-        configureText(style, textColor, bgColor);
+        if(spriteReady_) {
+            configureText(&sprite_, style, textColor, bgColor);
+            sprite_.setTextDatum(top_left);
+            sprite_.drawString(text, x, y);
+            return;
+        }
+        configureText(display_, style, textColor, bgColor);
         display_->setTextDatum(top_left);
         display_->drawString(text, x, y);
     }
@@ -364,9 +481,21 @@ class CrowPanelRotary21Canvas : public RemoteCanvas {
                           RemoteTextStyle style,
                           uint16_t textColor,
                           uint16_t bgColor) override {
-        configureText(style, textColor, bgColor);
+        if(spriteReady_) {
+            configureText(&sprite_, style, textColor, bgColor);
+            sprite_.setTextDatum(top_right);
+            sprite_.drawString(text, x, y);
+            return;
+        }
+        configureText(display_, style, textColor, bgColor);
         display_->setTextDatum(top_right);
         display_->drawString(text, x, y);
+    }
+
+    void present() override {
+        if(spriteReady_) {
+            sprite_.pushSprite(0, 0);
+        }
     }
 
   private:
@@ -381,14 +510,17 @@ class CrowPanelRotary21Canvas : public RemoteCanvas {
         }
     }
 
-    void configureText(RemoteTextStyle style, uint16_t textColor, uint16_t bgColor) {
-        display_->setFont(nullptr);
-        display_->setTextSize(sizeForStyle(style));
-        display_->setTextColor(textColor, bgColor);
-        display_->setTextPadding(0);
+    template <typename TGfx>
+    void configureText(TGfx* gfx, RemoteTextStyle style, uint16_t textColor, uint16_t bgColor) {
+        gfx->setFont(nullptr);
+        gfx->setTextSize(sizeForStyle(style));
+        gfx->setTextColor(textColor, bgColor);
+        gfx->setTextPadding(0);
     }
 
     CrowPanelRotary21Display* display_;
+    LGFX_Sprite sprite_;
+    bool spriteReady_ = false;
 };
 
 CrowPanelRotary21Display g_display;
@@ -493,6 +625,50 @@ bool readExpanderBit(uint8_t bit, bool* level) {
     return true;
 }
 
+void logEncoderButtonRead(uint32_t now, bool readOk, uint8_t expanderValue, bool rawPressed) {
+    if(!kDebugEncoderButton) {
+        return;
+    }
+    if(g_button.debugHaveLastRead &&
+       g_button.debugLastReadOk == readOk &&
+       g_button.debugLastExpander == expanderValue) {
+        return;
+    }
+    g_button.debugHaveLastRead = true;
+    g_button.debugLastReadOk = readOk;
+    g_button.debugLastExpander = expanderValue;
+    Serial.printf("[remote][encbtn] t=%lu read=%d exp=0x%02X raw=%d stable=%d observed=%d long=%d idle=%d\n",
+                  static_cast<unsigned long>(now),
+                  readOk ? 1 : 0,
+                  expanderValue,
+                  rawPressed ? 1 : 0,
+                  g_button.stablePressed ? 1 : 0,
+                  g_button.pressObserved ? 1 : 0,
+                  g_button.longLatched ? 1 : 0,
+                  g_button.idleLevel ? 1 : 0);
+}
+
+void logEncoderButtonEvent(uint32_t now,
+                           const char* eventName,
+                           bool raw,
+                           bool rawPressed,
+                           uint8_t expanderValue) {
+    if(!kDebugEncoderButton) {
+        return;
+    }
+    Serial.printf("[remote][encbtn] t=%lu event=%s raw=%d rawPressed=%d stable=%d observed=%d long=%d exp=0x%02X obsAt=%lu stableAt=%lu\n",
+                  static_cast<unsigned long>(now),
+                  eventName,
+                  raw ? 1 : 0,
+                  rawPressed ? 1 : 0,
+                  g_button.stablePressed ? 1 : 0,
+                  g_button.pressObserved ? 1 : 0,
+                  g_button.longLatched ? 1 : 0,
+                  expanderValue,
+                  static_cast<unsigned long>(g_button.pressObservedAt),
+                  static_cast<unsigned long>(g_button.stableChangedAt));
+}
+
 bool pulseExpanderBit(uint8_t bit) {
     if(!setExpanderBit(bit, true)) {
         return false;
@@ -536,7 +712,28 @@ bool prepareExpander() {
 
 bool beginBoardI2c() {
     Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, kI2cClock);
+    Wire.setTimeOut(20);
     return true;
+}
+
+String scanBoardI2cBus() {
+    beginBoardI2c();
+    String found;
+    for(uint8_t address = 1; address < 0x78; ++address) {
+        Wire.beginTransmission(address);
+        if(Wire.endTransmission() == 0) {
+            if(!found.isEmpty()) {
+                found += ",";
+            }
+            char token[5];
+            snprintf(token, sizeof(token), "0x%02X", address);
+            found += token;
+        }
+    }
+    if(found.isEmpty()) {
+        found = "<none>";
+    }
+    return found;
 }
 
 bool beginExpander() {
@@ -545,6 +742,30 @@ bool beginExpander() {
         return false;
     }
     return prepareExpander();
+}
+
+bool waitForTouchReady(uint32_t timeoutMs, uint32_t intervalMs, uint32_t* elapsedMs = nullptr) {
+    const uint32_t startedAt = millis();
+    uint32_t elapsed = 0;
+    while(true) {
+        if(g_touch.ping()) {
+            if(elapsedMs != nullptr) {
+                *elapsedMs = elapsed;
+            }
+            return true;
+        }
+
+        elapsed = millis() - startedAt;
+        if(elapsed >= timeoutMs) {
+            if(elapsedMs != nullptr) {
+                *elapsedMs = elapsed;
+            }
+            return false;
+        }
+
+        delay(intervalMs);
+        elapsed = millis() - startedAt;
+    }
 }
 
 bool readEncoderButtonRaw(bool* raw) {
@@ -564,8 +785,12 @@ void initEncoderButton() {
     g_button.lastRaw = raw;
     g_button.debounceStartedAt = millis();
     g_button.stableChangedAt = g_button.debounceStartedAt;
+    g_button.pressObservedAt = 0;
     g_button.stablePressed = false;
     g_button.longLatched = false;
+    g_button.pressObserved = false;
+    g_button.debugHaveLastRead = false;
+    logEncoderButtonEvent(millis(), "init", raw, false, raw ? (1u << kExpanderEncoderSwitch) : 0);
 }
 
 void updateEncoderButton(RemoteInputState* input) {
@@ -575,35 +800,59 @@ void updateEncoderButton(RemoteInputState* input) {
 
     const uint32_t now = millis();
     bool raw = g_button.lastRaw;
-    readEncoderButtonRaw(&raw);
+    uint8_t expanderValue = 0xFF;
+    const bool readOk = g_expander.read(&expanderValue);
+    if(readOk) {
+        raw = (expanderValue & static_cast<uint8_t>(1u << kExpanderEncoderSwitch)) != 0;
+    }
+    const bool rawPressed = (raw != g_button.idleLevel);
+    input->primaryPressed = rawPressed;
+    logEncoderButtonRead(now, readOk, expanderValue, rawPressed);
 
     input->primaryShortPress = false;
     input->primaryLongPress = false;
 
+    if(rawPressed) {
+        if(!g_button.pressObserved) {
+            g_button.pressObserved = true;
+            g_button.pressObservedAt = now;
+            logEncoderButtonEvent(now, "press-observed", raw, rawPressed, expanderValue);
+        }
+    }
+
     if(raw != g_button.lastRaw) {
         g_button.lastRaw = raw;
         g_button.debounceStartedAt = now;
+        logEncoderButtonEvent(now, "raw-change", raw, rawPressed, expanderValue);
     }
 
     if(now - g_button.debounceStartedAt < kButtonDebounceMs) {
         return;
     }
 
-    const bool pressed = (raw != g_button.idleLevel);
+    const bool pressed = input->primaryPressed;
     if(pressed != g_button.stablePressed) {
         g_button.stablePressed = pressed;
         g_button.stableChangedAt = now;
         if(pressed) {
             g_button.longLatched = false;
-        } else if(!g_button.longLatched) {
-            input->primaryShortPress = true;
+            logEncoderButtonEvent(now, "stable-press", raw, rawPressed, expanderValue);
+        } else {
+            if(!g_button.longLatched) {
+                input->primaryShortPress = true;
+                logEncoderButtonEvent(now, "short-press", raw, rawPressed, expanderValue);
+            }
+            g_button.pressObserved = false;
+            g_button.pressObservedAt = 0;
+            logEncoderButtonEvent(now, "stable-release", raw, rawPressed, expanderValue);
         }
     }
 
-    if(g_button.stablePressed && !g_button.longLatched &&
-       now - g_button.stableChangedAt >= kLongPressMs) {
+    if(rawPressed && g_button.pressObserved && !g_button.longLatched &&
+       now - g_button.pressObservedAt >= kLongPressMs) {
         g_button.longLatched = true;
         input->primaryLongPress = true;
+        logEncoderButtonEvent(now, "long-press", raw, rawPressed, expanderValue);
     }
 }
 
@@ -637,10 +886,15 @@ void updateTouch(RemoteInputState* input) {
 }  // namespace
 
 bool crowpanel_rotary21_probe() {
-    if(!beginExpander()) {
-        return false;
-    }
-    return g_touch.ping();
+    const bool expander = beginExpander();
+    uint32_t touchReadyAfterMs = 0;
+    const bool touch = expander && waitForTouchReady(kTouchProbeTimeoutMs, kTouchProbeIntervalMs, &touchReadyAfterMs);
+    Serial.printf("[remote] crowpanel_rotary_21 bus 38/39 devices: %s\n", scanBoardI2cBus().c_str());
+    Serial.printf("[remote] crowpanel_rotary_21 probe expander=%d touch=%d ready_after_ms=%lu\n",
+                  expander,
+                  touch,
+                  static_cast<unsigned long>(touchReadyAfterMs));
+    return touch;
 }
 
 bool crowpanel_rotary21_init() {
@@ -653,18 +907,25 @@ bool crowpanel_rotary21_init() {
     g_display.init();
     g_display.setRotation(0);
     g_display.fillScreen(kColorBlack);
+    g_canvas.begin();
 
-    if(!g_touch.ping()) {
+    uint32_t touchReadyAfterMs = 0;
+    if(!waitForTouchReady(kTouchProbeTimeoutMs, kTouchProbeIntervalMs, &touchReadyAfterMs)) {
+        Serial.printf("[remote] crowpanel_rotary_21 init touch timeout after %lu ms\n",
+                      static_cast<unsigned long>(touchReadyAfterMs));
         return false;
     }
+    Serial.printf("[remote] crowpanel_rotary_21 init touch ready after %lu ms\n",
+                  static_cast<unsigned long>(touchReadyAfterMs));
 
-    pinMode(kBoardPins.encoderA, INPUT);
-    pinMode(kBoardPins.encoderB, INPUT);
+    pinMode(kBoardPins.encoderA, INPUT_PULLUP);
+    pinMode(kBoardPins.encoderB, INPUT_PULLUP);
     ESP32Encoder::useInternalWeakPullResistors = puType::up;
     g_encoder.attachHalfQuad(kBoardPins.encoderA, kBoardPins.encoderB);
-    g_encoder.setFilter(100);
+    g_encoder.setFilter(kEncoderFilterUs);
     g_encoder.setCount(0);
-    g_lastEncoderRaw = 0;
+    delay(4);
+    g_lastEncoderRaw = g_encoder.getCount();
 
     initEncoderButton();
     g_touchState = {};

@@ -243,7 +243,7 @@ void checkJmcRpmZeroLog() {
                           ERROR_HISTORY_CODE_MOTOR_RPM_TEST,
                           packMotorRpmLogValue(ERROR_HISTORY_MOTOR_RPM_ZERO,
                                                jmcRpmSourceId(),
-                                               motor_setRPM),
+                                               motor_get_effective_set_rpm()),
                           state);
         jmcRpmLoggedZero = true;
     }
@@ -580,9 +580,11 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
     return true;
   } else newData = false; // We've made one complete round!
 
+  const int16_t effectiveSetRPM = motor_get_effective_set_rpm();
+
   //Determine COMM delay
   uint16_t delay;
-  if(motor_setRPM == 0) if(reg_6040!=3 && reg_0503!=0 && reg_0502 != 0 && nextCommType > 0) nextCommType = 0; //We need to SEND
+  if(effectiveSetRPM == 0) if(reg_6040!=3 && reg_0503!=0 && reg_0502 != 0 && nextCommType > 0) nextCommType = 0; //We need to SEND
   if (nextCommType == 0) delay = comm_get_send_delay_ms(); 
   else if(nextCommType > 0) { 
     if (state == IDLE || state == IDLE_GBW || state == MENU1 || state == MENU2 || state == MENU3 || state == MENU4) delay = comm_get_idle_delay_ms();
@@ -591,7 +593,7 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
   if(lastCommSend + delay > millis()) return false;
 
 // >>>>>> MOTOR OFF <<<<<<<<
-if(motor_setRPM == 0) { 
+if(effectiveSetRPM == 0) { 
     if(reg_0503 != 0) { 
       if(writeSingleRegister(0x2503, 0)) { // Set torq command to 0
         lastCommSend = millis(); 
@@ -656,9 +658,9 @@ if(motor_setRPM == 0) {
   }
 
   //>>>>> Forward ROTATION <<<<<<<<<
-  if(motor_setRPM > 0) { 
-    if(reg_0502 != motor_setRPM) { 
-      if(writeSingleRegister(0x2502, motor_setRPM)) { // Set fw speed
+  if(effectiveSetRPM > 0) { 
+    if(reg_0502 != effectiveSetRPM) { 
+      if(writeSingleRegister(0x2502, effectiveSetRPM)) { // Set fw speed
         lastCommSend = millis();
         nextCommType = 0;
         motor_lastSetRPM = motor_setRPM;
@@ -666,7 +668,7 @@ if(motor_setRPM == 0) {
       }
     }
 
-    if(reg_6040 != 0x07 && reg_6040 != 0x0F && reg_0502 == motor_setRPM && reg_0503 >= 0) {
+    if(reg_6040 != 0x07 && reg_6040 != 0x0F && reg_0502 == effectiveSetRPM && reg_0503 >= 0) {
       if(writeSingleRegister(0x6040, 0x07)) { // Switch on before enable
         lastCommSend = millis();
         nextCommType = 0;
@@ -675,7 +677,7 @@ if(motor_setRPM == 0) {
       }
     }
 
-    if(reg_6040 != 0x0F && reg_6040 == 0x07 && reg_0502 == motor_setRPM && reg_0503 >= 0) { 
+    if(reg_6040 != 0x0F && reg_6040 == 0x07 && reg_0502 == effectiveSetRPM && reg_0503 >= 0) { 
       if(writeSingleRegister(0x6040, 0x0F)) { //SERVO ENABLE
         lastCommSend = millis();
         nextCommType = 0;
@@ -694,15 +696,15 @@ if(motor_setRPM == 0) {
     }
 
     //Check if we've done all commands
-    if(reg_6040 == 0x0F && reg_0502 == motor_setRPM && reg_0503 == (Menu1[SETMOTORTORQUE].value)) { 
+    if(reg_6040 == 0x0F && reg_0502 == effectiveSetRPM && reg_0503 == (Menu1[SETMOTORTORQUE].value)) { 
       if(nextCommType == 0) nextCommType = 1; 
     }
   }
   
   // >>>>>>>>> REVERSE ROTATION <<<<<<<<<
-  if(motor_setRPM < 0) { 
-    if(reg_0502 != -motor_setRPM) { 
-      if(writeSingleRegister(0x2502, -motor_setRPM)) { // Set rpm limit
+  if(effectiveSetRPM < 0) { 
+    if(reg_0502 != -effectiveSetRPM) { 
+      if(writeSingleRegister(0x2502, -effectiveSetRPM)) { // Set rpm limit
         lastCommSend = millis();
         nextCommType = 0;
         motor_lastSetRPM = motor_setRPM;
@@ -710,7 +712,7 @@ if(motor_setRPM == 0) {
       }
     }
 
-    if(reg_6040 != 0x07 && reg_6040 != 0x0F && reg_0502 == -motor_setRPM && reg_0503 <= 0) {
+    if(reg_6040 != 0x07 && reg_6040 != 0x0F && reg_0502 == -effectiveSetRPM && reg_0503 <= 0) {
       if(writeSingleRegister(0x6040, 0x07)) { // Switch on before enable
         lastCommSend = millis();
         nextCommType = 0;
@@ -719,7 +721,7 @@ if(motor_setRPM == 0) {
       }
     }
 
-    if(reg_6040 != 0x0F && reg_6040 == 0x07 && reg_0502 == -motor_setRPM && reg_0503 <= 0) { 
+    if(reg_6040 != 0x0F && reg_6040 == 0x07 && reg_0502 == -effectiveSetRPM && reg_0503 <= 0) { 
       if(writeSingleRegister(0x6040, 0x0F)) { //SERVO ENABLE
         lastCommSend = millis();
         nextCommType = 0;
@@ -738,7 +740,7 @@ if(motor_setRPM == 0) {
     }
 
     //Check if we've done all commands
-    if(reg_6040 == 0x0F && reg_0502 == -motor_setRPM && reg_0503 == -(Menu1[SETMOTORTORQUE].value)) { 
+    if(reg_6040 == 0x0F && reg_0502 == -effectiveSetRPM && reg_0503 == -(Menu1[SETMOTORTORQUE].value)) { 
       if(nextCommType == 0) nextCommType = 1; 
     }
   }

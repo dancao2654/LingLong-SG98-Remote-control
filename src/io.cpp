@@ -28,6 +28,10 @@ unsigned long encButtonDebounceStartedAt = 0;
 unsigned long encButtonLastStableChangeAt = 0;
 
 void pollEncoderButton() {
+#if !SG98_HAS_ENCODER_BUTTON
+    encButtonChanged = false;
+    return;
+#else
     const unsigned long now = millis();
     const bool rawLevel = digitalRead(ENC_BTN);
 
@@ -61,6 +65,7 @@ void pollEncoderButton() {
         encButtonLongPressLatched = true;
         encButtonLongPressEvent = true;
     }
+#endif
 }
 
 bool shouldOpenDriveSelector() {
@@ -131,10 +136,19 @@ int16_t storedSetRPM = 0;
 uint32_t storedSetWeight = 0;
 
 void io_init() { 
+#if SG98_HAS_START_BUTTON
+    pinMode(BTN, INPUT_PULLUP);
     start_button.begin();
+#endif
+
+#if SG98_HAS_ENCODER_BUTTON
     pinMode(ENC_BTN, INPUT);
     encButtonIdleLevel = digitalRead(ENC_BTN);
     encButtonLastRawLevel = encButtonIdleLevel;
+#else
+    encButtonIdleLevel = true;
+    encButtonLastRawLevel = true;
+#endif
     encButtonPressed = false;
     encButtonChanged = false;
     encButtonPressEvent = false;
@@ -143,17 +157,21 @@ void io_init() {
     encButtonLongPressEvent = false;
     encButtonDebounceStartedAt = millis();
     encButtonLastStableChangeAt = encButtonDebounceStartedAt;
-    pinMode(start_button_led, OUTPUT);
 
+#if SG98_HAS_START_LED
+    pinMode(start_button_led, OUTPUT);
+    ledcSetup(0,2000,10);
+    ledcAttachPin(start_button_led, 0);
+#endif
+
+#if SG98_HAS_ENCODER
     pinMode(ENC_A, INPUT);
     pinMode(ENC_B, INPUT);
     ESP32Encoder::useInternalWeakPullResistors = puType::up;
     encoder.attachHalfQuad(ENC_A, ENC_B);
     encoder.setFilter(100);
     encoder.setCount(0);
-
-    ledcSetup(0,2000,10);
-    ledcAttachPin(start_button_led, 0);
+#endif
 }
 
 void do_io() { 
@@ -559,6 +577,9 @@ bool pressedLong() {
 }
 
 int16_t encoder_change() { 
+#if !SG98_HAS_ENCODER
+    return 0;
+#else
     static int32_t lastV = 0;
     int32_t v = 0;
     int16_t change = 0;
@@ -571,13 +592,18 @@ int16_t encoder_change() {
         controller_note_activity();
     }
     return change;
+#endif
 }
 
 bool check_io() { //returns true immediately when a button is pressed - normal control uses wasReleased to prevent double feedback.
     pollEncoderButton();
+#if SG98_HAS_START_BUTTON
     start_button.read();
     if(encButtonPressed || encButtonPressEvent || encButtonShortReleaseEvent || encButtonLongPressEvent) return true;
     if(start_button.isPressed() || start_button.wasPressed() || start_button.wasReleased()) return true;
+#else
+    if(encButtonPressed || encButtonPressEvent || encButtonShortReleaseEvent || encButtonLongPressEvent) return true;
+#endif
     return false;
 }
 
@@ -602,15 +628,23 @@ bool ENC_BUTTON() {
 }
 
 bool START_BUTTON() {
+#if !SG98_HAS_START_BUTTON
+    return false;
+#else
     start_button.read();
     if (start_button.wasPressed()) {
         controller_note_activity();
         return true;
     }
     return false;
+#endif
 }
 
 void ledAction(uint8_t type) {  //Type: 0 = off, 1 = on, 2 = flashing, 3 = fading, 4 flashing fast, 5 = flashing fastest, 100-200 = %.
+#if !SG98_HAS_START_LED
+    (void)type;
+    return;
+#else
     static unsigned long lastCall;
     static uint8_t lastType;
     static unsigned long lastFlash;
@@ -704,4 +738,5 @@ void ledAction(uint8_t type) {  //Type: 0 = off, 1 = on, 2 = flashing, 3 = fadin
     }
 
     lastType = type;
+#endif
 }

@@ -21,6 +21,9 @@ bool staEnabled = false;
 bool setupDone = false;
 bool wifiActive = false;
 bool routesConfigured = false;
+bool apRunning = false;
+bool dnsRunning = false;
+bool serverStarted = false;
 uint32_t lastStaAttemptAt = 0;
 
 const char kPage[] PROGMEM = R"HTML(
@@ -88,6 +91,16 @@ const char kPage[] PROGMEM = R"HTML(
   </div>
   <script>
     const el = (id) => document.getElementById(id);
+    let formEditUntil = 0;
+
+    function markFormEditing(ms = 6000) {
+      formEditUntil = Date.now() + ms;
+    }
+
+    function formEditingActive() {
+      const active = document.activeElement;
+      return Date.now() < formEditUntil || active === el('ssid') || active === el('password');
+    }
 
     async function getJson(url) {
       const response = await fetch(url, { cache: 'no-store' });
@@ -113,8 +126,9 @@ const char kPage[] PROGMEM = R"HTML(
       el('statusInfo').textContent = status.staConnected
         ? 'Connected and ready for WebSocket'
         : (status.setupDone ? 'Saved, waiting for LAN link' : 'Onboarding');
-      if (document.activeElement !== el('ssid')) el('ssid').value = status.staSsid || '';
-      if (!status.staConnected && !status.staEnabled) el('password').value = '';
+      if (!formEditingActive()) {
+        el('ssid').value = status.staSsid || '';
+      }
     }
 
     function renderScan(scan) {
@@ -154,6 +168,7 @@ const char kPage[] PROGMEM = R"HTML(
     }
 
     async function saveWifi() {
+      markFormEditing(0);
       await postForm('/api/wifi', {
         action: 'save',
         ssid: el('ssid').value || '',
@@ -164,17 +179,25 @@ const char kPage[] PROGMEM = R"HTML(
     }
 
     async function useApOnly() {
+      markFormEditing(0);
       await postForm('/api/wifi', { action: 'ap_only' });
       el('password').value = '';
       await refreshStatus();
     }
 
     async function forgetWifi() {
+      markFormEditing(0);
       await postForm('/api/wifi', { action: 'forget' });
       el('ssid').value = '';
       el('password').value = '';
       await refreshStatus();
     }
+
+    ['ssid', 'password'].forEach((id) => {
+      el(id).addEventListener('focus', () => markFormEditing());
+      el(id).addEventListener('input', () => markFormEditing());
+      el(id).addEventListener('keydown', () => markFormEditing());
+    });
 
     el('saveButton').onclick = () => saveWifi().catch(() => {});
     el('apOnlyButton').onclick = () => useApOnly().catch(() => {});
@@ -469,6 +492,53 @@ void configureRoutes() {
     routesConfigured = true;
 }
 
+bool startAccessPoint() {
+    if(apRunning) {
+        return true;
+    }
+
+    WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
+    if(!WiFi.softAP(apSsid.c_str())) {
+        return false;
+    }
+    dnsServer.start(kDnsPort, "*", WiFi.softAPIP());
+    dnsRunning = true;
+    apRunning = true;
+    Serial.printf("[remote_wifi] ap_on ssid=%s ip=%s\n", apSsid.c_str(), apIpString().c_str());
+    return true;
+}
+
+void stopAccessPoint() {
+    if(dnsRunning) {
+        dnsServer.stop();
+        dnsRunning = false;
+    }
+    if(apRunning) {
+        WiFi.softAPdisconnect(true);
+        apRunning = false;
+        WiFi.mode(staEnabled ? WIFI_STA : WIFI_AP);
+        Serial.println("[remote_wifi] ap_off");
+    }
+}
+
+void startPortalServer() {
+    if(serverStarted) {
+        return;
+    }
+    server.begin();
+    serverStarted = true;
+    Serial.println("[remote_wifi] portal_on");
+}
+
+void stopPortalServer() {
+    if(!serverStarted) {
+        return;
+    }
+    server.stop();
+    serverStarted = false;
+    Serial.println("[remote_wifi] portal_off");
+}
+
 }  // namespace
 
 void remote_wifi_init() {
@@ -487,14 +557,13 @@ bool remote_wifi_start() {
     }
 
     configureRoutes();
-    WiFi.mode(WIFI_AP_STA);
+    WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
     WiFi.setAutoReconnect(true);
-    WiFi.setSleep(false);
-    WiFi.softAP(apSsid.c_str());
-    dnsServer.start(kDnsPort, "*", WiFi.softAPIP());
+    WiFi.setSleep(staEnabled);
+    startAccessPoint();
     beginStaConnect(true);
     startWifiScan(true);
-    server.begin();
+    startPortalServer();
     wifiActive = true;
 
     Serial.printf("[remote_wifi] ap_ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
@@ -512,10 +581,9 @@ void remote_wifi_stop() {
         return;
     }
 
-    dnsServer.stop();
-    server.stop();
+    stopAccessPoint();
+    stopPortalServer();
     WiFi.scanDelete();
-    WiFi.softAPdisconnect(false);
     stopSta();
     WiFi.mode(WIFI_MODE_NULL);
     lastStaAttemptAt = 0;
@@ -528,9 +596,30 @@ void remote_wifi_poll() {
         return;
     }
 
-    dnsServer.processNextRequest();
-    server.handleClient();
-    if(staEnabled && WiFi.status() != WL_CONNECTED) {
+    const bool staConnected = staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
+    if(staConnected) {
+        if(apRunning) {
+            stopAccessPoint();
+        }
+        if(serverStarted) {
+            stopPortalServer();
+        }
+    } else {
+        if(!apRunning) {
+            startAccessPoint();
+        }
+        if(!serverStarted) {
+            startPortalServer();
+        }
+        if(dnsRunning) {
+            dnsServer.processNextRequest();
+        }
+    }
+
+    if(serverStarted) {
+        server.handleClient();
+    }
+    if(staEnabled && !staConnected) {
         beginStaConnect(false);
     }
 }

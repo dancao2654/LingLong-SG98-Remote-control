@@ -456,7 +456,7 @@ void apiPrintStatus() {
     Serial.print(",\"setRPM\":");
     Serial.print(setRPM);
     Serial.print(",\"motorSetRPM\":");
-    Serial.print(motor_setRPM);
+    Serial.print(motor_get_effective_set_rpm());
     Serial.print(",\"currentRPM\":");
     Serial.print(motor_currentRPM);
     Serial.print(",\"torque\":");
@@ -648,6 +648,11 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
 
     if(menuNum == 1) {
         const int16_t originalValue = Menu1[itemIdx].value;
+        if(itemIdx == Menu1Items::SETMOTORDIRECTION &&
+           !(state == IDLE || state == IDLE_GBW || state == MENU1)) {
+            *message = "motor direction can only change while idle";
+            return false;
+        }
         Menu1[itemIdx].value = clampMenuValue(Menu1[itemIdx], requestedValue);
         if(itemIdx == Menu1Items::SETMAX && Menu1[SETMAX].value < Menu1[SETMIN].value) {
             Menu1[SETMAX].value = Menu1[SETMIN].value;
@@ -892,7 +897,7 @@ void appendStatusJson(String& out) {
     out += ",\"setRPM\":";
     out += String(setRPM);
     out += ",\"motorSetRPM\":";
-    out += String(motor_setRPM);
+    out += String(motor_get_effective_set_rpm());
     out += ",\"currentRPM\":";
     out += String(motor_currentRPM);
     out += ",\"torque\":";
@@ -1027,7 +1032,7 @@ void printStatus() {
         commText(commStatus),
         motorText(currentStatus),
         static_cast<unsigned>(error),
-        motor_setRPM,
+        motor_get_effective_set_rpm(),
         motor_currentRPM,
         motor_currentTorque,
         static_cast<unsigned long>(setWeight),

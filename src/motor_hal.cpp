@@ -6,8 +6,8 @@
 #include "display.h"
 #include "error_history.h"
 #include "main.h"
-#include "motorcontrol_jmc.h"
-#include "motorcontrol_rt.h"
+#include "JMC/motorcontrol_jmc.h"
+#include "RT/motorcontrol_rt.h"
 #include "pdata.h"
 
 int16_t motor_setRPM = 0;
@@ -378,6 +378,18 @@ bool recoverJmcAtRate(JmcCommRate rate) {
     return true;
 }
 
+bool probeRtStatusBlock(MotorProbeReport* report) {
+    if(report == nullptr) {
+        return false;
+    }
+
+    setProbeProfile(COMM_PROFILE_RT);
+    // RT documents P13.00..P13.03 at 1300..1303 as read-only monitoring
+    // registers for running status, speed, command, and torque.
+    report->rt_status_block = probeRegisterWithRetries(1300, 4, RT_STATUS_PROBE_RETRIES);
+    return report->rt_status_block;
+}
+
 ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
     ProbeCycleResult cycle = {};
     const uint8_t savedError = error;
@@ -394,7 +406,16 @@ ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
         }
     }
 
-    if(jmcDetected) {
+    comm_set_jmc_rate(initialPreferredJmcRate, false);
+    const bool rtDetected = probeRtStatusBlock(&cycle.report);
+
+    // RT drives can answer enough of the JMC probe family to look like a
+    // partial JMC match. When both signatures are present, treat the RT
+    // monitor block as authoritative so attached RT motors do not get
+    // misclassified as JMC.
+    if(rtDetected) {
+        cycle.detectedType = DRIVE_TYPE_RT;
+    } else if(jmcDetected) {
         cycle.detectedType = DRIVE_TYPE_JMC;
         const JmcCommRate detectedRate = jmcRateFromBaud(cycle.report.jmc_baud);
         rememberPreferredJmcRate(detectedRate,
@@ -408,12 +429,7 @@ ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
                                 : ERROR_HISTORY_LEVEL_WARN);
         }
     } else {
-        comm_set_jmc_rate(initialPreferredJmcRate, false);
-        setProbeProfile(COMM_PROFILE_RT);
-        // RT documents P13.00..P13.03 at 1300..1303 as read-only monitoring
-        // registers for running status, speed, command, and torque.
-        cycle.report.rt_status_block = probeRegisterWithRetries(1300, 4, RT_STATUS_PROBE_RETRIES);
-        cycle.detectedType = cycle.report.rt_status_block ? DRIVE_TYPE_RT : DRIVE_TYPE_UNKNOWN;
+        cycle.detectedType = DRIVE_TYPE_UNKNOWN;
     }
 
     if(logResult) {
@@ -591,6 +607,30 @@ int16_t motor_get_max_rpm() {
 
 bool motor_supports_ramp() {
     return motorDriveType == DRIVE_TYPE_JMC;
+}
+
+bool motor_is_direction_reversed() {
+    return Menu1[SETMOTORDIRECTION].value != 0;
+}
+
+int8_t motor_get_direction_multiplier() {
+    return motor_is_direction_reversed() ? -1 : 1;
+}
+
+int16_t motor_apply_direction(int16_t rpm) {
+    if(rpm == 0) {
+        return 0;
+    }
+
+    // User-facing RPM targets stay positive for the primary grind direction.
+    // The backend-specific command sign is derived here so JMC and RT both
+    // honor the same "reverse direction" setting without changing higher-level
+    // GbW or purge logic.
+    return static_cast<int16_t>(rpm * motor_get_direction_multiplier());
+}
+
+int16_t motor_get_effective_set_rpm() {
+    return motor_apply_direction(motor_setRPM);
 }
 
 int16_t motor_get_torque_percent() {

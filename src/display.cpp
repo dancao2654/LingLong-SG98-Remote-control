@@ -285,8 +285,9 @@ void drawMotorStatusLine(int statusX, int statusY, SYSTEM_STATUS status) {
 int getMotorDirectionIndicator() {
   if (motor_currentRPM > 0) return 1;
   if (motor_currentRPM < 0) return -1;
-  if (motor_setRPM > 0) return 1;
-  if (motor_setRPM < 0) return -1;
+  const int16_t effectiveSetRPM = motor_get_effective_set_rpm();
+  if (effectiveSetRPM > 0) return 1;
+  if (effectiveSetRPM < 0) return -1;
   return 0;
 }
 
@@ -298,7 +299,7 @@ int16_t getDisplayMotorRPM() {
     case PURGING:
     case GRINDING_GBW:
     case CALIBRATING:
-      return motor_setRPM;
+      return motor_get_effective_set_rpm();
     default:
       return 0;
   }
@@ -414,12 +415,16 @@ void drawTopIndicators(int screenId) {
 
   const bool forceRedraw = prevScreenId != screenId;
   const int leftMargin = 8;
-  const int rightMargin = 20;
-  const int regionWidth = 156;
+  // Pull the motor badge slightly inward so enclosure lips do not clip the
+  // right edge of the text on the physical screen.
+  const int rightMargin = 30;
+  // Reserve only as much of the header as the short motor badge needs so the
+  // Wi-Fi status line has enough room for a full IPv4 address.
+  const int regionWidth = 88;
   const int motorBaselineY = 18;
   const int wifiBaselineY = 18;
   const int rightX = SCREEN_WIDTH - rightMargin;
-  const int regionX = SCREEN_WIDTH - (regionWidth + 20);
+  const int regionX = SCREEN_WIDTH - (regionWidth + 12);
   const int leftRegionWidth = regionX - leftMargin - 8;
   const String motorLabel = fitHeaderLabel(getMotorDisplayLabel(), regionWidth);
   const String wifiLabel = fitLabelToFont(radio_mode_lcd_status(), leftRegionWidth, WIFI_STATUS_FONT);
@@ -490,6 +495,12 @@ void drawSeparatorLine(int x, int y, int width, bool animated) {
 
 
 void display_init() { 
+#if !SG98_HAS_DISPLAY
+  displayDisabled = true;
+  dimmed = false;
+  appliedBrightness = 0;
+  return;
+#else
   SPIClass *spi = new SPIClass(HSPI);
   spi->begin(DISP_SCL, -1, DISP_SDA, DISP_CS);
   tft = new Adafruit_ST7789(spi, DISP_CS, DISP_DC, DISP_RST);
@@ -507,9 +518,14 @@ void display_init() {
   appliedBrightness = 0;
   displayDisabled = false;
   update_display();
+#endif
 }
 
 void setBrightness() { 
+#if !SG98_HAS_DISPLAY
+  dimmed = false;
+  return;
+#else
   uint8_t newBrightness;
   static int dimTime = 15; 
 
@@ -525,9 +541,14 @@ void setBrightness() {
     ledcWrite(1, newBrightness);
     appliedBrightness = newBrightness;
   }
+#endif
 }
 
 void update_display() { 
+#if !SG98_HAS_DISPLAY
+  disp_updateRequired = false;
+  return;
+#else
   static unsigned long lastUpdate;
   if(newData == true) disp_updateRequired = true;
   if(displayDisabled) return;
@@ -590,9 +611,14 @@ void update_display() {
     if(state == MOTOR_SELECT) {
       drawMotorSelectScreen();
     }
+#endif
 }
 
 void display_off() {
+#if !SG98_HAS_DISPLAY
+    displayDisabled = true;
+    return;
+#else
     if(displayDisabled) {
         return;
     }
@@ -604,9 +630,16 @@ void display_off() {
     ledcWrite(1,0);
     appliedBrightness = 0;
     displayDisabled = true;
+#endif
 }
 
 void display_on() {
+#if !SG98_HAS_DISPLAY
+    displayDisabled = false;
+    dimmed = false;
+    disp_updateRequired = false;
+    return;
+#else
     if(!displayDisabled) {
         setBrightness();
         disp_updateRequired = true;
@@ -622,6 +655,7 @@ void display_on() {
     appliedBrightness = 0;
     setBrightness();
     disp_updateRequired = true;
+#endif
 }
 
 void display_show_motor_probe_splash(const char* motorLabel) {
@@ -1230,9 +1264,10 @@ void drawGrindingGbwScreen() {
     drawSeparatorLine(dividerX, dividerY, dividerW, true);
 
     // --- RPM digits (left side) ---
-      if (prevRPM != motor_setRPM) {
+      const int16_t displaySetRPM = motor_get_effective_set_rpm();
+      if (prevRPM != displaySetRPM) {
       char newVal[10];
-      sprintf(newVal, "%d", motor_setRPM);
+      sprintf(newVal, "%d", displaySetRPM);
 
       tft->setFont(&FreeSans24pt7b);
       int16_t x1, y1;
@@ -1247,7 +1282,7 @@ void drawGrindingGbwScreen() {
       tft->setCursor(valX, valY);
       tft->print(newVal);
 
-      prevRPM = motor_setRPM;
+      prevRPM = displaySetRPM;
     }
 
     // --- Speedometer (right side): progress from 0 to setWeight ---
@@ -1336,7 +1371,7 @@ void drawCalibratingScreen() {
 
 
     // Use global variables directly, do NOT redeclare or define them here!
-    // calibrateArray and currentCal are declared extern in motorcontrol_rt.h
+    // calibrateArray and currentCal are declared extern in RT/motorcontrol_rt.h
     int totalSteps = 1 + SIZEOFCALIBRATEARRAY / sizeof(uint16_t);
     int step = currentCal + 1; // Show as 1-based index
 
@@ -1840,6 +1875,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
             const char* labels[2] = {"Disabled", "Enabled"};
             const char* alt_labels[2] = {"Don't save", "Save"};
             const char* alt_label2[2] = {"Back", "RESET"};
+            const char* directionLabels[2] = {"Normal", "Reversed"};
             int selected = (item.value == 0) ? 0 : 1;
             String macCopy = "", nameCopy = "";
             if (xSemaphoreTake(scaleMutex, portMAX_DELAY)) {
@@ -1913,6 +1949,24 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                   tft->print(alt_label2[i]);
                   if (i == selected) {
                       tft->drawRoundRect((SCREEN_WIDTH - w) / 2 - 8, y - h - 6 , w + 22, h + 16, 6, COLOR_GREEN);
+                  }
+                } else if(menuNum == 1 && selectedIdx == Menu1Items::SETMOTORDIRECTION) {
+                  tft->getTextBounds(directionLabels[i], 0, 0, &x1, &y1, &w, &h);
+                  int y = 100 + i * 50;
+                  tft->setCursor((SCREEN_WIDTH - w) / 2, y);
+                  tft->print(directionLabels[i]);
+                  if (i == selected) {
+                      tft->drawRoundRect((SCREEN_WIDTH - w) / 2 - 8, y - h - 6 , w + 22, h + 16, 6, COLOR_GREEN);
+                  }
+
+                  if(i == 0) {
+                    tft->setFont(&FreeSans9pt7b);
+                    const char* msg1 = "Normal keeps stock grind polarity.";
+                    const char* msg2 = "Reversed flips JMC and RT direction.";
+                    tft->setCursor(10, 184);
+                    tft->print(msg1);
+                    tft->setCursor(10, 204);
+                    tft->print(msg2);
                   }
                 } else 
                 { // normal case

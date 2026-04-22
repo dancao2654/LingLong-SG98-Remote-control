@@ -179,7 +179,7 @@ String remote_link_build_status_frame() {
     out += sg98_protocol::kFrameSeparator;
     out += String(setRPM);
     out += sg98_protocol::kFrameSeparator;
-    out += String(motor_setRPM);
+    out += String(motor_get_effective_set_rpm());
     out += sg98_protocol::kFrameSeparator;
     out += String(motor_currentRPM);
     out += sg98_protocol::kFrameSeparator;

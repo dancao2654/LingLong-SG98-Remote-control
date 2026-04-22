@@ -37,9 +37,10 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 10
     {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 11
     {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, //12
-    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 13
-    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 14
-    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 15
+    {"Motor direction", default_motor_direction_reversed, 0, 1, 1, "MOTORDIR", ""}, //13
+    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 14
+    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 15
+    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 16
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {
@@ -189,7 +190,7 @@ void setup() {
     delay(250);
     #endif
     Serial.printf("[fw] SG98 controller build=%s\n", BUILD_ID);
-    Serial.println("[fw] target=controller_box");
+    Serial.printf("[fw] target=%s\n", SG98_CONTROLLER_TARGET_NAME);
     
     setCpuFrequencyMhz(80);
 
@@ -502,10 +503,19 @@ void controller_note_activity() {
 
 
 void sleep_init() { 
+#if !SG98_HAS_START_BUTTON
+    #ifdef DEBUG
+    Serial.println("[sleep] no local wake button on this target; restarting instead");
+    #endif
+    ESP.restart();
+    return;
+#else
     delay(100); //Allow shit to pass
     digitalWrite(RS485RE, HIGH); // Low power state
     digitalWrite(RS485DE, LOW); 
+#if SG98_HAS_DISPLAY
     digitalWrite(DISP_BL, LOW);
+#endif
     delay(1);
 
     // Set BTN as input with pullup
@@ -516,7 +526,9 @@ void sleep_init() {
     // --- Enable RTC GPIO hold for RE, DE, DISP_BL ---
     rtc_gpio_hold_en((gpio_num_t)RS485RE);
     rtc_gpio_hold_en((gpio_num_t)RS485DE);
+#if SG98_HAS_DISPLAY
     rtc_gpio_hold_en((gpio_num_t)DISP_BL);
+#endif
 
     rtc_gpio_hold_dis((gpio_num_t)BTN);
     rtc_gpio_init((gpio_num_t)BTN);
@@ -524,7 +536,7 @@ void sleep_init() {
     rtc_gpio_pullup_en((gpio_num_t)BTN);
     rtc_gpio_pulldown_dis((gpio_num_t)BTN);
 
-    // Configure EXT0 wakeup on BTN (GPIO 4), wake on LOW level (button press)
+    // Configure EXT0 wakeup on BTN, wake on LOW level (button press)
     esp_sleep_enable_ext0_wakeup(WAKE_BTN, 0); // 0 = wake on LOW
 
     #ifdef DEBUG
@@ -537,13 +549,16 @@ void sleep_init() {
 
     // Enter deep sleep (will not return until reset/wakeup)
     esp_deep_sleep_start();
+#endif
 }
 
 void sleep_release() { 
    // --- Release RTC GPIO hold for RE, DE, DISP_BL ---
     rtc_gpio_hold_dis((gpio_num_t)RS485RE);
     rtc_gpio_hold_dis((gpio_num_t)RS485DE);
+#if SG98_HAS_DISPLAY
     rtc_gpio_hold_dis((gpio_num_t)DISP_BL);
+#endif
     rtc_gpio_deinit((gpio_num_t)BTN);
 
     // Disable EXT0 wakeup source (optional, for clarity)

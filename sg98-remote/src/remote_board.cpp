@@ -44,11 +44,26 @@ const RemoteBatteryStatus kFallbackBatteryStatus = {};
 
 const RemoteBoardDriver* g_activeDriver = nullptr;
 
+#if defined(REMOTE_BOARD_FORCE_CROWPANEL_128)
 const RemoteBoardDriver* const kDrivers[] = {
     remote_board_crowpanel_driver(),
+};
+#elif defined(REMOTE_BOARD_FORCE_CROWPANEL_21)
+const RemoteBoardDriver* const kDrivers[] = {
     remote_board_crowpanel_rotary21_driver(),
+};
+#elif defined(REMOTE_BOARD_FORCE_WAVESHARE_175)
+const RemoteBoardDriver* const kDrivers[] = {
     remote_board_waveshare_amoled175_driver(),
 };
+#else
+const RemoteBoardDriver* const kDrivers[] = {
+    // Probe the more specific CrowPanel variants before the generic fallback.
+    remote_board_crowpanel_rotary21_driver(),
+    remote_board_crowpanel_driver(),
+    remote_board_waveshare_amoled175_driver(),
+};
+#endif
 
 }  // namespace
 
@@ -60,6 +75,17 @@ bool remote_board_init() {
             continue;
         }
 
+#if defined(REMOTE_BOARD_FORCE_CROWPANEL_128) || defined(REMOTE_BOARD_FORCE_CROWPANEL_21) || \
+    defined(REMOTE_BOARD_FORCE_WAVESHARE_175)
+        remote_board_console().printf("[remote] forced board: %s\n", driver->key);
+        if(driver->init()) {
+            g_activeDriver = driver;
+            remote_board_console().printf("[remote] active board: %s\n", driver->info().name);
+            return true;
+        }
+        remote_board_console().printf("[remote] init failed for %s\n", driver->key);
+        return false;
+#else
         remote_board_console().printf("[remote] probing %s\n", driver->key);
         if(!driver->probe()) {
             continue;
@@ -73,6 +99,7 @@ bool remote_board_init() {
         }
 
         remote_board_console().printf("[remote] init failed for %s\n", driver->key);
+#endif
     }
 
     remote_board_console().println("[remote] no supported board detected");
