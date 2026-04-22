@@ -16,6 +16,7 @@ struct RemoteBoardDriver {
     bool (*set_backlight)(uint8_t level);
     RemoteBatteryStatus (*battery_status)();
     int32_t (*battery_millivolts)();
+    bool (*input_pending)();
 };
 
 const RemoteBoardDriver* remote_board_crowpanel_driver();

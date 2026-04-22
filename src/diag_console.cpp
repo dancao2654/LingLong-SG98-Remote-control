@@ -399,10 +399,6 @@ uint8_t apiTargetMenu(uint8_t menuNum, uint8_t itemIdx) {
 }
 
 bool apiMenuItemWritable(uint8_t menuNum, uint8_t itemIdx) {
-    if(menuNum == 1 && itemIdx == Menu1Items::RADIOMODE) {
-        return false;
-    }
-
     const char* kind = apiMenuItemKind(menuNum, itemIdx);
     return strcmp(kind, "value") == 0 || strcmp(kind, "bool") == 0;
 }

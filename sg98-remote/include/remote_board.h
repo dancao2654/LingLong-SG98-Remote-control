@@ -69,6 +69,9 @@ struct RemoteInputState {
     bool primaryPressed = false;
     bool primaryShortPress = false;
     bool primaryLongPress = false;
+    bool secondaryPressed = false;
+    bool secondaryShortPress = false;
+    bool secondaryLongPress = false;
     RemoteTouchState touch;
 };
 
@@ -400,6 +403,7 @@ void remote_board_apply_indicator(const RemoteIndicatorState& indicator);
 bool remote_board_set_backlight(uint8_t level);
 RemoteBatteryStatus remote_board_battery_status();
 int32_t remote_board_battery_millivolts();
+bool remote_board_input_pending();
 
 inline bool remote_board_has_capability(RemoteBoardCapability capability) {
     return (remote_board_info().capabilities & static_cast<uint32_t>(capability)) != 0;

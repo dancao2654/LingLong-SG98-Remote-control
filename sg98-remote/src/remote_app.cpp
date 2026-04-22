@@ -14,6 +14,7 @@
 
 #include "remote_board.h"
 #include "remote_config.h"
+#include "remote_runtime.h"
 #include "remote_wifi.h"
 #include "sg98_remote_defs.h"
 #include <sg98_remote_protocol.h>
@@ -37,6 +38,16 @@ constexpr uint8_t kMaxVisibleRows = 6;
 constexpr uint32_t kWheelAnimationFrameMs = 500;
 constexpr float kWheelVisualTurnsPerSecond = 0.24f;
 constexpr uint32_t kRoundInputQuietMs = 240;
+constexpr uint32_t kTouchDuplicateTapSuppressMs = 140;
+constexpr int16_t kTouchDuplicateTapRadius = 28;
+constexpr int16_t kRoundHomeDialTouchInnerInset = 0;
+constexpr int16_t kRoundHomeDialTouchOuterPad = 34;
+constexpr int16_t kRoundHomeSwipeThreshold = 14;
+constexpr int16_t kRoundHomeSwipeAxisSlack = 4;
+constexpr int16_t kRoundHomeDialSwipeThreshold = 18;
+constexpr int16_t kRoundHomeDialSwipeAxisSlack = 6;
+constexpr int16_t kRoundMenuTabSwipeThreshold = 28;
+constexpr int16_t kRoundMenuTabSwipeAxisSlack = 8;
 constexpr bool kRoundInputDebug = false;
 constexpr bool kDisableTransportPerfTest = false;
 constexpr uint32_t kTransportUiYieldMs = 280;
@@ -57,6 +68,7 @@ enum class Screen : uint8_t {
     Gbw = 3,
     Drive = 4,
     EspNowPeers = 5,
+    Network = 6,
 };
 
 enum class ItemKind : uint8_t {
@@ -72,10 +84,14 @@ enum class LinkTransport : uint8_t {
     WebSocket = 2,
 };
 
-constexpr uint8_t kScreenCount = 6;
+constexpr uint8_t kScreenCount = 7;
 constexpr uint8_t kEspNowPeerSlots = 6;
+constexpr uint8_t kPendingMenuWriteSlots = 8;
 constexpr uint32_t kEspNowDiscoveryIntervalMs = 1200;
 constexpr uint32_t kEspNowDiscoveryExpireMs = 5000;
+constexpr uint32_t kEspNowSendConfirmTimeoutMs = 450;
+constexpr uint32_t kEspNowSendRetryBackoffMs = 80;
+constexpr uint8_t kEspNowReliableSendAttempts = 6;
 constexpr uint8_t kEspNowBroadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 struct DiscoveredEspNowPeer {
@@ -165,6 +181,7 @@ enum class TouchMode : uint8_t {
 struct TouchTracker {
     bool active = false;
     bool dragUsed = false;
+    bool circularPreferred = false;
     TouchMode mode = TouchMode::Tap;
     int16_t startX = 0;
     int16_t startY = 0;
@@ -186,6 +203,57 @@ struct HomePalette {
     uint16_t modeFill = kColorAccent;
 };
 
+enum class PendingActionKind : uint8_t {
+    None = 0,
+    Start,
+    Stop,
+    Idle,
+    IdleGbw,
+    Calibrate,
+    DriveAuto,
+    DriveJmc,
+    DriveRt,
+    JmcBaud,
+    ResetDefaults,
+};
+
+enum class PendingActionReflection : uint8_t {
+    None = 0,
+    State,
+    Drive,
+    JmcBaud,
+};
+
+struct PendingTargetWrite {
+    bool active = false;
+    bool weightMode = false;
+    int32_t value = 0;
+    uint32_t queuedAt = 0;
+    uint32_t lastSendAt = 0;
+    uint16_t attempts = 0;
+};
+
+struct PendingMenuWrite {
+    bool active = false;
+    uint8_t menuNum = 0;
+    uint8_t itemIdx = 0;
+    int32_t value = 0;
+    uint32_t queuedAt = 0;
+    uint32_t lastSendAt = 0;
+    uint16_t attempts = 0;
+};
+
+struct PendingAction {
+    PendingActionKind kind = PendingActionKind::None;
+    PendingActionReflection reflection = PendingActionReflection::None;
+    int32_t value = 0;
+    uint32_t queuedAt = 0;
+    uint32_t lastSendAt = 0;
+    uint16_t attempts = 0;
+    char arg0[16] = {};
+    char expectedText[24] = {};
+};
+
 struct AppState {
     Screen screen = Screen::Home;
     uint8_t selection[kScreenCount] = {};
@@ -197,9 +265,13 @@ struct AppState {
     int32_t localInvertScroll = 0;
     int32_t localDriveSelection = 0;
     int32_t menuValues[5][sg98_protocol::kMaxMenuValues] = {};
+    int32_t controllerMenuValues[5][sg98_protocol::kMaxMenuValues] = {};
     bool menuSynced[5] = {};
+    bool controllerMenuSynced[5] = {};
     sg98_protocol::StatusFrame status;
+    sg98_protocol::StatusFrame controllerStatus;
     bool hasStatus = false;
+    bool hasControllerStatus = false;
     bool preferGbw = false;
     bool redraw = true;
     bool radioModeKnown = false;
@@ -208,6 +280,8 @@ struct AppState {
     bool wsConnected = false;
     bool wsClientStarted = false;
     bool mdnsReady = false;
+    bool wsDiscoveryPending = false;
+    bool wsStaConnected = false;
     bool sendComplete = false;
     bool sendOk = false;
     LinkTransport currentTransport = LinkTransport::None;
@@ -216,6 +290,8 @@ struct AppState {
     uint32_t pendingTransportAt = 0;
     uint32_t lastTransportSwitchAt = 0;
     uint32_t toastUntil = 0;
+    uint32_t lastLinkActivityAt = 0;
+    uint32_t lastAckAt = 0;
     uint32_t lastStatusAt = 0;
     uint32_t lastStatusPollAt = 0;
     uint32_t lastBackgroundMenuPollAt = 0;
@@ -226,17 +302,26 @@ struct AppState {
     uint32_t lastPollingServiceAt = 0;
     uint32_t lastRoundInputDebugAt = 0;
     uint32_t lastMenuPollAt[5] = {};
+    uint32_t lastMenuRxAt[5] = {};
     uint32_t lastEspNowDiscoveryAt = 0;
     bool transportYieldedToUi = false;
+    bool transportOverrideActive = false;
     uint32_t dangerArmUntil = 0;
     Screen dangerScreen = Screen::Home;
     uint8_t dangerSelection = 0;
     uint32_t lastUserActivityAt = 0;
+    uint32_t lastTouchTapAt = 0;
     uint32_t lastBatteryPollAt = 0;
     uint32_t lastHomeAdjustAt = 0;
     uint32_t homeWheelAnimatedAt = 0;
     uint32_t homeWheelFrameAt = 0;
+    int16_t lastTouchTapX = 0;
+    int16_t lastTouchTapY = 0;
     RemoteBatteryStatus battery;
+    PendingTargetWrite pendingTarget;
+    PendingAction pendingAction;
+    PendingMenuWrite pendingMenuWrites[kPendingMenuWriteSlots];
+    uint8_t pendingMenuCursor = 0;
     uint8_t espNowPeerMac[6] = {};
     DiscoveredEspNowPeer espNowPeers[kEspNowPeerSlots];
     float homeWheelAngle = 0.0f;
@@ -299,7 +384,10 @@ bool hasActiveEspNowPeer();
 bool isEspNowPeerSlotItem(const SettingItem& item);
 bool isEspNowPeerScanItem(const SettingItem& item);
 bool isEspNowPeerClearItem(const SettingItem& item);
+bool isControllerLinkItem(const SettingItem& item);
 String espNowPeerLabelForItem(const SettingItem& item);
+bool pendingControllerSyncActive();
+void requestWebSocketDiscovery(bool resetSession);
 void remoteConsolePoll();
 void remoteConsoleMaybeStream();
 void remoteConsoleTraceFrame(const char* direction, const String& frame);
@@ -310,19 +398,9 @@ static_assert(NUM_MENU3_ITEMS <= sg98_protocol::kMaxMenuValues, "menu3 frame too
 static_assert(NUM_MENU4_ITEMS <= sg98_protocol::kMaxMenuValues, "menu4 frame too small");
 
 constexpr SettingItem kMainItems[] = {
-    {"Radio mode", ItemKind::Toggle, 1, RADIOMODE, 0, 1, 1, "", nullptr, nullptr},
     {"Sleep time", ItemKind::Value, 1, SETSLEEP, 0, 300, 5, "min", nullptr, nullptr},
     {"Brightness", ItemKind::Value, 1, DISP_BRIGHTNESS, 1, 255, 1, "", nullptr, nullptr},
     {"LED max Brightness", ItemKind::Value, 1, LED_BRIGHTNESS, 0, 100, 1, "%", nullptr, nullptr},
-    {"Invert scrolling", ItemKind::Toggle, 1, INVERT_SCROLL, 0, 1, 1, "", nullptr, nullptr},
-    {"Max RPM", ItemKind::Value, 1, SETMAX, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "rpm", nullptr, nullptr},
-    {"Min RPM", ItemKind::Value, 1, SETMIN, absolute_min_rpm, 500, rpm_scalar, "rpm", nullptr, nullptr},
-    {"Motor torque", ItemKind::Value, 1, SETMOTORTORQUE, 1, 300, 1, "%", nullptr, nullptr},
-    {"Motor ramp", ItemKind::Value, 1, SETMOTORRAMP, 0, 12, 1, "lvl", nullptr, nullptr},
-    {"Motor direction", ItemKind::Toggle, 1, SETMOTORDIRECTION, 0, 1, 1, "", nullptr, nullptr},
-    {"Motor setting", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "drive"},
-    {"Calibrate", ItemKind::Action, 0, 0, 0, 0, 0, "", "calibrate", nullptr},
-    {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
     {"Reset default", ItemKind::Danger, 0, 0, 0, 0, 0, "", "reset_defaults", "confirm"},
 };
 
@@ -343,6 +421,13 @@ constexpr SettingItem kPurgeItems[] = {
 };
 
 constexpr SettingItem kGbwItems[] = {
+    {"Max RPM", ItemKind::Value, 1, SETMAX, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "rpm", nullptr, nullptr},
+    {"Min RPM", ItemKind::Value, 1, SETMIN, absolute_min_rpm, 500, rpm_scalar, "rpm", nullptr, nullptr},
+    {"Motor torque", ItemKind::Value, 1, SETMOTORTORQUE, 1, 300, 1, "%", nullptr, nullptr},
+    {"Motor ramp", ItemKind::Value, 1, SETMOTORRAMP, 0, 12, 1, "lvl", nullptr, nullptr},
+    {"Motor direction", ItemKind::Toggle, 1, SETMOTORDIRECTION, 0, 1, 1, "", nullptr, nullptr},
+    {"Drive", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "drive"},
+    {"Calibrate", ItemKind::Action, 0, 0, 0, 0, 0, "", "calibrate", nullptr},
     {"GbW RPM", ItemKind::Value, 3, GBW_RPM_SET, 200, 1500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow RPM", ItemKind::Value, 3, GBW_SLOW_RPM, rpm_scalar, 500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow mg", ItemKind::Value, 3, GBW_SLOW_MG, 0, 6000, 100, "mg", nullptr, nullptr},
@@ -350,6 +435,12 @@ constexpr SettingItem kGbwItems[] = {
     {"SpeedModifier", ItemKind::Value, 3, GBW_SPEEDMOD, 1, 32767, 100, "", nullptr, nullptr},
     {"Time offset", ItemKind::Value, 3, GBW_OFFSET, 10, 1000, 10, "ms", nullptr, nullptr},
     {"Save scale", ItemKind::Toggle, 3, SAVE_SCALE, 0, 1, 1, "", nullptr, nullptr},
+};
+
+constexpr SettingItem kNetworkItems[] = {
+    {"Radio mode", ItemKind::Toggle, 1, RADIOMODE, 0, 1, 1, "", nullptr, nullptr},
+    {"Controller link", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "peers"},
+    {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
 };
 
 constexpr SettingItem kDriveItems[] = {
@@ -379,10 +470,17 @@ constexpr Screen kTabScreens[] = {
     Screen::Main,
     Screen::Purge,
     Screen::Gbw,
-    Screen::Drive,
+    Screen::Network,
 };
 
-constexpr const char* kTabLabels[] = {"RUN", "MAIN", "PURGE", "GBW", "DRIVE"};
+constexpr const char* kTabLabels[] = {"RUN", "MAIN", "PURGE", "GRIND", "NET"};
+
+constexpr Screen kRoundMenuTabScreens[] = {
+    Screen::Main,
+    Screen::Purge,
+    Screen::Gbw,
+    Screen::Network,
+};
 
 AppState app;
 TouchTracker touchTracker;
@@ -404,12 +502,141 @@ size_t g_consoleLineLen = 0;
 
 constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
 constexpr uint16_t kSleepSnapshotVersion = 5;
+constexpr uint32_t kInteractiveLoopWaitMs = 4;
+constexpr uint32_t kAnimatingLoopWaitMs = 16;
+constexpr uint32_t kIdleLoopWaitCapMs = 80;
 
 enum LocalDriveSelection : int32_t {
     LOCAL_DRIVE_AUTO = 0,
     LOCAL_DRIVE_JMC = 1,
     LOCAL_DRIVE_RT = 2,
 };
+
+bool useRoundNavigation();
+bool roundUiInteractionActive();
+bool isRunningState();
+
+uint32_t currentWebSocketLoopIntervalMs() {
+    return app.wsConnected ? remote_config::kWebSocketServiceMs
+                           : remote_config::kWebSocketServiceIdleMs;
+}
+
+uint32_t msUntilDeadline(uint32_t now, uint32_t deadline) {
+    const int32_t remaining = static_cast<int32_t>(deadline - now);
+    return remaining <= 0 ? 0u : static_cast<uint32_t>(remaining);
+}
+
+void shortenWaitForDeadline(uint32_t now, uint32_t deadline, uint32_t* waitMs) {
+    if(waitMs == nullptr || deadline == 0) {
+        return;
+    }
+
+    const uint32_t remaining = msUntilDeadline(now, deadline);
+    if(remaining < *waitMs) {
+        *waitMs = remaining;
+    }
+}
+
+uint32_t currentTransportServiceIntervalMs() {
+    if(pendingControllerSyncActive()) {
+        if(app.currentTransport == LinkTransport::WebSocket ||
+           app.pendingTransport == LinkTransport::WebSocket ||
+           remote_wifi_is_active()) {
+            return app.wsConnected ? remote_config::kWebSocketServiceMs
+                                   : currentWebSocketLoopIntervalMs();
+        }
+        return remote_config::kTransportServiceMs;
+    }
+    if(app.currentTransport == LinkTransport::WebSocket ||
+       app.pendingTransport == LinkTransport::WebSocket ||
+       remote_wifi_is_active()) {
+        return app.wsClientStarted ? currentWebSocketLoopIntervalMs()
+                                   : remote_config::kTransportServiceMs;
+    }
+    if(useRoundNavigation() && app.screen == Screen::Home) {
+        return kHomeTransportServiceMs;
+    }
+    return remote_config::kTransportServiceMs;
+}
+
+uint32_t currentPollingServiceIntervalMs() {
+    if(pendingControllerSyncActive()) {
+        return remote_config::kPollingServiceMs;
+    }
+    if(useRoundNavigation() && app.screen == Screen::Home) {
+        return kHomePollingServiceMs;
+    }
+    return remote_config::kPollingServiceMs;
+}
+
+uint32_t computeLoopWaitMs(uint32_t now, bool yieldTransport) {
+    if(kDisableTransportPerfTest) {
+        return kInteractiveLoopWaitMs;
+    }
+
+    if(app.redraw || Serial.available() > 0 || remote_board_input_pending()) {
+        return 0;
+    }
+
+    uint32_t waitMs = kIdleLoopWaitCapMs;
+
+    if(touchTracker.active || app.targetDirty || app.editing) {
+        waitMs = kInteractiveLoopWaitMs;
+    } else if(roundUiInteractionActive() || fabsf(app.menuRollOffset) >= 0.5f) {
+        waitMs = kAnimatingLoopWaitMs;
+    }
+
+    if(useRoundNavigation() && app.screen == Screen::Home) {
+        shortenWaitForDeadline(now,
+                               app.lastUserActivityAt + kRoundInputQuietMs,
+                               &waitMs);
+        if(yieldTransport) {
+            shortenWaitForDeadline(now,
+                                   app.lastUserActivityAt + kHomeTransportQuietMs,
+                                   &waitMs);
+        }
+    }
+
+    if(app.pendingTransport != LinkTransport::None) {
+        shortenWaitForDeadline(now, app.pendingTransportAt, &waitMs);
+    }
+
+    if(g_persistentStateDirty) {
+        shortenWaitForDeadline(now, g_persistentStateDueAt, &waitMs);
+    }
+
+    if(app.targetDirty) {
+        shortenWaitForDeadline(now, app.targetCommitAt, &waitMs);
+    }
+
+    if(app.toastUntil > now) {
+        shortenWaitForDeadline(now, app.toastUntil, &waitMs);
+    }
+
+    if(g_consoleStreamEnabled) {
+        shortenWaitForDeadline(now, g_consoleLastStreamAt + 1000, &waitMs);
+    }
+
+    if(!kDisableTransportPerfTest && !yieldTransport) {
+        shortenWaitForDeadline(now,
+                               app.lastTransportServiceAt + currentTransportServiceIntervalMs(),
+                               &waitMs);
+        shortenWaitForDeadline(now,
+                               app.lastPollingServiceAt + currentPollingServiceIntervalMs(),
+                               &waitMs);
+    }
+
+    if(useRoundNavigation() && app.screen == Screen::Home && isRunningState() &&
+       !roundUiInteractionActive() && app.homeWheelFrameAt != 0) {
+        shortenWaitForDeadline(now, app.homeWheelFrameAt + kWheelAnimationFrameMs, &waitMs);
+    }
+
+    if(!remote_config::kDisableIdleSleepForTesting) {
+        shortenWaitForDeadline(now, app.lastUserActivityAt + remote_config::kIdleSleepAfterMs,
+                               &waitMs);
+    }
+    return waitMs;
+}
 
 template <size_t N>
 void copyStringToBuffer(const String& value, char (&dest)[N]) {
@@ -445,6 +672,14 @@ void sanitizeSelections();
 
 bool prefersWebSocket() {
     return (app.radioModeKnown && transportFromRadioMode(app.menuValues[1][RADIOMODE]) == LinkTransport::WebSocket) ||
+           app.pendingTransport == LinkTransport::WebSocket;
+}
+
+bool controllerLinkUsesWebSocketScan() {
+    if(app.radioModeKnown) {
+        return transportFromRadioMode(app.menuValues[1][RADIOMODE]) == LinkTransport::WebSocket;
+    }
+    return app.currentTransport == LinkTransport::WebSocket ||
            app.pendingTransport == LinkTransport::WebSocket;
 }
 
@@ -522,6 +757,10 @@ bool isLargeCanvas() {
 
 bool useRoundNavigation() {
     return isLargeCanvas();
+}
+
+bool useWaveshareRoundUi() {
+    return remote_board_info().id == RemoteBoardId::WaveshareAmoled175;
 }
 
 RemoteTextStyle heroTextStyle() {
@@ -737,6 +976,9 @@ String displayLabelForItem(const SettingItem& item) {
     if(isEspNowPeerSlotItem(item) || isEspNowPeerScanItem(item) || isEspNowPeerClearItem(item)) {
         return espNowPeerLabelForItem(item);
     }
+    if(isControllerLinkItem(item)) {
+        return controllerLinkUsesWebSocketScan() ? "SCAN CONTROLLER" : "CONTROLLER LINK";
+    }
     if(strcmp(item.label, "Motor setting") == 0) return "MOTOR SET";
     return upperText(item.label);
 }
@@ -750,6 +992,9 @@ String displayHintForItem(const SettingItem& item) {
     }
     if(isEspNowPeerClearItem(item)) {
         return "REMOVE LOCK";
+    }
+    if(isControllerLinkItem(item)) {
+        return controllerLinkUsesWebSocketScan() ? "DISCOVER WS HOST" : "PICK CONTROLLER";
     }
     if(item.action != nullptr && strcmp(item.action, "screen") == 0) {
         return "OPEN MENU";
@@ -793,6 +1038,7 @@ constexpr Screen kMenuScreens[] = {
     Screen::Main,
     Screen::Purge,
     Screen::Gbw,
+    Screen::Network,
 };
 
 const char* screenTitle(Screen screen) {
@@ -800,9 +1046,10 @@ const char* screenTitle(Screen screen) {
         case Screen::Home: return "RUN";
         case Screen::Main: return "SYSTEM";
         case Screen::Purge: return "PURGE";
-        case Screen::Gbw: return "GBW";
+        case Screen::Gbw: return "GRINDER";
         case Screen::Drive: return "DRIVE";
         case Screen::EspNowPeers: return "ESP-NOW";
+        case Screen::Network: return "NETWORK";
         default: return "?";
     }
 }
@@ -824,8 +1071,11 @@ Screen cycleMenuScreen(Screen current, int delta) {
 }
 
 Screen roundNavMenuTarget(Screen current, int delta) {
-    if(current == Screen::Drive || current == Screen::EspNowPeers) {
+    if(current == Screen::Drive) {
         return Screen::Main;
+    }
+    if(current == Screen::EspNowPeers) {
+        return Screen::Network;
     }
     return cycleMenuScreen(current, delta);
 }
@@ -843,6 +1093,58 @@ Screen cycleTabScreen(Screen current, int delta) {
     int next = index + delta;
     while(next < 0) next += count;
     while(next >= count) next -= count;
+    return kTabScreens[next];
+}
+
+Screen cycleRoundMenuTabScreen(Screen current, int delta) {
+    int index = -1;
+    for(size_t i = 0; i < (sizeof(kRoundMenuTabScreens) / sizeof(kRoundMenuTabScreens[0])); ++i) {
+        if(kRoundMenuTabScreens[i] == current) {
+            index = static_cast<int>(i);
+            break;
+        }
+    }
+
+    if(index < 0) {
+        return current;
+    }
+
+    const int count = static_cast<int>(sizeof(kRoundMenuTabScreens) / sizeof(kRoundMenuTabScreens[0]));
+    int next = index + delta;
+    while(next < 0) next += count;
+    while(next >= count) next -= count;
+    return kRoundMenuTabScreens[next];
+}
+
+bool isRoundTopLevelTabScreen(Screen screen) {
+    for(size_t i = 0; i < (sizeof(kRoundMenuTabScreens) / sizeof(kRoundMenuTabScreens[0])); ++i) {
+        if(kRoundMenuTabScreens[i] == screen) {
+            return true;
+        }
+    }
+    return false;
+}
+
+Screen stepTabScreen(Screen current, int delta) {
+    int index = -1;
+    for(size_t i = 0; i < (sizeof(kTabScreens) / sizeof(kTabScreens[0])); ++i) {
+        if(kTabScreens[i] == current) {
+            index = static_cast<int>(i);
+            break;
+        }
+    }
+    if(index < 0) {
+        return current;
+    }
+
+    const int count = static_cast<int>(sizeof(kTabScreens) / sizeof(kTabScreens[0]));
+    int next = index + delta;
+    if(next < 0) {
+        next = 0;
+    }
+    if(next >= count) {
+        next = count - 1;
+    }
     return kTabScreens[next];
 }
 
@@ -906,7 +1208,8 @@ String voltageLabel(int32_t millivolts) {
 }
 
 bool isLinkOnline() {
-    return app.hasStatus && (millis() - app.lastStatusAt) < remote_config::kLinkTimeoutMs;
+    return app.lastLinkActivityAt != 0 &&
+           (millis() - app.lastLinkActivityAt) < remote_config::kLinkTimeoutMs;
 }
 
 bool isGbwState() {
@@ -984,6 +1287,10 @@ int16_t homeWheelDisplayRpm() {
         return app.status.setRpm;
     }
     return 0;
+}
+
+int32_t rpmMagnitude(int32_t rpm) {
+    return rpm < 0 ? -rpm : rpm;
 }
 
 int8_t homeWheelSpinDirection() {
@@ -1128,6 +1435,13 @@ bool isEspNowPeerScanItem(const SettingItem& item) {
 
 bool isEspNowPeerClearItem(const SettingItem& item) {
     return item.action != nullptr && strcmp(item.action, "peer_clear") == 0;
+}
+
+bool isControllerLinkItem(const SettingItem& item) {
+    return item.action != nullptr &&
+           strcmp(item.action, "screen") == 0 &&
+           item.actionArg != nullptr &&
+           strcmp(item.actionArg, "peers") == 0;
 }
 
 bool macAddressEqual(const uint8_t* lhs, const uint8_t* rhs) {
@@ -1424,14 +1738,14 @@ void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
 
 void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTransport, const char* toastText = nullptr) {
     const uint8_t screenIndex = snapshot.screen;
-    if(screenIndex <= static_cast<uint8_t>(Screen::EspNowPeers)) {
+    if(screenIndex <= static_cast<uint8_t>(Screen::Network)) {
         app.screen = static_cast<Screen>(screenIndex);
     }
     memcpy(app.selection, snapshot.selection, sizeof(app.selection));
     sanitizeSelections();
     app.manualRpm = snapshot.manualRpm;
     app.weightMg = snapshot.weightMg;
-    app.localInvertScroll = snapshot.localInvertScroll != 0 ? 1 : 0;
+    app.localInvertScroll = 0;
     setLocalDriveSelection(sanitizeLocalDriveSelection(snapshot.localDriveSelection));
     memcpy(app.menuValues, snapshot.menuValues, sizeof(app.menuValues));
     for(uint8_t menu = 0; menu < 5; ++menu) {
@@ -1594,18 +1908,33 @@ bool shouldYieldTransportToUi() {
         return false;
     }
 
-    if(app.screen != Screen::Home || app.editing) {
+    if(touchTracker.active || app.targetDirty) {
         return true;
     }
 
-    if(touchTracker.active || app.targetDirty) {
-        return true;
+    if(pendingControllerSyncActive()) {
+        return false;
+    }
+
+    if(app.currentTransport == LinkTransport::WebSocket ||
+       app.pendingTransport == LinkTransport::WebSocket ||
+       remote_wifi_is_active()) {
+        return false;
+    }
+
+    if(app.screen != Screen::Home || app.editing) {
+        return false;
     }
 
     return (millis() - app.lastUserActivityAt) < kHomeTransportQuietMs;
 }
 
 uint32_t currentStatusPollIntervalMs() {
+    if((app.pendingTarget.active || app.pendingAction.kind != PendingActionKind::None) &&
+       !touchTracker.active) {
+        return remote_config::kStatusPollInteractiveMs;
+    }
+
     if(useRoundNavigation() && (app.screen != Screen::Home || app.editing)) {
         return remote_config::kStatusPollRoundMenuMs;
     }
@@ -1649,16 +1978,15 @@ int applyDialDirection(int delta) {
     if(delta == 0) {
         return 0;
     }
-    return app.localInvertScroll != 0 ? delta : -delta;
+    return -delta;
 }
 
-Screen screenForMenuNum(uint8_t menuNum) {
+bool isVisibleControllerMenuScreen(Screen screen, uint8_t menuNum) {
     switch(menuNum) {
-        case 1: return Screen::Main;
-        case 2: return Screen::Purge;
-        case 3: return Screen::Gbw;
-        case 4: return Screen::Drive;
-        default: return Screen::Home;
+        case 1: return screen == Screen::Main || screen == Screen::Gbw || screen == Screen::Network;
+        case 2: return screen == Screen::Purge;
+        case 3: return screen == Screen::Gbw;
+        default: return false;
     }
 }
 
@@ -1736,7 +2064,7 @@ bool shouldRedrawForMenuFrame(const sg98_protocol::MenuFrame& frame, bool values
         return false;
     }
 
-    return app.screen == screenForMenuNum(frame.menuNum);
+    return isVisibleControllerMenuScreen(app.screen, frame.menuNum);
 }
 
 void setToast(const String& text, uint32_t durationMs = remote_config::kToastHoldMs) {
@@ -1746,6 +2074,10 @@ void setToast(const String& text, uint32_t durationMs = remote_config::kToastHol
 }
 
 void refreshBatteryStatus(bool force) {
+    if(kDisableTransportPerfTest) {
+        return;
+    }
+
     const uint32_t now = millis();
     if(!force && (now - app.lastBatteryPollAt) < remote_config::kBatteryPollMs) {
         return;
@@ -1770,6 +2102,9 @@ const SettingItem* itemsForScreen(Screen screen, size_t* count) {
         case Screen::Gbw:
             if(count != nullptr) *count = arrayCount(kGbwItems);
             return kGbwItems;
+        case Screen::Network:
+            if(count != nullptr) *count = arrayCount(kNetworkItems);
+            return kNetworkItems;
         case Screen::Drive:
             if(count != nullptr) *count = arrayCount(kDriveItems);
             return kDriveItems;
@@ -1874,6 +2209,21 @@ String formatSettingValue(const SettingItem& item) {
         }
         if(isEspNowPeerClearItem(item)) {
             return app.espNowPeerConfigured ? "CLEAR" : "--";
+        }
+        if(isControllerLinkItem(item)) {
+            if(controllerLinkUsesWebSocketScan()) {
+                if(!remote_wifi_has_saved_network()) {
+                    return "SET WI-FI";
+                }
+                if(app.wsConnected) {
+                    return "LINKED";
+                }
+                if(app.wsClientStarted) {
+                    return "TRYING";
+                }
+                return "SCAN";
+            }
+            return hasActiveEspNowPeer() ? "OPEN" : "SCAN";
         }
         if(isConfirmActionItem(item)) {
             return "CONFIRM";
@@ -2028,8 +2378,13 @@ Layout buildLayout() {
         };
 
         const int16_t navY = static_cast<int16_t>(layout.height - bottomInset - layout.navH);
-        const int16_t edgeNavW = clampI16(static_cast<int16_t>(shortSide * 0.19f), 76, 96);
-        const int16_t edgeNavH = clampI16(static_cast<int16_t>(shortSide * 0.34f), 132, 176);
+        const bool waveshareRoundMenu = useWaveshareRoundUi() && app.screen != Screen::Home && !app.editing;
+        const int16_t edgeNavW =
+            waveshareRoundMenu ? clampI16(static_cast<int16_t>(shortSide * 0.11f), 46, 56)
+                               : clampI16(static_cast<int16_t>(shortSide * 0.19f), 76, 96);
+        const int16_t edgeNavH =
+            waveshareRoundMenu ? clampI16(static_cast<int16_t>(shortSide * 0.25f), 96, 122)
+                               : clampI16(static_cast<int16_t>(shortSide * 0.34f), 132, 176);
         const int16_t edgeNavY = static_cast<int16_t>(centerY - edgeNavH / 2);
         layout.homeModeButton = {layout.pad, edgeNavY, edgeNavW, edgeNavH};
         layout.homeActionButton = {
@@ -2070,21 +2425,33 @@ Layout buildLayout() {
         layout.editSave = {editBottomBand.x, editBottomY, editBottomBand.w, editButtonH};
 
         if(app.screen != Screen::Home && !app.editing) {
-            const int16_t heroH = clampI16(static_cast<int16_t>(shortSide * 0.35f), 146, 176);
-            const int16_t peekH = clampI16(static_cast<int16_t>(shortSide * 0.078f), 24, 38);
-            const int16_t heroY = static_cast<int16_t>(centerY - (heroH / 2));
-            const Rect heroBand = safeBand(heroY, heroH, static_cast<int16_t>(layout.pad + 44));
-            const Rect prevBand = safeBand(static_cast<int16_t>(heroY - peekH - layout.gap),
-                                           peekH,
-                                           static_cast<int16_t>(layout.pad + 88));
-            const Rect nextBand = safeBand(static_cast<int16_t>(heroY + heroH + layout.gap),
-                                           peekH,
-                                           static_cast<int16_t>(layout.pad + 88));
-            layout.menuRows[0] = prevBand;
-            layout.menuRows[1] = heroBand;
-            layout.menuRows[2] = nextBand;
-            layout.rowH = heroH;
-            layout.rowCount = 3;
+            if(useWaveshareRoundUi()) {
+                const int16_t stepDistance = clampI16(static_cast<int16_t>(shortSide / 7), 56, 68);
+                const int16_t rowH = clampI16(static_cast<int16_t>(stepDistance - 6), 50, 64);
+                const int16_t rowInset = static_cast<int16_t>(layout.pad + 34);
+                const int16_t centerRowY = static_cast<int16_t>(centerY - (rowH / 2));
+                layout.menuRows[0] = safeBand(static_cast<int16_t>(centerRowY - stepDistance), rowH, rowInset);
+                layout.menuRows[1] = safeBand(centerRowY, rowH, rowInset);
+                layout.menuRows[2] = safeBand(static_cast<int16_t>(centerRowY + stepDistance), rowH, rowInset);
+                layout.rowH = rowH;
+                layout.rowCount = 3;
+            } else {
+                const int16_t heroH = clampI16(static_cast<int16_t>(shortSide * 0.35f), 146, 176);
+                const int16_t peekH = clampI16(static_cast<int16_t>(shortSide * 0.078f), 24, 38);
+                const int16_t heroY = static_cast<int16_t>(centerY - (heroH / 2));
+                const Rect heroBand = safeBand(heroY, heroH, static_cast<int16_t>(layout.pad + 44));
+                const Rect prevBand = safeBand(static_cast<int16_t>(heroY - peekH - layout.gap),
+                                               peekH,
+                                               static_cast<int16_t>(layout.pad + 88));
+                const Rect nextBand = safeBand(static_cast<int16_t>(heroY + heroH + layout.gap),
+                                               peekH,
+                                               static_cast<int16_t>(layout.pad + 88));
+                layout.menuRows[0] = prevBand;
+                layout.menuRows[1] = heroBand;
+                layout.menuRows[2] = nextBand;
+                layout.rowH = heroH;
+                layout.rowCount = 3;
+            }
         }
 
         return layout;
@@ -2751,15 +3118,8 @@ float normalizedDisplayedHomeLevel() {
 
     const int32_t minRpm = app.menuValues[1][SETMIN] > 0 ? app.menuValues[1][SETMIN] : default_minRPM;
     const int32_t maxRpm = app.menuValues[1][SETMAX] > minRpm ? app.menuValues[1][SETMAX] : default_maxRPM;
-    int32_t shownRpm = app.manualRpm;
-    if(isRunningState() && app.hasStatus) {
-        if(app.status.currentRpm != 0) {
-            shownRpm = app.status.currentRpm;
-        } else if(app.status.setRpm != 0) {
-            shownRpm = app.status.setRpm;
-        }
-    }
-    return normalizedRangeValue(shownRpm, minRpm, maxRpm);
+    const int32_t shownRpm = isRunningState() ? homeWheelDisplayRpm() : app.manualRpm;
+    return normalizedRangeValue(rpmMagnitude(shownRpm), minRpm, maxRpm);
 }
 
 float normalizedItemLevel(const SettingItem& item, int32_t value) {
@@ -2777,6 +3137,47 @@ uint16_t ringColorForLevel(float level) {
         return blendColor565(kColorAccent, kColorWarn, (level - 0.5f) / 0.32f);
     }
     return blendColor565(kColorWarn, kColorDanger, (level - 0.82f) / 0.18f);
+}
+
+size_t wrapMenuItemIndex(size_t selected, int delta, size_t count) {
+    if(count == 0) {
+        return 0;
+    }
+
+    int idx = static_cast<int>(selected) + delta;
+    while(idx < 0) {
+        idx += static_cast<int>(count);
+    }
+    while(idx >= static_cast<int>(count)) {
+        idx -= static_cast<int>(count);
+    }
+    return static_cast<size_t>(idx);
+}
+
+bool roundMenuItemShowsValuePreview(const SettingItem& item) {
+    return item.kind == ItemKind::Value ||
+           item.kind == ItemKind::Toggle ||
+           isEspNowPeerSlotItem(item) ||
+           isEspNowPeerScanItem(item) ||
+           isEspNowPeerClearItem(item) ||
+           isRadioModeItem(item) ||
+           (item.action != nullptr && strcmp(item.action, "screen") == 0);
+}
+
+uint16_t roundMenuItemAccentColor(const SettingItem& item) {
+    if(item.kind == ItemKind::Danger) {
+        return kColorDanger;
+    }
+    if(item.kind == ItemKind::Action) {
+        return kColorAccent2;
+    }
+    if(item.kind == ItemKind::Toggle) {
+        return blendColor565(kColorAccent, kColorPanelHi, 0.24f);
+    }
+    if(item.kind == ItemKind::Value) {
+        return ringColorForLevel(normalizedItemLevel(item, menuValue(item)));
+    }
+    return blendColor565(kColorAccent, kColorPanelHi, 0.18f);
 }
 
 void drawLevelRing(RemoteCanvas& canvas,
@@ -2941,6 +3342,26 @@ void drawChevron(RemoteCanvas& canvas,
 }
 
 void drawRoundNav(RemoteCanvas& canvas, const Layout& layout) {
+    if(useWaveshareRoundUi()) {
+        if(!isRoundTopLevelTabScreen(app.screen)) {
+            return;
+        }
+        const uint16_t hintColor = blendColor565(kColorMuted, kColorBg, 0.10f);
+        drawChevron(canvas,
+                    static_cast<int16_t>(layout.navPrev.x + 16),
+                    static_cast<int16_t>(layout.navPrev.y + layout.navPrev.h / 2),
+                    12,
+                    true,
+                    hintColor);
+        drawChevron(canvas,
+                    static_cast<int16_t>(layout.navNext.x + layout.navNext.w - 16),
+                    static_cast<int16_t>(layout.navNext.y + layout.navNext.h / 2),
+                    12,
+                    false,
+                    hintColor);
+        return;
+    }
+
     const Screen prevScreen = roundNavMenuTarget(app.screen, -1);
     const Screen nextScreen = roundNavMenuTarget(app.screen, 1);
     const uint16_t shellColor = blendColor565(kColorPanel, kColorBg, 0.34f);
@@ -3179,9 +3600,157 @@ Rect homeMenuBottomEdgeRect(const Layout& layout) {
 int16_t roundMenuScrollThreshold(const Layout& layout) {
     const int16_t stepDistance = abs(static_cast<int16_t>(layout.menuRows[1].y - layout.menuRows[0].y));
     if(stepDistance > 0) {
-        return clampI16(static_cast<int16_t>(stepDistance / 2), 16, 34);
+        return clampI16(static_cast<int16_t>((stepDistance * 3) / 4), 24, 48);
     }
-    return clampI16(static_cast<int16_t>(layout.rowH / 4), 16, 34);
+    return clampI16(static_cast<int16_t>(layout.rowH / 3), 24, 48);
+}
+
+void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title) {
+    size_t count = 0;
+    const SettingItem* items = itemsForScreen(app.screen, &count);
+    if(items == nullptr || count == 0) {
+        drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+        drawFooter(canvas, layout, "No items");
+        drawRoundNav(canvas, layout);
+        return;
+    }
+
+    const uint8_t selected = selectionFor(app.screen);
+    const Rect content = roundMenuContentRect(layout);
+    const int16_t centerX = static_cast<int16_t>(content.x + content.w / 2);
+    const int16_t centerY = static_cast<int16_t>(layout.menuRows[1].y + layout.menuRows[1].h / 2);
+    const int16_t stepDistance = max<int16_t>(1, abs(static_cast<int16_t>(layout.menuRows[1].y - layout.menuRows[0].y)));
+    const float offsetSteps = app.menuRollOffset / static_cast<float>(stepDistance);
+    const int16_t farInsetMax = clampI16(static_cast<int16_t>(content.w / 9), 12, 22);
+    size_t drawnIndices[5] = {};
+    uint8_t drawnCount = 0;
+
+    drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+
+    if(count == 1) {
+        const SettingItem& item = items[0];
+        const uint16_t accent = roundMenuItemAccentColor(item);
+        const int16_t rowW = max<int16_t>(200, static_cast<int16_t>(content.w - 16));
+        const int16_t rowH = clampI16(static_cast<int16_t>(layout.rowH + 8), 52, 72);
+        const Rect rowRect = {
+            static_cast<int16_t>(centerX - (rowW / 2)),
+            static_cast<int16_t>(centerY - (rowH / 2)),
+            rowW,
+            rowH
+        };
+        const uint16_t baseFace = blendColor565(kColorPanel, accent, 0.28f);
+        const uint16_t face = blendColor565(kColorBg, baseFace, 0.84f);
+        const uint16_t border = blendColor565(accent, kColorText, 0.20f);
+        const uint16_t textColor = blendColor565(kColorText, accent, 0.08f);
+        const int16_t radius = clampI16(static_cast<int16_t>(rowRect.h / 2), 18, 28);
+        const String label = upperText(displayLabelForItem(item));
+        const RemoteTextStyle labelStyle = chooseMenuHeroTextStyle(label, static_cast<int16_t>(rowRect.w - 20));
+
+        canvas.fillRoundRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, radius, face);
+        canvas.drawRoundRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, radius, border);
+        if(rowRect.w > 8 && rowRect.h > 8) {
+            const int16_t innerRadius = clampI16(static_cast<int16_t>(radius - 2), 12, 24);
+            canvas.drawRoundRect(rowRect.x + 2,
+                                 rowRect.y + 2,
+                                 rowRect.w - 4,
+                                 rowRect.h - 4,
+                                 innerRadius,
+                                 blendColor565(border, kColorText, 0.18f));
+        }
+        drawSoftCenteredText(canvas,
+                             fitTextToWidthNoTilde(label, static_cast<int16_t>(rowRect.w - 24), labelStyle, 4),
+                             centerX,
+                             static_cast<int16_t>(rowRect.y + rowRect.h / 2),
+                             labelStyle,
+                             textColor,
+                             face,
+                             accent,
+                             false);
+
+        const String footerText = (app.toastUntil > millis()) ? upperText(app.toast) : String("SWIPE TO BROWSE");
+        drawFooter(canvas, layout, footerText);
+        drawRoundNav(canvas, layout);
+        return;
+    }
+
+    for(int rel = -2; rel <= 2; ++rel) {
+        const float visualOffset = static_cast<float>(rel) + offsetSteps;
+        const float distance = fabsf(visualOffset);
+        if(distance > 2.35f) {
+            continue;
+        }
+
+        float prominence = 1.0f - (distance / 2.35f);
+        if(prominence < 0.0f) {
+            prominence = 0.0f;
+        }
+        prominence *= prominence;
+
+        const size_t idx = wrapMenuItemIndex(selected, rel, count);
+        bool duplicateIndex = false;
+        for(uint8_t i = 0; i < drawnCount; ++i) {
+            if(drawnIndices[i] == idx) {
+                duplicateIndex = true;
+                break;
+            }
+        }
+        if(duplicateIndex) {
+            continue;
+        }
+        drawnIndices[drawnCount++] = idx;
+        const SettingItem& item = items[idx];
+        const bool focused = distance < 0.55f;
+        const bool dangerArmed = focused && item.kind == ItemKind::Danger && dangerIsArmed(app.screen, selected);
+        const uint16_t accent = dangerArmed ? kColorDanger : roundMenuItemAccentColor(item);
+        const int16_t inset = clampI16(static_cast<int16_t>(8.0f + distance * static_cast<float>(farInsetMax)), 8, farInsetMax);
+        const int16_t rowW = max<int16_t>(180, static_cast<int16_t>(content.w - inset * 2));
+        const int16_t rowH = clampI16(static_cast<int16_t>(46.0f + prominence * 24.0f), 44, 70);
+        const int16_t rowX = static_cast<int16_t>(centerX - (rowW / 2));
+        const int16_t rowY = static_cast<int16_t>(centerY + lroundf(visualOffset * static_cast<float>(stepDistance)) - (rowH / 2));
+        if(rowY + rowH < layout.modeBadge.y + layout.modeBadge.h || rowY > layout.footer.y) {
+            continue;
+        }
+
+        const Rect rowRect = {rowX, rowY, rowW, rowH};
+        const uint16_t baseFace = blendColor565(kColorPanel, accent, 0.10f + prominence * 0.22f);
+        const uint16_t face = blendColor565(kColorBg, baseFace, 0.18f + prominence * 0.72f);
+        const uint16_t border = focused ? blendColor565(accent, kColorText, 0.20f)
+                                        : blendColor565(face, accent, 0.08f + prominence * 0.16f);
+        const uint16_t textBase = blendColor565(kColorMuted, kColorBg, 0.16f);
+        const uint16_t textColor = blendColor565(textBase, kColorText, 0.18f + prominence * 0.82f);
+        const int16_t radius = clampI16(static_cast<int16_t>(rowRect.h / 2), 16, 26);
+
+        canvas.fillRoundRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, radius, face);
+        canvas.drawRoundRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, radius, border);
+        if(focused && rowRect.w > 8 && rowRect.h > 8) {
+            const int16_t innerRadius = clampI16(static_cast<int16_t>(radius - 2), 12, 22);
+            canvas.drawRoundRect(rowRect.x + 2,
+                                 rowRect.y + 2,
+                                 rowRect.w - 4,
+                                 rowRect.h - 4,
+                                 innerRadius,
+                                 blendColor565(border, kColorText, 0.18f));
+        }
+
+        const String label = upperText(displayLabelForItem(item));
+        const RemoteTextStyle labelStyle =
+            focused ? chooseMenuHeroTextStyle(label, static_cast<int16_t>(rowRect.w - 20))
+                    : (distance < 1.15f ? chooseLabelTextStyle(label, static_cast<int16_t>(rowRect.w - 18))
+                                        : RemoteTextStyle::Small);
+        drawSoftCenteredText(canvas,
+                             fitTextToWidthNoTilde(label, static_cast<int16_t>(rowRect.w - 24), labelStyle, 4),
+                             centerX,
+                             static_cast<int16_t>(rowRect.y + rowRect.h / 2),
+                             labelStyle,
+                             textColor,
+                             face,
+                             accent,
+                             distance > 1.15f);
+    }
+
+    const String footerText = (app.toastUntil > millis()) ? upperText(app.toast) : String("SWIPE TO BROWSE");
+    drawFooter(canvas, layout, footerText);
+    drawRoundNav(canvas, layout);
 }
 
 void drawHome(RemoteCanvas& canvas, const Layout& layout) {
@@ -3194,17 +3763,21 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
         const uint32_t now = millis();
         const bool showTargetValue = !isRunningState() || app.targetDirty || (now - app.lastHomeAdjustAt) < 1200;
         const bool showLiveValue = !showTargetValue && app.hasStatus;
+        const int32_t liveRpm = homeWheelDisplayRpm();
+        const bool reverseLiveRpm = !isGbwState() && showLiveValue && liveRpm < 0;
         const String targetValue = isGbwState() ? weightValueText(app.weightMg) : String(app.manualRpm);
-        const String liveValue = isGbwState() ? weightValueText(app.status.currentWeightMg) : String(app.status.currentRpm);
+        const String liveValue = isGbwState() ? weightValueText(app.status.currentWeightMg) : String(liveRpm);
         const String primaryValue = showLiveValue ? liveValue : targetValue;
         const String unitText = isGbwState() ? "GRAMS" : "RPM";
         const int16_t valueWidth = static_cast<int16_t>((layout.homeDialInnerRadius * 2) + 72);
         const int16_t unitWidth = static_cast<int16_t>((layout.homeDialInnerRadius * 2) + 28);
         const RemoteTextStyle valueStyle = chooseValueTextStyle(primaryValue, valueWidth);
         const RemoteTextStyle unitStyle = chooseLabelTextStyle(unitText, unitWidth);
-        const uint16_t valueColor =
-            isGbwState() ? blendColor565(kColorText, palette.accent, 0.24f)
-                         : blendColor565(kColorText, ringColorForLevel(level), 0.58f);
+        const uint16_t ringAccent = reverseLiveRpm ? blendColor565(kColorDanger, kColorWarn, 0.28f) : palette.accent;
+        const uint16_t valueColor = isGbwState()
+                                        ? blendColor565(kColorText, palette.accent, 0.24f)
+                                        : (reverseLiveRpm ? blendColor565(kColorText, kColorDanger, 0.78f)
+                                                          : blendColor565(kColorText, ringColorForLevel(level), 0.58f));
         const uint16_t unitColor = blendColor565(palette.muted, palette.background, 0.10f);
 
         drawLevelRing(canvas,
@@ -3214,7 +3787,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                       static_cast<int16_t>(layout.homeDialOuterRadius + 38),
                       level,
                       blendColor565(palette.panel, palette.background, 0.36f),
-                      palette.accent);
+                      ringAccent);
         if(!interactionActive) {
             drawDialTicks(canvas,
                           layout.homeDialCx,
@@ -3225,7 +3798,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                           blendColor565(palette.panelHi, palette.background, 0.24f));
         }
         canvas.fillCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius, palette.panel);
-        canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius + 2, palette.accent);
+        canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius + 2, ringAccent);
         canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialOuterRadius + 7, blendColor565(palette.panelHi, kColorText, 0.16f));
         if(isRunningState() && homeWheelDisplayRpm() != 0) {
             drawHomeWheel(canvas, layout);
@@ -3328,7 +3901,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
 
     const String stateLine = app.hasStatus ? app.status.state : "WAITING";
     const String telemetryLine =
-        String("RPM ") + (app.hasStatus ? String(app.status.currentRpm) : "-") +
+        String("RPM ") + (app.hasStatus ? String(homeWheelDisplayRpm()) : "-") +
         "  WT " + (app.hasStatus ? weightLabel(app.status.currentWeightMg) : String("-"));
     const String detailLine =
         String("COMM ") + (app.hasStatus ? app.status.comm : String("NO DATA")) +
@@ -3361,6 +3934,11 @@ void drawMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title)
     canvas.fillScreen(kColorBg);
 
     if(useRoundNavigation()) {
+        if(useWaveshareRoundUi()) {
+            drawWaveshareRoundMenuList(canvas, layout, title);
+            return;
+        }
+
         size_t count = 0;
         const SettingItem* items = itemsForScreen(app.screen, &count);
         if(items == nullptr || count == 0) {
@@ -3765,7 +4343,11 @@ void redrawUi() {
         } else if(app.screen == Screen::Purge) {
             drawEditor(canvas, layout, "PURGE");
         } else if(app.screen == Screen::Gbw) {
-            drawEditor(canvas, layout, "GBW");
+            drawEditor(canvas, layout, "GRINDER");
+        } else if(app.screen == Screen::Network) {
+            drawEditor(canvas, layout, "NETWORK");
+        } else if(app.screen == Screen::EspNowPeers) {
+            drawEditor(canvas, layout, "ESP-NOW");
         } else {
             drawEditor(canvas, layout, "DRIVE");
         }
@@ -3774,9 +4356,13 @@ void redrawUi() {
     } else if(app.screen == Screen::Purge) {
         drawMenuList(canvas, layout, "PURGE");
     } else if(app.screen == Screen::Gbw) {
-        drawMenuList(canvas, layout, "GBW");
-    } else {
+        drawMenuList(canvas, layout, "GRINDER");
+    } else if(app.screen == Screen::Network) {
+        drawMenuList(canvas, layout, "NETWORK");
+    } else if(app.screen == Screen::Drive) {
         drawMenuList(canvas, layout, "DRIVE");
+    } else {
+        drawMenuList(canvas, layout, "ESP-NOW");
     }
 
     canvas.present();
@@ -3817,9 +4403,23 @@ void stopWebSocketSession() {
     }
     app.wsConnected = false;
     app.wsClientStarted = false;
+    app.wsDiscoveryPending = false;
+    app.wsStaConnected = false;
     app.wsHost = "";
     app.wsEndpointLabel = "";
     stopMdnsClient();
+}
+
+void stopAllTransportStacks() {
+    stopWebSocketSession();
+    if(remote_wifi_is_active()) {
+        remote_wifi_stop();
+    }
+    stopEspNowSession();
+    app.lastLinkActivityAt = 0;
+    app.currentTransport = LinkTransport::None;
+    app.pendingTransport = LinkTransport::None;
+    app.pendingTransportAt = 0;
 }
 
 void scheduleTransportSwitch(LinkTransport transport, uint32_t delayMs = 0) {
@@ -3852,7 +4452,9 @@ void connectWebSocketHost(const String& host, uint16_t port) {
         return;
     }
 
-    wsClient.disconnect();
+    if(app.wsClientStarted) {
+        wsClient.disconnect();
+    }
     app.wsConnected = false;
     app.wsHost = host;
     app.wsPort = port;
@@ -3860,27 +4462,29 @@ void connectWebSocketHost(const String& host, uint16_t port) {
     wsClient.begin(app.wsHost.c_str(), app.wsPort, "/");
     wsClient.setReconnectInterval(remote_config::kWebSocketReconnectMs);
     app.wsClientStarted = true;
+    app.lastWebSocketServiceAt = 0;
+    wsClient.loop();
     Serial.printf("[remote_ws] connect %s:%u\n",
                   app.wsHost.c_str(),
                   static_cast<unsigned>(app.wsPort));
 }
 
-void discoverControllerService(bool force) {
+bool discoverControllerService(bool force) {
     if(!remote_wifi_sta_connected()) {
-        return;
+        return false;
     }
     ensureMdnsClientReady();
     if(!app.mdnsReady) {
-        return;
+        return false;
     }
     if(!force && (app.lastMdnsQueryAt + remote_config::kMdnsQueryMs) > millis()) {
-        return;
+        return false;
     }
 
     app.lastMdnsQueryAt = millis();
     const int serviceCount = MDNS.queryService("sg98", "tcp");
     if(serviceCount <= 0) {
-        return;
+        return false;
     }
 
     for(int i = 0; i < serviceCount; ++i) {
@@ -3890,8 +4494,25 @@ void discoverControllerService(bool force) {
             continue;
         }
         connectWebSocketHost(ip.toString(), port);
-        return;
+        return true;
     }
+    return false;
+}
+
+void requestWebSocketDiscovery(bool resetSession) {
+    if(resetSession) {
+        if(app.wsClientStarted || app.wsConnected) {
+            wsClient.disconnect();
+        }
+        app.wsConnected = false;
+        app.wsClientStarted = false;
+        app.wsHost = "";
+        app.wsPort = remote_config::kWebSocketPort;
+        app.wsEndpointLabel = "WebSocket scan";
+    }
+    app.wsDiscoveryPending = true;
+    app.lastMdnsQueryAt = 0;
+    app.lastWebSocketServiceAt = 0;
 }
 
 bool ensureEspNowPeer(const uint8_t* mac) {
@@ -3911,6 +4532,60 @@ bool ensureEspNowPeer(const uint8_t* mac) {
     return esp_now_add_peer(&peer) == ESP_OK;
 }
 
+bool commandNeedsReliableEspNowSend(const String& command) {
+    return command != sg98_protocol::kCmdGetStatus &&
+           !command.startsWith("GET_MENU=") &&
+           command != sg98_protocol::kCmdDiscover;
+}
+
+bool parseSetMenuTarget(const String& command, uint8_t* menuNumOut) {
+    if(menuNumOut == nullptr || !command.startsWith("SET_MENU=")) {
+        return false;
+    }
+
+    const int comma = command.indexOf(',');
+    if(comma <= static_cast<int>(strlen("SET_MENU="))) {
+        return false;
+    }
+    *menuNumOut = static_cast<uint8_t>(command.substring(strlen("SET_MENU="), comma).toInt());
+    return true;
+}
+
+bool waitForEspNowCommandConfirmation(const String& command,
+                                      uint32_t startedAckAt,
+                                      uint32_t startedStatusAt,
+                                      uint32_t startedMenuAt,
+                                      uint8_t menuNum,
+                                      uint32_t timeoutMs) {
+    (void)command;
+    const uint32_t startedAt = millis();
+    while((millis() - startedAt) < timeoutMs) {
+        if(app.lastAckAt != startedAckAt) {
+            return true;
+        }
+        if(app.lastStatusAt != startedStatusAt) {
+            return true;
+        }
+        if(menuNum < 5 && app.lastMenuRxAt[menuNum] != startedMenuAt) {
+            return true;
+        }
+        delay(1);
+    }
+    return app.lastAckAt != startedAckAt ||
+           app.lastStatusAt != startedStatusAt ||
+           (menuNum < 5 && app.lastMenuRxAt[menuNum] != startedMenuAt);
+}
+
+void refreshEspNowSessionForRetry(const uint8_t* mac) {
+    stopEspNowSession();
+    if(!initEspNow()) {
+        return;
+    }
+    if(mac != nullptr) {
+        (void)ensureEspNowPeer(mac);
+    }
+}
+
 bool sendEspNowFrame(const uint8_t* mac, const String& command) {
     if(!app.espNowReady) {
         return false;
@@ -3919,7 +4594,10 @@ bool sendEspNowFrame(const uint8_t* mac, const String& command) {
         return false;
     }
     if(!ensureEspNowPeer(mac)) {
-        return false;
+        refreshEspNowSessionForRetry(mac);
+        if(!ensureEspNowPeer(mac)) {
+            return false;
+        }
     }
 
     app.sendComplete = false;
@@ -3927,10 +4605,7 @@ bool sendEspNowFrame(const uint8_t* mac, const String& command) {
     const esp_err_t rc = esp_now_send(mac,
                                       reinterpret_cast<const uint8_t*>(command.c_str()),
                                       command.length() + 1);
-    if(rc != ESP_OK) {
-        return false;
-    }
-    return true;
+    return rc == ESP_OK;
 }
 
 bool sendEspNowRaw(const String& command) {
@@ -3988,20 +4663,31 @@ void requestMenu(uint8_t menuNum) {
 }
 
 void requestVisibleMenuIfNeeded(bool force) {
-    uint8_t menuNum = 0;
+    auto requestIfDue = [&](uint8_t menuNum) {
+        if(menuNum == 0) {
+            return;
+        }
+        if(force || millis() - app.lastMenuPollAt[menuNum] >= remote_config::kVisibleMenuPollMs) {
+            requestMenu(menuNum);
+        }
+    };
+
     switch(app.screen) {
-        case Screen::Main: menuNum = 1; break;
-        case Screen::Purge: menuNum = 2; break;
-        case Screen::Gbw: menuNum = 3; break;
-        default: break;
-    }
-
-    if(menuNum == 0) {
-        return;
-    }
-
-    if(force || millis() - app.lastMenuPollAt[menuNum] >= remote_config::kVisibleMenuPollMs) {
-        requestMenu(menuNum);
+        case Screen::Main:
+            requestIfDue(1);
+            break;
+        case Screen::Purge:
+            requestIfDue(2);
+            break;
+        case Screen::Gbw:
+            requestIfDue(1);
+            requestIfDue(3);
+            break;
+        case Screen::Network:
+            requestIfDue(1);
+            break;
+        default:
+            break;
     }
 }
 
@@ -4009,7 +4695,386 @@ bool sendAction(const char* actionName, const char* arg0 = nullptr) {
     return sendRaw(sg98_protocol::action(actionName, arg0));
 }
 
+bool pendingTargetSatisfied(const PendingTargetWrite& pending) {
+    if(!pending.active || !app.hasControllerStatus) {
+        return false;
+    }
+    return pending.weightMode ? app.controllerStatus.setWeightMg == pending.value
+                              : app.controllerStatus.setRpm == pending.value;
+}
+
+bool pendingMenuWriteSatisfied(const PendingMenuWrite& pending) {
+    return pending.active &&
+           pending.menuNum < 5 &&
+           app.controllerMenuSynced[pending.menuNum] &&
+           app.controllerMenuValues[pending.menuNum][pending.itemIdx] == pending.value;
+}
+
+bool pendingActionSatisfied(const PendingAction& pending) {
+    if(pending.kind == PendingActionKind::None) {
+        return false;
+    }
+    if(pending.reflection == PendingActionReflection::None) {
+        return pending.attempts > 0;
+    }
+    if(!app.hasControllerStatus) {
+        return false;
+    }
+
+    switch(pending.reflection) {
+        case PendingActionReflection::State:
+            return app.controllerStatus.state == pending.expectedText;
+        case PendingActionReflection::Drive:
+            return app.controllerStatus.drive == pending.expectedText;
+        case PendingActionReflection::JmcBaud:
+            return app.controllerStatus.jmcBaud == pending.value;
+        case PendingActionReflection::None:
+        default:
+            return false;
+    }
+}
+
+bool pendingActionSent(const PendingAction& pending) {
+    return pending.attempts > 0;
+}
+
+void clearPendingTargetWrite() {
+    app.pendingTarget = {};
+}
+
+void clearPendingMenuWrite(uint8_t slot) {
+    if(slot >= kPendingMenuWriteSlots) {
+        return;
+    }
+    app.pendingMenuWrites[slot] = {};
+}
+
+void clearPendingAction() {
+    app.pendingAction = {};
+}
+
+bool pendingControllerSyncActive() {
+    if(app.pendingTarget.active || app.pendingAction.kind != PendingActionKind::None) {
+        return true;
+    }
+    for(const PendingMenuWrite& pending : app.pendingMenuWrites) {
+        if(pending.active) {
+            return true;
+        }
+    }
+    return false;
+}
+
+int32_t normalizeTargetValue(bool weightMode, int32_t requestedValue) {
+    if(weightMode) {
+        return clampValue(requestedValue, static_cast<int32_t>(default_min_weight), static_cast<int32_t>(default_max_weight));
+    }
+
+    const int32_t minRpm = app.menuValues[1][SETMIN] > 0 ? app.menuValues[1][SETMIN] : default_minRPM;
+    int32_t maxRpm = app.menuValues[1][SETMAX] > minRpm ? app.menuValues[1][SETMAX] : default_maxRPM;
+    if(maxRpm < minRpm) {
+        maxRpm = minRpm;
+    }
+    return clampValue(requestedValue, minRpm, maxRpm);
+}
+
+int32_t normalizeMenuValueForController(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue) {
+    switch(menuNum) {
+        case 1:
+            if(itemIdx == SETMAX) {
+                const int32_t minValue = app.menuValues[1][SETMIN];
+                return max<int32_t>(requestedValue, minValue);
+            }
+            if(itemIdx == SETMIN) {
+                const int32_t maxValue = app.menuValues[1][SETMAX];
+                return min<int32_t>(requestedValue, maxValue);
+            }
+            break;
+        case 3:
+            if(itemIdx == GBW_RPM_SET) {
+                int32_t slowLimit = app.menuValues[3][GBW_SLOW_RPM];
+                if(slowLimit > app.menuValues[1][SETMAX]) {
+                    slowLimit = app.menuValues[1][SETMAX];
+                }
+                int32_t maxValue = app.menuValues[1][SETMAX];
+                if(maxValue < slowLimit) {
+                    maxValue = slowLimit;
+                }
+                return clampValue(requestedValue, slowLimit, maxValue);
+            }
+            if(itemIdx == GBW_SLOW_RPM) {
+                int32_t maxValue = app.menuValues[1][SETMAX];
+                if(app.menuValues[3][GBW_RPM_SET] < maxValue) {
+                    maxValue = app.menuValues[3][GBW_RPM_SET];
+                }
+                return min<int32_t>(requestedValue, maxValue);
+            }
+            break;
+        default:
+            break;
+    }
+    return requestedValue;
+}
+
+PendingMenuWrite* stagePendingMenuWrite(uint8_t menuNum, uint8_t itemIdx, int32_t value) {
+    PendingMenuWrite* freeSlot = nullptr;
+    PendingMenuWrite* oldestSlot = nullptr;
+    for(uint8_t i = 0; i < kPendingMenuWriteSlots; ++i) {
+        PendingMenuWrite& slot = app.pendingMenuWrites[i];
+        if(slot.active && slot.menuNum == menuNum && slot.itemIdx == itemIdx) {
+            slot.value = value;
+            slot.queuedAt = millis();
+            slot.lastSendAt = 0;
+            slot.attempts = 0;
+            return &slot;
+        }
+        if(!slot.active && freeSlot == nullptr) {
+            freeSlot = &slot;
+        }
+        if(slot.active && (oldestSlot == nullptr || slot.queuedAt < oldestSlot->queuedAt)) {
+            oldestSlot = &slot;
+        }
+    }
+
+    PendingMenuWrite* slot = freeSlot != nullptr ? freeSlot : oldestSlot;
+    if(slot == nullptr) {
+        return nullptr;
+    }
+
+    *slot = {};
+    slot->active = true;
+    slot->menuNum = menuNum;
+    slot->itemIdx = itemIdx;
+    slot->value = value;
+    slot->queuedAt = millis();
+    return slot;
+}
+
+PendingTargetWrite* stagePendingTargetWrite(bool weightMode, int32_t value) {
+    app.pendingTarget.active = true;
+    app.pendingTarget.weightMode = weightMode;
+    app.pendingTarget.value = value;
+    app.pendingTarget.queuedAt = millis();
+    app.pendingTarget.lastSendAt = 0;
+    app.pendingTarget.attempts = 0;
+    return &app.pendingTarget;
+}
+
+const char* pendingActionName(PendingActionKind kind) {
+    switch(kind) {
+        case PendingActionKind::Start: return "start";
+        case PendingActionKind::Stop: return "stop";
+        case PendingActionKind::Idle: return "idle";
+        case PendingActionKind::IdleGbw: return "idle_gbw";
+        case PendingActionKind::Calibrate: return "calibrate";
+        case PendingActionKind::DriveAuto:
+        case PendingActionKind::DriveJmc:
+        case PendingActionKind::DriveRt: return "drive";
+        case PendingActionKind::JmcBaud: return "jmc_baud";
+        case PendingActionKind::ResetDefaults: return "reset_defaults";
+        case PendingActionKind::None:
+        default: return nullptr;
+    }
+}
+
+void stagePendingAction(PendingActionKind kind,
+                        PendingActionReflection reflection,
+                        const char* arg0,
+                        const char* expectedText,
+                        int32_t expectedValue) {
+    app.pendingAction = {};
+    app.pendingAction.kind = kind;
+    app.pendingAction.reflection = reflection;
+    app.pendingAction.value = expectedValue;
+    app.pendingAction.queuedAt = millis();
+    if(arg0 != nullptr) {
+        copyStringToBuffer(String(arg0), app.pendingAction.arg0);
+    }
+    if(expectedText != nullptr) {
+        copyStringToBuffer(String(expectedText), app.pendingAction.expectedText);
+    }
+}
+
+bool pendingCommandRetryDue(uint32_t lastSendAt, uint32_t now) {
+    return lastSendAt == 0 || (now - lastSendAt) >= remote_config::kPendingSyncRetryMs;
+}
+
+bool trySendPendingTargetWrite(PendingTargetWrite* pending, bool force = false) {
+    if(pending == nullptr || !pending->active) {
+        return false;
+    }
+    const uint32_t now = millis();
+    if(!force && !pendingCommandRetryDue(pending->lastSendAt, now)) {
+        return false;
+    }
+    const bool sent = pending->weightMode ? sendRaw(sg98_protocol::setWeightMg(pending->value))
+                                          : sendRaw(sg98_protocol::setRpm(pending->value));
+    if(sent) {
+        pending->lastSendAt = now;
+        ++pending->attempts;
+        app.lastStatusPollAt = 0;
+    }
+    return sent;
+}
+
+bool trySendPendingMenuWrite(PendingMenuWrite* pending, bool force = false) {
+    if(pending == nullptr || !pending->active) {
+        return false;
+    }
+    const uint32_t now = millis();
+    if(!force && !pendingCommandRetryDue(pending->lastSendAt, now)) {
+        return false;
+    }
+    const bool sent = sendRaw(sg98_protocol::setMenuValue(pending->menuNum, pending->itemIdx, pending->value));
+    if(sent) {
+        pending->lastSendAt = now;
+        ++pending->attempts;
+        app.lastMenuPollAt[pending->menuNum] = 0;
+        app.lastStatusPollAt = 0;
+    }
+    return sent;
+}
+
+bool trySendPendingAction(PendingAction* pending, bool force = false) {
+    if(pending == nullptr || pending->kind == PendingActionKind::None) {
+        return false;
+    }
+    const uint32_t now = millis();
+    if(!force && !pendingCommandRetryDue(pending->lastSendAt, now)) {
+        return false;
+    }
+    const char* actionName = pendingActionName(pending->kind);
+    if(actionName == nullptr) {
+        return false;
+    }
+    const char* arg0 = pending->arg0[0] != '\0' ? pending->arg0 : nullptr;
+    const bool sent = sendAction(actionName, arg0);
+    if(sent) {
+        pending->lastSendAt = now;
+        ++pending->attempts;
+        app.lastStatusPollAt = 0;
+    }
+    return sent;
+}
+
+bool queuePendingAction(PendingActionKind kind,
+                        PendingActionReflection reflection,
+                        const char* arg0,
+                        const char* expectedText,
+                        int32_t expectedValue,
+                        bool* sentNow = nullptr) {
+    stagePendingAction(kind, reflection, arg0, expectedText, expectedValue);
+    const bool sent = trySendPendingAction(&app.pendingAction, true);
+    if(sentNow != nullptr) {
+        *sentNow = sent;
+    }
+    return sent || app.pendingAction.kind != PendingActionKind::None;
+}
+
+void applyPendingUiOverridesToStatusFrame(sg98_protocol::StatusFrame* status) {
+    if(status == nullptr) {
+        return;
+    }
+
+    if(app.pendingTarget.active) {
+        if(app.pendingTarget.weightMode) {
+            status->setWeightMg = app.pendingTarget.value;
+        } else {
+            status->setRpm = app.pendingTarget.value;
+        }
+    }
+
+    if(app.pendingAction.kind != PendingActionKind::None &&
+       app.pendingAction.reflection == PendingActionReflection::State &&
+       pendingActionSent(app.pendingAction) &&
+       !pendingActionSatisfied(app.pendingAction)) {
+        status->state = String(app.pendingAction.expectedText);
+    }
+}
+
+void applyPendingUiOverridesToMenu(uint8_t menuNum) {
+    if(menuNum >= 5) {
+        return;
+    }
+
+    for(const PendingMenuWrite& pending : app.pendingMenuWrites) {
+        if(!pending.active || pending.menuNum != menuNum) {
+            continue;
+        }
+        app.menuValues[menuNum][pending.itemIdx] = pending.value;
+    }
+}
+
+void reconcilePendingControllerSync() {
+    if(pendingTargetSatisfied(app.pendingTarget)) {
+        clearPendingTargetWrite();
+    }
+
+    for(uint8_t i = 0; i < kPendingMenuWriteSlots; ++i) {
+        if(pendingMenuWriteSatisfied(app.pendingMenuWrites[i])) {
+            clearPendingMenuWrite(i);
+        }
+    }
+
+    if(pendingActionSatisfied(app.pendingAction)) {
+        clearPendingAction();
+    }
+}
+
+void servicePendingMenuPolls() {
+    bool requestedMenu[5] = {};
+    const uint32_t now = millis();
+    for(const PendingMenuWrite& pending : app.pendingMenuWrites) {
+        if(!pending.active || pending.menuNum >= 5 || requestedMenu[pending.menuNum]) {
+            continue;
+        }
+        if((now - app.lastMenuPollAt[pending.menuNum]) >= remote_config::kPendingMenuPollMs) {
+            requestMenu(pending.menuNum);
+            requestedMenu[pending.menuNum] = true;
+        }
+    }
+}
+
+void servicePendingControllerSync() {
+    reconcilePendingControllerSync();
+    if(!pendingControllerSyncActive()) {
+        return;
+    }
+
+    if(app.pendingAction.kind != PendingActionKind::None && !pendingActionSatisfied(app.pendingAction)) {
+        if(trySendPendingAction(&app.pendingAction)) {
+            return;
+        }
+    }
+
+    if(app.pendingTarget.active && !pendingTargetSatisfied(app.pendingTarget)) {
+        if(trySendPendingTargetWrite(&app.pendingTarget)) {
+            return;
+        }
+    }
+
+    for(uint8_t offset = 0; offset < kPendingMenuWriteSlots; ++offset) {
+        const uint8_t slotIdx = static_cast<uint8_t>((app.pendingMenuCursor + offset) % kPendingMenuWriteSlots);
+        PendingMenuWrite& pending = app.pendingMenuWrites[slotIdx];
+        if(!pending.active || pendingMenuWriteSatisfied(pending)) {
+            continue;
+        }
+        if(trySendPendingMenuWrite(&pending)) {
+            app.pendingMenuCursor = static_cast<uint8_t>((slotIdx + 1) % kPendingMenuWriteSlots);
+            return;
+        }
+    }
+}
+
 void switchTransportNow(LinkTransport transport) {
+    if(kDisableTransportPerfTest) {
+        (void)transport;
+        stopAllTransportStacks();
+        app.lastTransportSwitchAt = millis();
+        clearPollSchedule();
+        return;
+    }
+
     if(transport == LinkTransport::None) {
         transport = initialTransport();
     }
@@ -4020,11 +5085,15 @@ void switchTransportNow(LinkTransport transport) {
         return;
     }
 
+    app.lastLinkActivityAt = 0;
+
     if(transport == LinkTransport::WebSocket) {
         stopEspNowSession();
         if(!remote_wifi_is_active()) {
             remote_wifi_start();
         }
+        app.wsStaConnected = remote_wifi_sta_connected();
+        app.wsDiscoveryPending = remote_wifi_has_saved_network();
         if(remote_wifi_has_saved_network()) {
             setToast(remote_wifi_sta_connected() ? "WebSocket mode" : "Connecting Wi-Fi", 1200);
         } else {
@@ -4035,6 +5104,8 @@ void switchTransportNow(LinkTransport transport) {
         if(remote_wifi_is_active()) {
             remote_wifi_stop();
         }
+        app.wsDiscoveryPending = false;
+        app.wsStaConnected = false;
         if(initEspNow()) {
             setToast("ESP-NOW mode", 1200);
         }
@@ -4055,6 +5126,20 @@ void applyPendingTransportSwitch() {
 }
 
 LinkTransport alternateTransport() {
+    if(app.transportOverrideActive) {
+        return app.currentTransport;
+    }
+
+    if(app.radioModeKnown) {
+        const LinkTransport expected = transportFromRadioMode(app.menuValues[1][RADIOMODE]);
+        if(expected == LinkTransport::EspNow) {
+            return hasActiveEspNowPeer() ? LinkTransport::EspNow : app.currentTransport;
+        }
+        if(expected == LinkTransport::WebSocket) {
+            return remote_wifi_has_saved_network() ? LinkTransport::WebSocket : app.currentTransport;
+        }
+    }
+
     if(app.currentTransport == LinkTransport::WebSocket) {
         if(hasActiveEspNowPeer()) {
             return LinkTransport::EspNow;
@@ -4078,15 +5163,20 @@ LinkTransport alternateTransport() {
 void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
     const bool hadStatus = app.hasStatus;
     const sg98_protocol::StatusFrame previous = app.status;
-    const bool valuesChanged = !hadStatus || !statusFrameEqual(app.status, status);
     const bool previousPreferGbw = app.preferGbw;
     const int32_t previousManualRpm = app.manualRpm;
     const int32_t previousWeightMg = app.weightMg;
-    app.status = status;
+    app.controllerStatus = status;
+    app.hasControllerStatus = true;
+    sg98_protocol::StatusFrame displayStatus = status;
+    applyPendingUiOverridesToStatusFrame(&displayStatus);
+    const bool valuesChanged = !hadStatus || !statusFrameEqual(app.status, displayStatus);
+    app.status = displayStatus;
     app.hasStatus = true;
+    app.lastLinkActivityAt = millis();
     app.lastStatusAt = millis();
-    app.preferGbw = status.state == "IDLE_GBW" || status.state == "GRINDING_GBW";
-    if(!app.targetDirty) {
+    app.preferGbw = app.status.state == "IDLE_GBW" || app.status.state == "GRINDING_GBW";
+    if(!app.targetDirty && !app.pendingTarget.active) {
         app.manualRpm = status.setRpm;
         app.weightMg = status.setWeightMg;
     }
@@ -4095,7 +5185,8 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
        previousWeightMg != app.weightMg) {
         markPersistentStateDirty();
     }
-    if(shouldRedrawForStatusFrame(previous, status, hadStatus, valuesChanged)) {
+    reconcilePendingControllerSync();
+    if(shouldRedrawForStatusFrame(previous, app.status, hadStatus, valuesChanged)) {
         app.redraw = true;
     }
 }
@@ -4109,15 +5200,21 @@ void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
     const bool wasSynced = app.menuSynced[frame.menuNum];
     const bool previousRadioModeKnown = app.radioModeKnown;
     for(uint8_t i = 0; i < frame.count && i < sg98_protocol::kMaxMenuValues; ++i) {
+        app.controllerMenuValues[frame.menuNum][i] = frame.values[i];
         app.menuValues[frame.menuNum][i] = frame.values[i];
     }
+    app.controllerMenuSynced[frame.menuNum] = true;
     app.menuSynced[frame.menuNum] = true;
+    applyPendingUiOverridesToMenu(frame.menuNum);
+    app.lastLinkActivityAt = millis();
+    app.lastMenuRxAt[frame.menuNum] = millis();
 
     if(frame.menuNum == 1) {
         if(valuesChanged || !wasSynced) {
             applyCurrentBacklightLevel();
         }
         app.radioModeKnown = true;
+        app.transportOverrideActive = false;
         const LinkTransport expected = transportFromRadioMode(app.menuValues[1][RADIOMODE]);
         if(expected != app.currentTransport) {
             scheduleTransportSwitch(expected);
@@ -4127,6 +5224,7 @@ void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
     if(valuesChanged || !wasSynced || previousRadioModeKnown != app.radioModeKnown) {
         markPersistentStateDirty();
     }
+    reconcilePendingControllerSync();
     if(shouldRedrawForMenuFrame(frame, valuesChanged)) {
         app.redraw = true;
     }
@@ -4173,6 +5271,7 @@ void upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
 }
 
 void consumePeerFrame(const sg98_protocol::PeerFrame& frame) {
+    app.lastLinkActivityAt = millis();
     upsertDiscoveredEspNowPeer(frame);
 }
 
@@ -4198,6 +5297,8 @@ void consumeProtocolFrame(const String& frame) {
 
     sg98_protocol::AckFrame ackFrame;
     if(sg98_protocol::parseAckFrame(frame, &ackFrame)) {
+        app.lastLinkActivityAt = millis();
+        app.lastAckAt = millis();
         if(ackFrame.ok && ackFrame.message == "ok") {
             return;
         }
@@ -4210,6 +5311,11 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
         case WStype_CONNECTED:
             app.wsConnected = true;
             app.wsEndpointLabel = String("WS ") + app.wsHost;
+            Serial.printf("[remote_ws] connected %s:%u path=%.*s\n",
+                          app.wsHost.c_str(),
+                          static_cast<unsigned>(app.wsPort),
+                          static_cast<int>(length),
+                          payload != nullptr ? reinterpret_cast<const char*>(payload) : "");
             clearPollSchedule();
             requestStatus();
             requestMenu(1);
@@ -4219,6 +5325,10 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
         case WStype_DISCONNECTED:
             app.wsConnected = false;
             app.wsEndpointLabel = "WebSocket offline";
+            Serial.printf("[remote_ws] disconnected len=%u payload=%.*s\n",
+                          static_cast<unsigned>(length),
+                          static_cast<int>(length),
+                          payload != nullptr ? reinterpret_cast<const char*>(payload) : "");
             break;
         case WStype_TEXT: {
             String frame;
@@ -4229,7 +5339,16 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
             consumeProtocolFrame(frame);
             break;
         }
+        case WStype_ERROR:
+            Serial.printf("[remote_ws] error len=%u payload=%.*s\n",
+                          static_cast<unsigned>(length),
+                          static_cast<int>(length),
+                          payload != nullptr ? reinterpret_cast<const char*>(payload) : "");
+            break;
         default:
+            Serial.printf("[remote_ws] event=%d len=%u\n",
+                          static_cast<int>(type),
+                          static_cast<unsigned>(length));
             break;
     }
 }
@@ -4300,15 +5419,15 @@ void handleSendCompletion() {
     }
 
     app.sendComplete = false;
-    if(!app.sendOk) {
+    if(!app.sendOk && !pendingControllerSyncActive()) {
         setToast("Send failed");
     }
 }
 
 void updateSyncFromStatusFallback() {
-    if(app.hasStatus && !app.targetDirty) {
-        app.manualRpm = app.status.setRpm;
-        app.weightMg = app.status.setWeightMg;
+    if(app.hasControllerStatus && !app.targetDirty && !app.pendingTarget.active) {
+        app.manualRpm = app.controllerStatus.setRpm;
+        app.weightMg = app.controllerStatus.setWeightMg;
     }
 }
 
@@ -4330,16 +5449,26 @@ void manageTransport() {
             remote_wifi_poll();
             app.lastWifiServiceAt = now;
         }
-        if(remote_wifi_sta_connected()) {
+        const bool staConnected = remote_wifi_sta_connected();
+        if(staConnected != app.wsStaConnected) {
+            app.wsStaConnected = staConnected;
+            if(staConnected) {
+                app.wsDiscoveryPending = true;
+            }
+        }
+        if(staConnected) {
             ensureMdnsClientReady();
-            if((now - app.lastWebSocketServiceAt) >= remote_config::kWebSocketServiceMs) {
+            if(!app.wsClientStarted && !app.wsHost.isEmpty()) {
+                connectWebSocketHost(app.wsHost, app.wsPort);
+            }
+            if(app.wsClientStarted &&
+               (now - app.lastWebSocketServiceAt) >= currentWebSocketLoopIntervalMs()) {
                 wsClient.loop();
                 app.lastWebSocketServiceAt = now;
             }
-            if(!app.wsConnected || app.wsHost.isEmpty()) {
-                discoverControllerService(false);
-            } else if(!isLinkOnline() && (app.lastMdnsQueryAt + remote_config::kMdnsQueryMs) <= millis()) {
-                discoverControllerService(true);
+            if(app.wsDiscoveryPending) {
+                (void)discoverControllerService(true);
+                app.wsDiscoveryPending = false;
             }
         } else {
             if(app.wsClientStarted || app.wsConnected) {
@@ -4376,8 +5505,12 @@ void syncPolling() {
         app.lastStatusPollAt = millis();
     }
 
+    servicePendingMenuPolls();
+
     if(millis() - app.lastBackgroundMenuPollAt >= remote_config::kBackgroundMenuPollMs) {
-        requestMenu(1);
+        for(uint8_t menuNum = 1; menuNum <= 4; ++menuNum) {
+            requestMenu(menuNum);
+        }
         app.lastBackgroundMenuPollAt = millis();
     }
 
@@ -4386,26 +5519,40 @@ void syncPolling() {
     }
 }
 
-void applyMenuValue(const SettingItem& item, int32_t value) {
+bool applyMenuValue(const SettingItem& item, int32_t value) {
     if(isInvertScrollItem(item)) {
         app.localInvertScroll = clampValue(value, 0, 1);
         markPersistentStateDirty();
-        return;
+        return true;
     }
     if(item.menuNum == 0) {
-        return;
+        return false;
     }
 
-    app.menuValues[item.menuNum][item.itemIdx] = value;
-    applyLocalMenuPreview(item, value);
+    const int32_t clampedValue = clampValue(value, item.minValue, item.maxValue);
+    const int32_t normalizedValue = normalizeMenuValueForController(item.menuNum, item.itemIdx, clampedValue);
+    const int32_t previousValue = app.menuValues[item.menuNum][item.itemIdx];
+    const bool previousRadioModeKnown = app.radioModeKnown;
+    app.menuValues[item.menuNum][item.itemIdx] = normalizedValue;
+    applyLocalMenuPreview(item, normalizedValue);
     if(item.menuNum == 1 && item.itemIdx == RADIOMODE) {
         app.radioModeKnown = true;
-        scheduleTransportSwitch(transportFromRadioMode(value), remote_config::kTransportSwitchDelayMs);
+        scheduleTransportSwitch(transportFromRadioMode(normalizedValue), remote_config::kTransportSwitchDelayMs);
     }
-    sendRaw(sg98_protocol::setMenuValue(item.menuNum, item.itemIdx, value));
+    PendingMenuWrite* pending = stagePendingMenuWrite(item.menuNum, item.itemIdx, normalizedValue);
+    if(pending == nullptr) {
+        app.menuValues[item.menuNum][item.itemIdx] = previousValue;
+        applyLocalMenuPreview(item, previousValue);
+        app.radioModeKnown = previousRadioModeKnown;
+        app.pendingTransport = LinkTransport::None;
+        app.pendingTransportAt = 0;
+        return false;
+    }
+    (void)trySendPendingMenuWrite(pending, true);
     app.lastMenuPollAt[item.menuNum] = 0;
     app.lastStatusPollAt = 0;
     markPersistentStateDirty();
+    return true;
 }
 
 void cancelEditing() {
@@ -4455,16 +5602,61 @@ void runConfirmAction(const SettingItem& item) {
         return;
     }
 
-    if(sendAction(item.action, item.actionArg)) {
+    bool queued = false;
+    if(strcmp(item.action, "calibrate") == 0) {
+        queued = queuePendingAction(PendingActionKind::Calibrate,
+                                    PendingActionReflection::State,
+                                    nullptr,
+                                    "CALIBRATING",
+                                    0);
+    } else if(strcmp(item.action, "redetect") == 0) {
+        queued = queuePendingAction(PendingActionKind::DriveAuto,
+                                    PendingActionReflection::None,
+                                    "auto",
+                                    nullptr,
+                                    0);
+    } else if(strcmp(item.action, "drive") == 0 && item.actionArg != nullptr) {
+        if(strcmp(item.actionArg, "jmc") == 0) {
+            queued = queuePendingAction(PendingActionKind::DriveJmc,
+                                        PendingActionReflection::Drive,
+                                        "jmc",
+                                        "JMC",
+                                        0);
+        } else if(strcmp(item.actionArg, "rt") == 0) {
+            queued = queuePendingAction(PendingActionKind::DriveRt,
+                                        PendingActionReflection::Drive,
+                                        "rt",
+                                        "RT",
+                                        0);
+        }
+    } else if(strcmp(item.action, "jmc_baud") == 0 && item.actionArg != nullptr) {
+        const int32_t baud = atoi(item.actionArg);
+        queued = queuePendingAction(PendingActionKind::JmcBaud,
+                                    PendingActionReflection::JmcBaud,
+                                    item.actionArg,
+                                    nullptr,
+                                    baud);
+    } else if(strcmp(item.action, "reset_defaults") == 0) {
+        queued = queuePendingAction(PendingActionKind::ResetDefaults,
+                                    PendingActionReflection::None,
+                                    item.actionArg,
+                                    nullptr,
+                                    0);
+    } else {
+        queued = sendAction(item.action, item.actionArg);
+    }
+
+    if(queued) {
         app.lastStatusPollAt = 0;
         requestVisibleMenuIfNeeded(true);
         if(item.kind == ItemKind::Danger) {
             app.dangerArmUntil = 0;
         }
         setToast(String("Sent ") + item.label, 1000);
-    } else {
-        setToast(String("Action not sent"), 1000);
+        return;
     }
+
+    setToast(String("Action not sent"), 1000);
 }
 
 void activateSelectedItem() {
@@ -4496,14 +5688,17 @@ void activateSelectedItem() {
                 }
             } else {
                 const int32_t nextValue = clampValue(app.draftValue, item.minValue, item.maxValue);
-                applyMenuValue(item, nextValue);
-                if(isRadioModeItem(item) && nextValue != 0) {
-                    setToast("Pick controller", 1200);
-                    setScreen(Screen::EspNowPeers);
-                    requestEspNowDiscovery(true);
-                    return;
+                if(applyMenuValue(item, nextValue)) {
+                    if(isRadioModeItem(item) && nextValue != 0) {
+                        setToast("Pick controller", 1200);
+                        setScreen(Screen::EspNowPeers);
+                        requestEspNowDiscovery(true);
+                        return;
+                    }
+                    setToast(String("Saved ") + item.label);
+                } else {
+                    setToast("Send failed", 1000);
                 }
-                setToast(String("Saved ") + item.label);
             }
         }
         app.redraw = true;
@@ -4512,8 +5707,11 @@ void activateSelectedItem() {
 
     if(item.kind == ItemKind::Toggle) {
         const int32_t nextValue = menuValue(item) == 0 ? 1 : 0;
-        applyMenuValue(item, nextValue);
-        setToast(String(item.label) + ": " + formatValueLabel(item, nextValue));
+        if(applyMenuValue(item, nextValue)) {
+            setToast(String(item.label) + ": " + formatValueLabel(item, nextValue));
+        } else {
+            setToast("Send failed", 1000);
+        }
         app.redraw = true;
         return;
     }
@@ -4528,6 +5726,17 @@ void activateSelectedItem() {
     if(item.action != nullptr && strcmp(item.action, "screen") == 0) {
         if(item.actionArg != nullptr && strcmp(item.actionArg, "drive") == 0) {
             setScreen(Screen::Drive);
+        } else if(isControllerLinkItem(item)) {
+            if(controllerLinkUsesWebSocketScan()) {
+                if(!remote_wifi_has_saved_network()) {
+                    setToast("Set Wi-Fi first", 1200);
+                } else {
+                    requestWebSocketDiscovery(true);
+                    setToast("Scanning controller", 1200);
+                }
+            } else {
+                setScreen(Screen::EspNowPeers);
+            }
         }
         app.redraw = true;
         return;
@@ -4537,7 +5746,7 @@ void activateSelectedItem() {
         const DiscoveredEspNowPeer* peer = visibleEspNowPeerAt(static_cast<uint8_t>(item.itemIdx));
         if(peer != nullptr) {
             lockEspNowPeer(*peer);
-            setScreen(Screen::Main);
+            setScreen(Screen::Network);
             return;
         }
         setToast("No controller", 900);
@@ -4603,12 +5812,16 @@ void commitTargetIfDue() {
         return;
     }
 
-    app.targetDirty = false;
-    if(isGbwState()) {
-        sendRaw(sg98_protocol::setWeightMg(app.weightMg));
+    const bool weightMode = isGbwState();
+    const int32_t normalizedValue = normalizeTargetValue(weightMode, weightMode ? app.weightMg : app.manualRpm);
+    if(weightMode) {
+        app.weightMg = normalizedValue;
     } else {
-        sendRaw(sg98_protocol::setRpm(app.manualRpm));
+        app.manualRpm = normalizedValue;
     }
+    PendingTargetWrite* pending = stagePendingTargetWrite(weightMode, normalizedValue);
+    (void)trySendPendingTargetWrite(pending, true);
+    app.targetDirty = false;
     app.lastStatusPollAt = 0;
 }
 
@@ -4693,26 +5906,46 @@ void handleDialDelta(int delta) {
 void triggerRunAction() {
     const bool nextRunning = !isRunningState();
     const bool gbwMode = isGbwState();
-    app.hasStatus = true;
-    app.status.state = nextRunning ? (gbwMode ? "GRINDING_GBW" : "GRINDING")
-                                   : (gbwMode ? "IDLE_GBW" : "IDLE");
-    app.status.setRpm = app.manualRpm;
-    app.status.setWeightMg = app.weightMg;
-    if(nextRunning) {
-        if(gbwMode) {
-            app.status.currentWeightMg = app.weightMg;
+    const char* expectedState = nextRunning ? (gbwMode ? "GRINDING_GBW" : "GRINDING")
+                                            : ((gbwMode || app.status.state == "GRINDING_GBW") ? "IDLE_GBW"
+                                                                                               : (app.menuValues[2][SETBUTTONPURGE] != 0 &&
+                                                                                                  app.status.state == "GRINDING"
+                                                                                                      ? "PURGING"
+                                                                                                      : "IDLE"));
+    bool sentNow = false;
+    const bool queued = queuePendingAction(nextRunning ? PendingActionKind::Start : PendingActionKind::Stop,
+                                           PendingActionReflection::State,
+                                           nullptr,
+                                           expectedState,
+                                           0,
+                                           &sentNow);
+    if(!queued) {
+        setToast(nextRunning ? "Start not sent" : "Stop not sent");
+        return;
+    }
+
+    if(sentNow) {
+        app.hasStatus = true;
+        app.status.state = expectedState;
+        app.status.setRpm = app.manualRpm;
+        app.status.setWeightMg = app.weightMg;
+        if(nextRunning) {
+            if(gbwMode) {
+                app.status.currentWeightMg = app.weightMg;
+            } else {
+                app.status.currentRpm = app.manualRpm;
+            }
         } else {
-            app.status.currentRpm = app.manualRpm;
+            app.status.currentRpm = 0;
         }
-    } else {
-        app.status.currentRpm = 0;
-    }
-    app.lastStatusAt = millis();
-    app.lastStatusPollAt = 0;
-    app.redraw = true;
-    if(sendAction(nextRunning ? "start" : "stop")) {
+        app.lastStatusAt = millis();
+        app.lastStatusPollAt = 0;
+        app.redraw = true;
         setToast(nextRunning ? "Start sent" : "Stop sent");
+        return;
     }
+
+    setToast(nextRunning ? "Start pending" : "Stop pending");
 }
 
 void handlePrimaryShortPress() {
@@ -4747,9 +5980,12 @@ void toggleModeAction() {
     }
     app.lastStatusPollAt = 0;
     app.redraw = true;
-    if(sendAction(nextGbw ? "idle_gbw" : "idle")) {
-        setToast(nextGbw ? "GBW mode" : "Manual mode");
-    }
+    (void)queuePendingAction(nextGbw ? PendingActionKind::IdleGbw : PendingActionKind::Idle,
+                             PendingActionReflection::State,
+                             nullptr,
+                             nextGbw ? "IDLE_GBW" : "IDLE",
+                             0);
+    setToast(nextGbw ? "GBW mode" : "Manual mode");
 }
 
 void stopEspNowSession() {
@@ -4781,6 +6017,12 @@ void clearWakePin(int8_t gpioNum) {
 }
 
 bool idleSleepAllowed() {
+    if(remote_config::kDisableIdleSleepForTesting) {
+        return false;
+    }
+    if(kDisableTransportPerfTest) {
+        return false;
+    }
     if(app.editing || app.targetDirty || isRunningState()) {
         return false;
     }
@@ -4885,10 +6127,7 @@ void enterIdleSleepIfNeeded() {
 
 void handlePrimaryLongPress() {
     if(useRoundNavigation() && app.screen == Screen::Home && !app.editing) {
-        if(isRunningState()) {
-            return;
-        }
-        toggleModeAction();
+        setScreen(Screen::Main);
         return;
     }
 
@@ -4906,6 +6145,35 @@ void handlePrimaryLongPress() {
     }
 }
 
+void handleSecondaryShortPress() {
+    if(useRoundNavigation()) {
+        if(app.editing) {
+            cancelEditing();
+        } else if(app.screen == Screen::Home) {
+            if(isRunningState()) {
+                return;
+            }
+            setScreen(Screen::Main);
+        } else if(app.screen == Screen::Drive) {
+            setScreen(Screen::Main);
+        } else if(app.screen == Screen::EspNowPeers) {
+            setScreen(Screen::Network);
+        } else if(app.screen != Screen::Home) {
+            setScreen(Screen::Home);
+        }
+        return;
+    }
+}
+
+void handleSecondaryLongPress() {
+    if(useRoundNavigation()) {
+        if(app.screen == Screen::Home && !app.editing) {
+            toggleModeAction();
+        }
+        return;
+    }
+}
+
 void beginTouchTracking(int16_t x, int16_t y) {
     touchTracker = {};
     touchTracker.active = true;
@@ -4917,6 +6185,13 @@ void beginTouchTracking(int16_t x, int16_t y) {
     debugRoundInput("touch_down", x, y);
 
     const Layout layout = buildLayout();
+    if(useRoundNavigation() && app.editing) {
+        touchTracker.mode = TouchMode::EditorDial;
+        touchTracker.circularPreferred = true;
+        touchTracker.lastAngle = pointAngle(x, y, layout.editorCx, layout.editorCy);
+        return;
+    }
+
     if(app.editing &&
        pointInRing(x,
                    y,
@@ -4925,14 +6200,8 @@ void beginTouchTracking(int16_t x, int16_t y) {
                    layout.editorInnerRadius,
                    static_cast<int16_t>(layout.editorOuterRadius + 24))) {
         touchTracker.mode = TouchMode::EditorDial;
+        touchTracker.circularPreferred = true;
         touchTracker.lastAngle = pointAngle(x, y, layout.editorCx, layout.editorCy);
-        return;
-    }
-
-    if(app.screen == Screen::Home &&
-       useRoundNavigation() &&
-       (homeMenuTopEdgeRect(layout).contains(x, y) || homeMenuBottomEdgeRect(layout).contains(x, y))) {
-        touchTracker.mode = TouchMode::HomeEdgeSwipe;
         return;
     }
 
@@ -4950,35 +6219,38 @@ void beginTouchTracking(int16_t x, int16_t y) {
         return;
     }
 
+    const int16_t homeDialTouchInnerRadius =
+        useRoundNavigation()
+            ? static_cast<int16_t>(layout.homeDialInnerRadius + kRoundHomeDialTouchInnerInset)
+            : layout.homeDialInnerRadius;
+    const int16_t homeDialTouchOuterRadius =
+        static_cast<int16_t>(layout.homeDialOuterRadius + (useRoundNavigation() ? kRoundHomeDialTouchOuterPad : 22));
     if(app.screen == Screen::Home &&
        pointInRing(x,
                    y,
                    layout.homeDialCx,
                    layout.homeDialCy,
-                   useRoundNavigation() ? 0 : layout.homeDialInnerRadius,
-                   static_cast<int16_t>(layout.homeDialOuterRadius + (useRoundNavigation() ? 42 : 22)))) {
+                   homeDialTouchInnerRadius,
+                   homeDialTouchOuterRadius)) {
         touchTracker.mode = TouchMode::HomeDial;
+        touchTracker.circularPreferred = true;
+        touchTracker.lastAngle = pointAngle(x, y, layout.homeDialCx, layout.homeDialCy);
+        return;
+    }
+
+    if(app.screen == Screen::Home && useRoundNavigation()) {
+        touchTracker.mode = TouchMode::HomeDial;
+        touchTracker.circularPreferred = true;
         touchTracker.lastAngle = pointAngle(x, y, layout.homeDialCx, layout.homeDialCy);
         return;
     }
 
     if(app.screen != Screen::Home && !app.editing) {
         if(useRoundNavigation()) {
-            Rect prevRect = {};
-            Rect heroRect = {};
-            Rect nextRect = {};
-            buildRoundMenuTouchRects(layout, &prevRect, &heroRect, &nextRect);
-            if(layout.navPrev.contains(x, y) || layout.navNext.contains(x, y)) {
-                touchTracker.mode = TouchMode::Tap;
-                debugRoundInput("touch_mode_tap", x, y);
-                return;
-            }
-            if(prevRect.contains(x, y) || heroRect.contains(x, y) || nextRect.contains(x, y)) {
-                touchTracker.mode = TouchMode::MenuScroll;
-                touchTracker.scrollAccum = 0;
-                debugRoundInput("touch_mode_round_scroll", x, y);
-                return;
-            }
+            touchTracker.mode = TouchMode::MenuScroll;
+            touchTracker.scrollAccum = 0;
+            debugRoundInput("touch_mode_round_scroll", x, y);
+            return;
         }
         touchTracker.mode = TouchMode::MenuScroll;
         debugRoundInput("touch_mode_scroll", x, y);
@@ -4989,6 +6261,60 @@ void beginTouchTracking(int16_t x, int16_t y) {
 }
 
 void updateDialTouch(int16_t x, int16_t y, bool editorMode) {
+    if(useRoundNavigation()) {
+        const Layout layout = buildLayout();
+        const int16_t centerX = editorMode ? layout.editorCx : layout.homeDialCx;
+        const int16_t centerY = editorMode ? layout.editorCy : layout.homeDialCy;
+        const float prevX = static_cast<float>(touchTracker.lastX - centerX);
+        const float prevY = static_cast<float>(touchTracker.lastY - centerY);
+        const float currX = static_cast<float>(x - centerX);
+        const float currY = static_cast<float>(y - centerY);
+        const float motionX = static_cast<float>(x - touchTracker.lastX);
+        const float motionY = static_cast<float>(y - touchTracker.lastY);
+        const float sampleX = (prevX + currX) * 0.5f;
+        const float sampleY = (prevY + currY) * 0.5f;
+        constexpr float kRoundDialCenterDeadZone = 10.0f;
+        float basisX = sampleX;
+        float basisY = sampleY;
+        float basisRadius = sqrtf(basisX * basisX + basisY * basisY);
+        if(basisRadius < kRoundDialCenterDeadZone) {
+            basisX = prevX;
+            basisY = prevY;
+            basisRadius = sqrtf(basisX * basisX + basisY * basisY);
+        }
+        if(basisRadius < kRoundDialCenterDeadZone) {
+            basisX = currX;
+            basisY = currY;
+            basisRadius = sqrtf(basisX * basisX + basisY * basisY);
+        }
+
+        float contribution = motionX - motionY;
+        if(basisRadius >= kRoundDialCenterDeadZone) {
+            // Positive tangential motion means clockwise: top->right, right->down,
+            // bottom->left, left->up.
+            const float tangentX = -basisY / basisRadius;
+            const float tangentY = basisX / basisRadius;
+            contribution = (motionX * tangentX) + (motionY * tangentY);
+        }
+
+        touchTracker.angleAccum += contribution;
+        int steps = 0;
+        while(touchTracker.angleAccum >= static_cast<float>(kRoundHomeDialSwipeThreshold)) {
+            ++steps;
+            touchTracker.angleAccum -= static_cast<float>(kRoundHomeDialSwipeThreshold);
+        }
+        while(touchTracker.angleAccum <= -static_cast<float>(kRoundHomeDialSwipeThreshold)) {
+            --steps;
+            touchTracker.angleAccum += static_cast<float>(kRoundHomeDialSwipeThreshold);
+        }
+
+        if(steps != 0) {
+            touchTracker.dragUsed = true;
+            handleDialDelta(steps);
+        }
+        return;
+    }
+
     const Layout layout = buildLayout();
     const int16_t centerX = editorMode ? layout.editorCx : layout.homeDialCx;
     const int16_t centerY = editorMode ? layout.editorCy : layout.homeDialCy;
@@ -5014,12 +6340,42 @@ void updateDialTouch(int16_t x, int16_t y, bool editorMode) {
     }
 }
 
-void updateMenuScrollTouch(int16_t y) {
+void updateMenuScrollTouch(int16_t x, int16_t y) {
     const Layout layout = buildLayout();
+    if(useRoundNavigation()) {
+        const int32_t totalDx = static_cast<int32_t>(x) - touchTracker.startX;
+        const int32_t totalDy = static_cast<int32_t>(y) - touchTracker.startY;
+        if(isRoundTopLevelTabScreen(app.screen) &&
+           abs(totalDx) >= kRoundMenuTabSwipeThreshold &&
+           abs(totalDx) > abs(totalDy) + kRoundMenuTabSwipeAxisSlack) {
+            touchTracker.dragUsed = true;
+            const int delta = totalDx > 0 ? 1 : -1;
+            const Screen target = cycleRoundMenuTabScreen(app.screen, delta);
+            if(target != app.screen) {
+                setScreen(target);
+            }
+            touchTracker = {};
+            return;
+        }
+    }
+
     const int16_t threshold = useRoundNavigation() ? roundMenuScrollThreshold(layout)
                                                    : static_cast<int16_t>(layout.rowH / 2);
     touchTracker.scrollAccum += static_cast<int16_t>(y - touchTracker.lastY);
     touchTracker.lastY = y;
+
+    if(useRoundNavigation() && useWaveshareRoundUi()) {
+        const int16_t stepDistance = layout.rowCount >= 3
+                                         ? abs(static_cast<int16_t>(layout.menuRows[1].y - layout.menuRows[0].y))
+                                         : threshold;
+        const int16_t maxOffset = max<int16_t>(stepDistance, static_cast<int16_t>((stepDistance * 9) / 4));
+        app.menuRollOffset = clampValue(touchTracker.scrollAccum, -maxOffset, maxOffset);
+        if(abs(touchTracker.scrollAccum) >= static_cast<int16_t>(threshold / 3)) {
+            touchTracker.dragUsed = true;
+        }
+        app.redraw = true;
+        return;
+    }
 
     if(useRoundNavigation()) {
         const int16_t stepDistance = layout.rowCount >= 3
@@ -5059,13 +6415,12 @@ void updateMenuScrollTouch(int16_t y) {
 }
 
 bool updateHomeEdgeSwipeTouch(int16_t x, int16_t y) {
-    const Layout layout = buildLayout();
     const int32_t dx = static_cast<int32_t>(x) - touchTracker.startX;
     const int32_t dy = static_cast<int32_t>(y) - touchTracker.startY;
-    const int16_t threshold = isLargeCanvas() ? 20 : 16;
-    const bool startedTop = touchTracker.startY < static_cast<int16_t>(layout.height / 2);
-    const bool validDirection = startedTop ? (dy >= threshold) : (dy <= -threshold);
-    if(validDirection && abs(dy) > abs(dx) + 6) {
+    const int16_t threshold = useRoundNavigation() ? kRoundHomeSwipeThreshold
+                                                   : static_cast<int16_t>(isLargeCanvas() ? 20 : 16);
+    const int16_t axisSlack = useRoundNavigation() ? kRoundHomeSwipeAxisSlack : 6;
+    if(abs(dy) >= threshold && abs(dy) > abs(dx) + axisSlack) {
         touchTracker.dragUsed = true;
         setScreen(Screen::Main);
         touchTracker = {};
@@ -5085,6 +6440,9 @@ void handleTabsTouch(int16_t x, int16_t y) {
 }
 
 bool handleRoundNavTouch(int16_t x, int16_t y) {
+    if(!isRoundTopLevelTabScreen(app.screen)) {
+        return false;
+    }
     const Layout layout = buildLayout();
     if(layout.navPrev.contains(x, y)) {
         setScreen(roundNavMenuTarget(app.screen, -1));
@@ -5099,6 +6457,12 @@ bool handleRoundNavTouch(int16_t x, int16_t y) {
 
 void handleHomeTouch(int16_t x, int16_t y) {
     const Layout layout = buildLayout();
+    if(useRoundNavigation()) {
+        (void)x;
+        (void)y;
+        return;
+    }
+
     if(!useRoundNavigation() && homeModeTouchRect(layout).contains(x, y)) {
         setScreen(Screen::Main);
         return;
@@ -5197,7 +6561,38 @@ void handleMenuTouch(int16_t x, int16_t y) {
     }
 }
 
+bool isDuplicateTouchTap(int16_t x, int16_t y) {
+    if(app.lastTouchTapAt == 0) {
+        return false;
+    }
+
+    const uint32_t now = millis();
+    if((now - app.lastTouchTapAt) > kTouchDuplicateTapSuppressMs) {
+        return false;
+    }
+
+    const int32_t dx = static_cast<int32_t>(x) - app.lastTouchTapX;
+    const int32_t dy = static_cast<int32_t>(y) - app.lastTouchTapY;
+    return (dx * dx) + (dy * dy) <=
+           static_cast<int32_t>(kTouchDuplicateTapRadius) * kTouchDuplicateTapRadius;
+}
+
+void rememberTouchTap(int16_t x, int16_t y) {
+    app.lastTouchTapAt = millis();
+    app.lastTouchTapX = x;
+    app.lastTouchTapY = y;
+}
+
 void handleTouchTap(int16_t x, int16_t y) {
+    if(useRoundNavigation() && app.screen != Screen::Home) {
+        return;
+    }
+
+    if(isDuplicateTouchTap(x, y)) {
+        return;
+    }
+    rememberTouchTap(x, y);
+
     if(useRoundNavigation()) {
         if(app.screen != Screen::Home && !app.editing) {
             if(handleRoundNavTouch(x, y)) {
@@ -5252,7 +6647,7 @@ void handleTouchInput(const RemoteTouchState& touch) {
                 updateDialTouch(touch.x, touch.y, true);
                 break;
             case TouchMode::MenuScroll:
-                updateMenuScrollTouch(touch.y);
+                updateMenuScrollTouch(touch.x, touch.y);
                 break;
             case TouchMode::HomeEdgeSwipe:
                 if(updateHomeEdgeSwipeTouch(touch.x, touch.y)) {
@@ -5276,15 +6671,25 @@ void handleTouchInput(const RemoteTouchState& touch) {
     if(touch.justReleased && touchTracker.active) {
         const uint32_t heldMs = millis() - touchTracker.startedAt;
         debugRoundInput("touch_release", touchTracker.startX, touchTracker.startY, heldMs, touchTracker.dragUsed ? 1 : 0);
-        if(!touchTracker.dragUsed) {
-            if(app.screen == Screen::Home &&
-               !app.editing &&
-               useRoundNavigation() &&
-               heldMs >= LONGPRESS) {
-                handlePrimaryLongPress();
-                touchTracker = {};
-                return;
+        if(useRoundNavigation()) {
+            if(useWaveshareRoundUi() && touchTracker.mode == TouchMode::MenuScroll) {
+                const Layout layout = buildLayout();
+                const int16_t stepDistance = layout.rowCount >= 3
+                                                 ? abs(static_cast<int16_t>(layout.menuRows[1].y - layout.menuRows[0].y))
+                                                 : 0;
+                if(stepDistance > 0) {
+                    const int committedSteps = -lroundf(app.menuRollOffset / static_cast<float>(stepDistance));
+                    if(committedSteps != 0) {
+                        moveSelection(committedSteps, false);
+                        app.menuRollOffset += static_cast<float>(committedSteps * stepDistance);
+                        app.redraw = true;
+                    }
+                }
             }
+            touchTracker = {};
+            return;
+        }
+        if(!touchTracker.dragUsed) {
             if(heldMs <= remote_config::kTapMaxDurationMs) {
                 handleTouchTap(touchTracker.startX, touchTracker.startY);
             }
@@ -5362,8 +6767,8 @@ uint8_t menuValueCount(uint8_t menuNum) {
 }
 
 const SettingItem* findSettingItem(uint8_t menuNum, uint8_t itemIdx) {
-    const SettingItem* groups[] = {kMainItems, kPurgeItems, kGbwItems};
-    const size_t groupCounts[] = {arrayCount(kMainItems), arrayCount(kPurgeItems), arrayCount(kGbwItems)};
+    const SettingItem* groups[] = {kMainItems, kPurgeItems, kGbwItems, kNetworkItems};
+    const size_t groupCounts[] = {arrayCount(kMainItems), arrayCount(kPurgeItems), arrayCount(kGbwItems), arrayCount(kNetworkItems)};
     for(size_t group = 0; group < (sizeof(groups) / sizeof(groups[0])); ++group) {
         for(size_t idx = 0; idx < groupCounts[group]; ++idx) {
             const SettingItem& item = groups[group][idx];
@@ -5469,11 +6874,11 @@ void appendRemoteStatusJson(String& out) {
     out += ",\"espNowReady\":";
     out += app.espNowReady ? "true" : "false";
     out += ",\"radioMode\":";
-    appendJsonQuoted(out, formatValueLabel(kMainItems[0], app.menuValues[1][RADIOMODE]));
+    appendJsonQuoted(out, formatValueLabel(kNetworkItems[0], app.menuValues[1][RADIOMODE]));
     out += ",\"radioModeKnown\":";
     out += app.radioModeKnown ? "true" : "false";
     out += ",\"invertScroll\":";
-    appendJsonQuoted(out, formatValueLabel(kMainItems[4], app.localInvertScroll));
+    appendJsonQuoted(out, "CLOCKWISE");
     out += ",\"driveSelection\":";
     appendJsonQuoted(out, localDriveSelectionLabel(currentLocalDriveSelection()));
     out += ",\"manualRPM\":";
@@ -5585,27 +6990,26 @@ void printRemoteConsolePeers() {
 void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|peer_scan|peer_clear>");
+    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
     Serial.println("[remote-diag] raw: raw <protocol-frame>");
 }
 
 bool remoteConsoleSetTarget(int32_t value, bool weightMode, String* message) {
-    const bool ok = weightMode ? sendRaw(sg98_protocol::setWeightMg(value))
-                               : sendRaw(sg98_protocol::setRpm(value));
-    if(ok) {
-        if(weightMode) {
-            app.weightMg = value;
-        } else {
-            app.manualRpm = value;
-        }
-        app.targetDirty = false;
-        app.lastStatusPollAt = 0;
-        markPersistentStateDirty();
+    const int32_t normalizedValue = normalizeTargetValue(weightMode, value);
+    if(weightMode) {
+        app.weightMg = normalizedValue;
+    } else {
+        app.manualRpm = normalizedValue;
     }
+    PendingTargetWrite* pending = stagePendingTargetWrite(weightMode, normalizedValue);
+    const bool ok = trySendPendingTargetWrite(pending, true) || pending != nullptr;
+    app.targetDirty = false;
+    app.lastStatusPollAt = 0;
+    markPersistentStateDirty();
     if(message != nullptr) {
-        *message = ok ? "ok" : "send failed";
+        *message = ok ? "queued" : "send failed";
     }
     return ok;
 }
@@ -5626,11 +7030,11 @@ bool remoteConsoleSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t value, 
         return false;
     }
 
-    applyMenuValue(*item, clampValue(value, item->minValue, item->maxValue));
+    const bool ok = applyMenuValue(*item, clampValue(value, item->minValue, item->maxValue));
     if(message != nullptr) {
-        *message = "ok";
+        *message = ok ? "queued" : "send failed";
     }
-    return true;
+    return ok;
 }
 
 bool remoteConsoleRunAction(String commandLine, String* message) {
@@ -5638,9 +7042,29 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
     action.toLowerCase();
 
     if(action == "start" || action == "stop" || action == "idle" || action == "idle_gbw" || action == "calibrate") {
-        const bool ok = sendAction(action.c_str());
+        PendingActionKind kind = PendingActionKind::None;
+        const char* expectedState = nullptr;
+        PendingActionReflection reflection = PendingActionReflection::State;
+        if(action == "start") {
+            kind = PendingActionKind::Start;
+            expectedState = isGbwState() ? "GRINDING_GBW" : "GRINDING";
+        } else if(action == "stop") {
+            kind = PendingActionKind::Stop;
+            expectedState = (app.hasStatus && app.status.state == "GRINDING" && app.menuValues[2][SETBUTTONPURGE] != 0) ? "PURGING"
+                                                                                                                           : (isGbwState() ? "IDLE_GBW" : "IDLE");
+        } else if(action == "idle") {
+            kind = PendingActionKind::Idle;
+            expectedState = "IDLE";
+        } else if(action == "idle_gbw") {
+            kind = PendingActionKind::IdleGbw;
+            expectedState = "IDLE_GBW";
+        } else if(action == "calibrate") {
+            kind = PendingActionKind::Calibrate;
+            expectedState = "CALIBRATING";
+        }
+        const bool ok = queuePendingAction(kind, reflection, nullptr, expectedState, 0);
         if(message != nullptr) {
-            *message = ok ? "sent" : "send failed";
+            *message = ok ? "queued" : "send failed";
         }
         return ok;
     }
@@ -5648,9 +7072,13 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
     if(action == "redetect") {
         setLocalDriveSelection(LOCAL_DRIVE_AUTO);
         markPersistentStateDirty();
-        const bool ok = sendAction("redetect");
+        const bool ok = queuePendingAction(PendingActionKind::DriveAuto,
+                                           PendingActionReflection::None,
+                                           "auto",
+                                           nullptr,
+                                           0);
         if(message != nullptr) {
-            *message = ok ? "sent" : "send failed";
+            *message = ok ? "queued" : "send failed";
         }
         return ok;
     }
@@ -5661,18 +7089,26 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
         if(arg0 == "auto") {
             setLocalDriveSelection(LOCAL_DRIVE_AUTO);
             markPersistentStateDirty();
-            const bool ok = sendAction("redetect");
+            const bool ok = queuePendingAction(PendingActionKind::DriveAuto,
+                                               PendingActionReflection::None,
+                                               "auto",
+                                               nullptr,
+                                               0);
             if(message != nullptr) {
-                *message = ok ? "sent" : "send failed";
+                *message = ok ? "queued" : "send failed";
             }
             return ok;
         }
         if(arg0 == "jmc" || arg0 == "rt") {
             setLocalDriveSelection(arg0 == "jmc" ? LOCAL_DRIVE_JMC : LOCAL_DRIVE_RT);
             markPersistentStateDirty();
-            const bool ok = sendAction("drive", arg0.c_str());
+            const bool ok = queuePendingAction(arg0 == "jmc" ? PendingActionKind::DriveJmc : PendingActionKind::DriveRt,
+                                               PendingActionReflection::Drive,
+                                               arg0.c_str(),
+                                               arg0 == "jmc" ? "JMC" : "RT",
+                                               0);
             if(message != nullptr) {
-                *message = ok ? "sent" : "send failed";
+                *message = ok ? "queued" : "send failed";
             }
             return ok;
         }
@@ -5690,9 +7126,13 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
             }
             return false;
         }
-        const bool ok = sendAction("jmc_baud", baud.c_str());
+        const bool ok = queuePendingAction(PendingActionKind::JmcBaud,
+                                           PendingActionReflection::JmcBaud,
+                                           baud.c_str(),
+                                           nullptr,
+                                           baud.toInt());
         if(message != nullptr) {
-            *message = ok ? "sent" : "send failed";
+            *message = ok ? "queued" : "send failed";
         }
         return ok;
     }
@@ -5714,9 +7154,13 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
 
     if(action == "reset_defaults") {
         String confirm = takeToken(&commandLine);
-        const bool ok = sendAction("reset_defaults", confirm.length() > 0 ? confirm.c_str() : nullptr);
+        const bool ok = queuePendingAction(PendingActionKind::ResetDefaults,
+                                           PendingActionReflection::None,
+                                           confirm.length() > 0 ? confirm.c_str() : nullptr,
+                                           nullptr,
+                                           0);
         if(message != nullptr) {
-            *message = ok ? "sent" : "send failed";
+            *message = ok ? "queued" : "send failed";
         }
         return ok;
     }
@@ -5735,6 +7179,21 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
         markPersistentStateDirty();
         if(message != nullptr) {
             *message = "cleared";
+        }
+        return true;
+    }
+
+    if(action == "ws_scan") {
+        switchTransportNow(LinkTransport::WebSocket);
+        if(!remote_wifi_has_saved_network()) {
+            if(message != nullptr) {
+                *message = "wifi not set";
+            }
+            return false;
+        }
+        requestWebSocketDiscovery(true);
+        if(message != nullptr) {
+            *message = "scanning";
         }
         return true;
     }
@@ -5840,11 +7299,14 @@ void handleRemoteConsoleLine(const char* rawLine) {
         bool ok = true;
         String message = "ok";
         if(tail == "ws" || tail == "websocket") {
+            app.transportOverrideActive = true;
             switchTransportNow(LinkTransport::WebSocket);
         } else if(tail == "espnow" || tail == "esp-now") {
+            app.transportOverrideActive = true;
             switchTransportNow(LinkTransport::EspNow);
             requestEspNowDiscovery(true);
         } else if(tail == "auto") {
+            app.transportOverrideActive = false;
             switchTransportNow(initialTransport());
         } else {
             ok = false;
@@ -5975,6 +7437,7 @@ void remoteConsolePoll() {
 
 void remote_app_setup() {
     Serial.begin(115200);
+    remote_runtime_bind_current_task();
     delay(100);
     remote_board_console().println("SG98 multi-board remote starting");
 
@@ -5982,8 +7445,12 @@ void remote_app_setup() {
         setToast("Board init failed", 60000);
     }
 
-    remote_wifi_init();
-    wsClient.onEvent(onWsEvent);
+    if(!kDisableTransportPerfTest) {
+        remote_wifi_init();
+        wsClient.onEvent(onWsEvent);
+    } else {
+        stopAllTransportStacks();
+    }
     g_statePrefsReady = g_statePrefs.begin(kPersistentStateNamespace, false);
     seedMenuDefaults();
     app.manualRpm = default_setRPM;
@@ -6004,7 +7471,7 @@ void remote_app_setup() {
         app.pendingTransport = LinkTransport::None;
         app.pendingTransportAt = 0;
         clearPollSchedule();
-        setToast("Transport disabled", 3000);
+        setToast("UI debug mode", 3000);
     } else {
         switchTransportNow(startupTransport);
         requestStatus();
@@ -6024,6 +7491,7 @@ void remote_app_loop() {
     remoteConsolePoll();
 
     if(input.dialDelta != 0 || input.primaryPressed || input.primaryLongPress || input.primaryShortPress ||
+       input.secondaryPressed || input.secondaryLongPress || input.secondaryShortPress ||
        input.touch.pressed || input.touch.justPressed || input.touch.justReleased) {
         markUserActivity();
     }
@@ -6034,6 +7502,12 @@ void remote_app_loop() {
     if(input.primaryShortPress) {
         handlePrimaryShortPress();
     }
+    if(input.secondaryLongPress) {
+        handleSecondaryLongPress();
+    }
+    if(input.secondaryShortPress) {
+        handleSecondaryShortPress();
+    }
 
     handleTouchInput(input.touch);
     handleDialDelta(applyDialDirection(input.dialDelta));
@@ -6041,12 +7515,8 @@ void remote_app_loop() {
     servicePersistentSnapshotSave();
     const bool yieldTransport = shouldYieldTransportToUi();
     if(!kDisableTransportPerfTest && !yieldTransport) {
-        uint32_t transportServiceInterval = remote_config::kTransportServiceMs;
-        uint32_t pollingServiceInterval = remote_config::kPollingServiceMs;
-        if(useRoundNavigation() && app.screen == Screen::Home) {
-            transportServiceInterval = kHomeTransportServiceMs;
-            pollingServiceInterval = kHomePollingServiceMs;
-        }
+        const uint32_t transportServiceInterval = currentTransportServiceIntervalMs();
+        const uint32_t pollingServiceInterval = currentPollingServiceIntervalMs();
         if(app.transportYieldedToUi) {
             app.lastTransportServiceAt = now;
             app.lastPollingServiceAt = now;
@@ -6054,6 +7524,7 @@ void remote_app_loop() {
         }
         if((now - app.lastTransportServiceAt) >= transportServiceInterval) {
             manageTransport();
+            servicePendingControllerSync();
             handleSendCompletion();
             updateSyncFromStatusFallback();
             app.lastTransportServiceAt = now;
@@ -6079,5 +7550,5 @@ void remote_app_loop() {
         redrawUi();
     }
 
-    delay(useRoundNavigation() ? 1 : 12);
+    remote_runtime_wait_for_input_or_timeout(computeLoopWaitMs(millis(), yieldTransport));
 }

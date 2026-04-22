@@ -58,19 +58,6 @@ void startMdnsIfNeeded() {
     }
 }
 
-void sendInitialFrames(uint8_t clientNum) {
-    String frame = remote_link_build_status_frame();
-    wsServer.sendTXT(clientNum, frame);
-    frame = remote_link_build_menu_frame(1);
-    wsServer.sendTXT(clientNum, frame);
-    frame = remote_link_build_menu_frame(2);
-    wsServer.sendTXT(clientNum, frame);
-    frame = remote_link_build_menu_frame(3);
-    wsServer.sendTXT(clientNum, frame);
-    frame = remote_link_build_menu_frame(4);
-    wsServer.sendTXT(clientNum, frame);
-}
-
 void handleTextFrame(uint8_t clientNum, const uint8_t* payload, size_t length) {
     String command;
     command.reserve(length);
@@ -105,8 +92,10 @@ void handleTextFrame(uint8_t clientNum, const uint8_t* payload, size_t length) {
 void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t* payload, size_t length) {
     switch(type) {
         case WStype_CONNECTED:
-            Serial.printf("[remote_ws] client=%u connected\n", static_cast<unsigned>(clientNum));
-            sendInitialFrames(clientNum);
+            Serial.printf("[remote_ws] client=%u connected path=%.*s\n",
+                          static_cast<unsigned>(clientNum),
+                          static_cast<int>(length),
+                          payload != nullptr ? reinterpret_cast<const char*>(payload) : "");
             break;
         case WStype_DISCONNECTED:
             Serial.printf("[remote_ws] client=%u disconnected\n", static_cast<unsigned>(clientNum));
@@ -114,7 +103,18 @@ void onWsEvent(uint8_t clientNum, WStype_t type, uint8_t* payload, size_t length
         case WStype_TEXT:
             handleTextFrame(clientNum, payload, length);
             break;
+        case WStype_ERROR:
+            Serial.printf("[remote_ws] client=%u error len=%u payload=%.*s\n",
+                          static_cast<unsigned>(clientNum),
+                          static_cast<unsigned>(length),
+                          static_cast<int>(length),
+                          payload != nullptr ? reinterpret_cast<const char*>(payload) : "");
+            break;
         default:
+            Serial.printf("[remote_ws] client=%u event=%d len=%u\n",
+                          static_cast<unsigned>(clientNum),
+                          static_cast<int>(type),
+                          static_cast<unsigned>(length));
             break;
     }
 }
@@ -143,6 +143,7 @@ void remote_ws_stop() {
         return;
     }
 
+    wsServer.close();
     stopMdns();
     wsActive = false;
     Serial.println("[remote_ws] stopped");

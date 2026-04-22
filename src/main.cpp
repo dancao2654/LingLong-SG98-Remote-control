@@ -99,6 +99,8 @@ unsigned long lastLoopTime = 0;
 int loopcount = 0;
 
 namespace {
+constexpr bool kDisableIdleSleepForTesting = true;
+
 uint8_t purgeFrameCounter = 0;
 int16_t purgeLastSetRPM = 0;
 unsigned long purgeStartTime = 0;
@@ -465,7 +467,7 @@ bool controller_idle_sleep_active() {
 }
 
 void controller_enter_idle_sleep() {
-    if(idleSleepActive || !controllerCanIdleSleep()) {
+    if(kDisableIdleSleepForTesting || idleSleepActive || !controllerCanIdleSleep()) {
         return;
     }
 
@@ -585,6 +587,12 @@ void doVitals() {
 
 
 void sleepTimeCheck() { 
+    if(kDisableIdleSleepForTesting) {
+        if(idleSleepActive) {
+            controller_exit_idle_sleep();
+        }
+        return;
+    }
     if(idleSleepActive) {
         if(Menu1[SETSLEEP].value == 0 || !controllerCanIdleSleep()) {
             controller_exit_idle_sleep();
