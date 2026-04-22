@@ -58,6 +58,23 @@ bool isTargetUpdateCommand(const char* payload) {
            strncmp(payload, "WEIGHT=", strlen("WEIGHT=")) == 0;
 }
 
+bool isDiscoverCommand(const char* payload) {
+    return payload != nullptr && strcmp(payload, sg98_protocol::kCmdDiscover) == 0;
+}
+
+String controllerDiscoveryName() {
+    String out = "SG98 ";
+    out += SG98_CONTROLLER_TARGET_NAME;
+    return out;
+}
+
+String controllerDiscoveryFrame() {
+    return sg98_protocol::peer(controllerDiscoveryName(),
+                               WiFi.macAddress(),
+                               SG98_CONTROLLER_TARGET_NAME,
+                               espnowChannelValue);
+}
+
 void storeLatestEvent(LatestEspNowEvent* slot, const EspNowEvent& event) {
     if(slot == nullptr) {
         return;
@@ -92,6 +109,11 @@ void processEvent(const EspNowEvent& event) {
     ++rxCount;
     strncpy(lastCommand, event.payload, sizeof(lastCommand) - 1);
     lastCommand[sizeof(lastCommand) - 1] = '\0';
+
+    if(isDiscoverCommand(event.payload)) {
+        sendFrame(event.mac, controllerDiscoveryFrame());
+        return;
+    }
 
     String message;
     bool sendStatus = false;

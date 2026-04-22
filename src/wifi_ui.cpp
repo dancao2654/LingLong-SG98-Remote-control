@@ -21,6 +21,9 @@ String staPassword;
 unsigned long lastStaAttemptAt = 0;
 bool wifiUiRoutesConfigured = false;
 bool wifiUiActive = false;
+bool apRunning = false;
+bool dnsRunning = false;
+bool serverStarted = false;
 
 constexpr uint32_t STA_RETRY_MS = 15000;
 constexpr uint16_t DNS_PORT = 53;
@@ -587,14 +590,14 @@ const char kPage[] PROGMEM = R"HTML(
       if (item.kind === 'nav' || item.kind === 'submenu') return '';
       const meta = item.kind === 'value'
         ? `${item.min}..${item.max}${item.unit ? ' ' + item.unit : ''} step ${item.scalar || 1}`
-        : item.kind === 'bool' ? 'On / off'
+        : item.kind === 'bool' ? (item.name === 'Motor direction' ? 'Normal / reversed' : 'On / off')
         : item.kind === 'baud_action' ? `Target ${item.baud}`
         : item.kind;
       let body = '';
       if (item.kind === 'value') {
         body = `<div class="value-row"><input type="number" id="menu-${menuId}-${item.index}" min="${item.min}" max="${item.max}" step="${item.scalar || 1}" value="${item.value}"><button data-save="${menuId}:${item.index}">Save</button></div>`;
       } else if (item.kind === 'bool') {
-        body = `<div class="actions"><label><input type="checkbox" id="menu-${menuId}-${item.index}" ${Number(item.value) ? 'checked' : ''}> Enabled</label><button data-save="${menuId}:${item.index}">Save</button></div>`;
+        body = `<div class="actions"><label><input type="checkbox" id="menu-${menuId}-${item.index}" ${Number(item.value) ? 'checked' : ''}> ${item.name === 'Motor direction' ? 'Reversed' : 'Enabled'}</label><button data-save="${menuId}:${item.index}">Save</button></div>`;
       } else if (item.kind === 'action') {
         body = `<div class="actions"><button data-action="${item.action}">Run</button></div>`;
       } else if (item.kind === 'danger_action') {
@@ -1141,6 +1144,35 @@ void configureRoutes() {
     });
     wifiUiRoutesConfigured = true;
 }
+
+bool startAccessPoint() {
+    if(apRunning) {
+        return true;
+    }
+
+    WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
+    if(!WiFi.softAP(apSsid.c_str())) {
+        return false;
+    }
+    dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+    dnsRunning = true;
+    apRunning = true;
+    Serial.printf("[wifi] ap_on ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
+    return true;
+}
+
+void stopAccessPoint() {
+    if(dnsRunning) {
+        dnsServer.stop();
+        dnsRunning = false;
+    }
+    if(apRunning) {
+        WiFi.softAPdisconnect(true);
+        apRunning = false;
+        WiFi.mode(staEnabled ? WIFI_STA : WIFI_AP);
+        Serial.println("[wifi] ap_off");
+    }
+}
 }
 
 void wifi_ui_init() {
@@ -1165,16 +1197,18 @@ bool wifi_ui_start() {
     }
 
     configureRoutes();
-    WiFi.mode(WIFI_AP_STA);
+    WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
     WiFi.setAutoReconnect(true);
     // BLE is always initialized for the scale/console path, so WiFi must keep
     // modem sleep enabled for ESP32-S3 BT/WiFi coexistence.
     WiFi.setSleep(true);
-    WiFi.softAP(apSsid.c_str());
-    dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+    startAccessPoint();
     beginStaConnect(true);
     startWifiScan(true);
-    server.begin();
+    if(!serverStarted) {
+        server.begin();
+        serverStarted = true;
+    }
     remote_ws_start();
     wifiUiActive = true;
 
@@ -1194,11 +1228,13 @@ void wifi_ui_stop() {
         return;
     }
 
-    dnsServer.stop();
-    server.stop();
+    stopAccessPoint();
+    if(serverStarted) {
+        server.stop();
+        serverStarted = false;
+    }
     remote_ws_stop();
     WiFi.scanDelete();
-    WiFi.softAPdisconnect(false);
     stopSta();
     WiFi.mode(WIFI_MODE_NULL);
     lastStaAttemptAt = 0;
@@ -1210,10 +1246,25 @@ void wifi_ui_poll() {
         return;
     }
 
-    dnsServer.processNextRequest();
-    server.handleClient();
+    const bool staConnected = staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
+    if(staConnected) {
+        if(apRunning) {
+            stopAccessPoint();
+        }
+    } else {
+        if(!apRunning) {
+            startAccessPoint();
+        }
+        if(dnsRunning) {
+            dnsServer.processNextRequest();
+        }
+    }
+
+    if(serverStarted) {
+        server.handleClient();
+    }
     remote_ws_poll();
-    if(staEnabled && WiFi.status() != WL_CONNECTED) {
+    if(staEnabled && !staConnected) {
         beginStaConnect(false);
     }
 }

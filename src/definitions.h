@@ -149,6 +149,7 @@
 #define default_espnow_channel 1
 
 #define default_motor_ramp 1
+#define default_motor_direction_reversed 0
 
 #define default_setWeight 18000
 #define default_max_weight 99900

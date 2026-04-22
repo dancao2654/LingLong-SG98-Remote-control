@@ -42,6 +42,15 @@ class RemoteCanvas {
                                   RemoteTextStyle style,
                                   uint16_t textColor,
                                   uint16_t bgColor) = 0;
+    virtual void drawCenteredTextRotated(const String& text,
+                                         int16_t x,
+                                         int16_t y,
+                                         float angleDegrees,
+                                         RemoteTextStyle style,
+                                         uint16_t textColor,
+                                         uint16_t bgColor) {
+        drawCenteredText(text, x, y, style, textColor, bgColor);
+    }
     virtual void drawTextTopLeft(const String& text,
                                  int16_t x,
                                  int16_t y,
@@ -54,4 +63,6 @@ class RemoteCanvas {
                                   RemoteTextStyle style,
                                   uint16_t textColor,
                                   uint16_t bgColor) = 0;
+
+    virtual void present() {}
 };

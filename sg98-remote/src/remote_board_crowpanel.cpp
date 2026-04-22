@@ -11,9 +11,14 @@ constexpr uint8_t kDisplayWidth = 240;
 constexpr uint8_t kDisplayHeight = 240;
 
 constexpr uint8_t kLedRingCount = 5;
+constexpr uint8_t kOledAddressPrimary = 0x3C;
+constexpr uint8_t kOledAddressSecondary = 0x3D;
+constexpr uint8_t kAuxPowerPin1 = 1;
+constexpr uint8_t kAuxPowerPin2 = 2;
 
 constexpr uint32_t kButtonDebounceMs = 18;
 constexpr uint32_t kLongPressMs = 750;
+constexpr uint32_t kTouchRetryMs = 1000;
 constexpr uint16_t kColorBlack = 0x0000;
 
 const RemoteBoardPins kBoardPins = [] {
@@ -92,31 +97,58 @@ class CrowPanelDisplay : public lgfx::LGFX_Device {
 class Cst816Touch {
   public:
     bool probe() {
-        resetController();
-        Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, 400000U);
-        return pingAddress();
+        return begin();
     }
 
     bool begin() {
-        pinMode(kBoardPins.touchInt, INPUT_PULLUP);
-        resetController();
-        Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, 400000U);
-        return pingAddress();
+        enablePeripheralPower();
+        wire_ = nullptr;
+
+        const TouchBusCandidate candidates[] = {
+            {&Wire1, kBoardPins.touchSda, kBoardPins.touchScl, "touch"},
+            {&Wire, kBoardPins.expansionI2cSda, kBoardPins.expansionI2cScl, "aux"},
+        };
+
+        for(const TouchBusCandidate& candidate : candidates) {
+            wire_ = candidate.wire;
+            configureBus(candidate);
+            resetController();
+            pinMode(kBoardPins.touchInt, INPUT_PULLUP);
+            if(!pingAddress()) {
+                continue;
+            }
+            if(!writeRegister(0xFE, 0xFF)) {
+                continue;
+            }
+
+            wire_ = candidate.wire;
+            remote_board_console().printf("[remote] crowpanel touch bus: %s (%d/%d)\n",
+                                          candidate.name,
+                                          candidate.sda,
+                                          candidate.scl);
+            return true;
+        }
+
+        return false;
     }
 
     bool readPoint(uint16_t* x, uint16_t* y) {
-        uint8_t data[6] = {};
-        if(!readRegisters(0x01, data, sizeof(data))) {
+        if(wire_ == nullptr) {
             return false;
         }
 
-        const uint8_t touchPoints = data[1] & 0x0F;
-        if(touchPoints == 0) {
+        uint8_t touchPoints = 0;
+        if(!readRegister(0x02, &touchPoints) || touchPoints == 0) {
             return false;
         }
 
-        const uint16_t rawX = static_cast<uint16_t>(((data[2] & 0x0F) << 8) | data[3]);
-        const uint16_t rawY = static_cast<uint16_t>(((data[4] & 0x0F) << 8) | data[5]);
+        uint8_t data[4] = {};
+        if(!readRegisters(0x03, data, sizeof(data))) {
+            return false;
+        }
+
+        const uint16_t rawX = static_cast<uint16_t>(((data[0] & 0x0F) << 8) | data[1]);
+        const uint16_t rawY = static_cast<uint16_t>(((data[2] & 0x0F) << 8) | data[3]);
         if(rawX >= kDisplayWidth || rawY >= kDisplayHeight) {
             return false;
         }
@@ -129,39 +161,93 @@ class Cst816Touch {
   private:
     static constexpr uint8_t kAddress = 0x15;
 
+    struct TouchBusCandidate {
+        TwoWire* wire;
+        int8_t sda;
+        int8_t scl;
+        const char* name;
+    };
+
+    void enablePeripheralPower() {
+        pinMode(kBoardPins.powerEnable, OUTPUT);
+        digitalWrite(kBoardPins.powerEnable, LOW);
+        pinMode(kAuxPowerPin1, OUTPUT);
+        digitalWrite(kAuxPowerPin1, HIGH);
+        pinMode(kAuxPowerPin2, OUTPUT);
+        digitalWrite(kAuxPowerPin2, HIGH);
+        delay(20);
+    }
+
     void resetController() {
+        pinMode(kBoardPins.touchInt, OUTPUT);
+        digitalWrite(kBoardPins.touchInt, HIGH);
+        delay(1);
+        digitalWrite(kBoardPins.touchInt, LOW);
+        delay(1);
         pinMode(kBoardPins.touchReset, OUTPUT);
         digitalWrite(kBoardPins.touchReset, LOW);
-        delay(5);
+        delay(10);
         digitalWrite(kBoardPins.touchReset, HIGH);
-        delay(50);
+        delay(300);
+    }
+
+    void configureBus(const TouchBusCandidate& candidate) {
+        candidate.wire->begin(candidate.sda, candidate.scl, 400000U);
+        candidate.wire->setTimeOut(20);
     }
 
     bool pingAddress() {
-        Wire.beginTransmission(kAddress);
-        return Wire.endTransmission() == 0;
+        if(wire_ == nullptr) {
+            return false;
+        }
+        wire_->beginTransmission(kAddress);
+        return wire_->endTransmission() == 0;
+    }
+
+    bool readRegister(uint8_t reg, uint8_t* value) {
+        if(value == nullptr) {
+            return false;
+        }
+        return readRegisters(reg, value, 1);
     }
 
     bool readRegisters(uint8_t reg, uint8_t* data, size_t len) {
-        Wire.beginTransmission(kAddress);
-        Wire.write(reg);
-        if(Wire.endTransmission(false) != 0) {
+        if(wire_ == nullptr) {
             return false;
         }
 
-        const size_t received = Wire.requestFrom(static_cast<int>(kAddress), static_cast<int>(len));
+        wire_->beginTransmission(kAddress);
+        wire_->write(reg);
+        if(wire_->endTransmission(true) != 0) {
+            return false;
+        }
+
+        const size_t received = wire_->requestFrom(static_cast<uint16_t>(kAddress), len, true);
         if(received != len) {
-            while(Wire.available()) {
-                Wire.read();
+            while(wire_->available()) {
+                wire_->read();
             }
             return false;
         }
 
         for(size_t i = 0; i < len; ++i) {
-            data[i] = static_cast<uint8_t>(Wire.read());
+            data[i] = static_cast<uint8_t>(wire_->read());
         }
         return true;
     }
+
+    bool writeRegister(uint8_t reg, uint8_t value) {
+        if(wire_ == nullptr) {
+            return false;
+        }
+
+        wire_->beginTransmission(kAddress);
+        wire_->write(reg);
+        wire_->write(value);
+        return wire_->endTransmission() == 0;
+    }
+
+    TwoWire* wire_ = nullptr;
 };
 
 struct ButtonState {
@@ -287,14 +373,15 @@ class CrowPanelCanvas : public RemoteCanvas {
 CrowPanelDisplay g_display;
 CrowPanelCanvas g_canvas(&g_display);
 Cst816Touch g_touch;
-TwoWire g_expansionI2c(1);
 ESP32Encoder g_encoder;
 Adafruit_NeoPixel g_ring(kLedRingCount, kBoardPins.indicatorData, NEO_GRB + NEO_KHZ800);
 ButtonState g_button;
 RemoteTouchState g_touchState;
 RemoteIndicatorState g_lastIndicator;
 bool g_indicatorValid = false;
+bool g_touchAvailable = false;
 int32_t g_lastEncoderRaw = 0;
+uint32_t g_nextTouchRetryAt = 0;
 
 const RemoteBoardInfo kBoardInfo = {
     RemoteBoardId::CrowPanelRotary,
@@ -316,7 +403,7 @@ const RemoteBoardInfo kBoardInfo = {
 };
 
 const RemoteBoardServices kBoardServices = {
-    &Wire,
+    &Wire1,
     nullptr,
     nullptr,
     &Serial,
@@ -328,7 +415,7 @@ const RemoteBoardServices kBoardServices = {
     kBoardPins.displayCs,
     -1,
     -1,
-    &g_expansionI2c,
+    &Wire,
     nullptr,
     nullptr,
     kBoardPins.expansionI2cSda,
@@ -378,7 +465,11 @@ const RemoteBoardFeatureMap kBoardFeatureMap = {
 
 void initBacklight() {
     pinMode(kBoardPins.powerEnable, OUTPUT);
-    digitalWrite(kBoardPins.powerEnable, HIGH);
+    digitalWrite(kBoardPins.powerEnable, LOW);
+    pinMode(kAuxPowerPin1, OUTPUT);
+    digitalWrite(kAuxPowerPin1, HIGH);
+    pinMode(kAuxPowerPin2, OUTPUT);
+    digitalWrite(kAuxPowerPin2, HIGH);
     ledcSetup(1, 5000, 8);
     ledcAttachPin(kBoardPins.backlight, 1);
     ledcWrite(1, 255);
@@ -395,6 +486,7 @@ void initEncoderButton() {
 void updateEncoderButton(RemoteInputState* input) {
     const uint32_t now = millis();
     const bool raw = digitalRead(kBoardPins.encoderSwitch);
+    input->primaryPressed = (raw != g_button.idleLevel);
     input->primaryShortPress = false;
     input->primaryLongPress = false;
 
@@ -407,7 +499,7 @@ void updateEncoderButton(RemoteInputState* input) {
         return;
     }
 
-    const bool pressed = (raw != g_button.idleLevel);
+    const bool pressed = input->primaryPressed;
     if(pressed != g_button.stablePressed) {
         g_button.stablePressed = pressed;
         g_button.stableChangedAt = now;
@@ -432,7 +524,43 @@ int consumeEncoderDelta() {
     return delta;
 }
 
+bool probeExpansionDevice(uint8_t address) {
+    Wire.begin(kBoardPins.expansionI2cSda, kBoardPins.expansionI2cScl, 400000U);
+    Wire.setTimeOut(20);
+    Wire.beginTransmission(address);
+    return Wire.endTransmission() == 0;
+}
+
+bool probeOnboardOled() {
+    return probeExpansionDevice(kOledAddressPrimary) || probeExpansionDevice(kOledAddressSecondary);
+}
+
+bool tryBeginTouch(bool logFailure) {
+    if(g_touch.begin()) {
+        if(!g_touchAvailable) {
+            remote_board_console().println("[remote] crowpanel touch online");
+        }
+        g_touchAvailable = true;
+        g_nextTouchRetryAt = 0;
+        return true;
+    }
+
+    g_touchAvailable = false;
+    g_nextTouchRetryAt = millis() + kTouchRetryMs;
+    if(logFailure) {
+        remote_board_console().println("[remote] crowpanel touch unavailable, continuing without touch");
+    }
+    return false;
+}
+
 void updateTouch(RemoteInputState* input) {
+    if(!g_touchAvailable) {
+        if(millis() >= g_nextTouchRetryAt) {
+            tryBeginTouch(false);
+        }
+        return;
+    }
+
     uint16_t x = 0;
     uint16_t y = 0;
     const bool touched = g_touch.readPoint(&x, &y);
@@ -470,22 +598,27 @@ uint32_t indicatorColor(const RemoteIndicatorState& indicator) {
 }  // namespace
 
 bool crowpanel_probe() {
-    return g_touch.probe();
+    const bool touch = g_touch.probe();
+    const bool oled = probeOnboardOled();
+    return touch || oled;
 }
 
 bool crowpanel_init() {
-    g_display.init();
-    g_display.setRotation(0);
-    g_display.fillScreen(kColorBlack);
+    Wire.begin(kBoardPins.expansionI2cSda, kBoardPins.expansionI2cScl, 400000U);
+    Wire.setTimeOut(20);
 
     initBacklight();
 
-    if(!g_touch.begin()) {
-        return false;
-    }
+    g_display.init();
+    g_display.initDMA();
+    g_display.startWrite();
+    g_display.setRotation(0);
+    g_display.fillScreen(kColorBlack);
+
+    tryBeginTouch(true);
 
     pinMode(kBoardPins.powerEnable, OUTPUT);
-    digitalWrite(kBoardPins.powerEnable, HIGH);
+    digitalWrite(kBoardPins.powerEnable, LOW);
 
     g_ring.begin();
     g_ring.clear();
@@ -500,6 +633,9 @@ bool crowpanel_init() {
     g_encoder.setCount(0);
     g_lastEncoderRaw = 0;
     g_touchState = {};
+    g_touchAvailable = false;
+    g_nextTouchRetryAt = 0;
+    tryBeginTouch(false);
     g_indicatorValid = false;
     return true;
 }

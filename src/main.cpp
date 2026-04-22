@@ -37,9 +37,10 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 10
     {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 11
     {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, //12
-    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 13
-    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 14
-    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 15
+    {"Motor direction", default_motor_direction_reversed, 0, 1, 1, "MOTORDIR", ""}, //13
+    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 14
+    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 15
+    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 16
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {

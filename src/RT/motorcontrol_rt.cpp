@@ -75,7 +75,7 @@ void checkRtRpmZeroLog() {
                           ERROR_HISTORY_CODE_MOTOR_RPM_TEST,
                           packMotorRpmLogValue(ERROR_HISTORY_MOTOR_RPM_ZERO,
                                                ERROR_HISTORY_MOTOR_RPM_SRC_RT_1301,
-                                               motor_setRPM),
+                                               motor_get_effective_set_rpm()),
                           state);
         rtRpmLoggedZero = true;
     }
@@ -293,8 +293,10 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
 
   if(lastCommSend + delay > millis()) return false;
 
+  const int16_t effectiveSetRPM = motor_get_effective_set_rpm();
+
   // >>>>>> MOTOR OFF
-  if(motor_setRPM == 0) { 
+  if(effectiveSetRPM == 0) { 
       if(reg_514 != 0 || reg_515 != 0) { 
         if(writeMultipleRegisters(514, 2, 0, 0)) { //SET SPEED LIMIT FORWARD = 0
           lastCommSend = millis();
@@ -332,7 +334,7 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
   }
 
     //>>>>> Forward ROTATION
-    if(motor_setRPM > 0) { 
+    if(effectiveSetRPM > 0) { 
       if(reg_201 != 1) { 
         if(writeSingleRegister(201, 1)) { // Servo ENABLED
           lastCommSend = millis(); 
@@ -351,12 +353,12 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
           return false;
         }
       }
-      if(reg_514 != motor_setRPM || reg_515 != 0) { 
-        if(writeMultipleRegisters(514, 2, motor_setRPM, 0)) { //SET SPEED LIMIT FORWARD
+      if(reg_514 != effectiveSetRPM || reg_515 != 0) { 
+        if(writeMultipleRegisters(514, 2, effectiveSetRPM, 0)) { //SET SPEED LIMIT FORWARD
           lastCommSend = millis();
           lastCommType = 0;
           nextCommType = 0;
-          pending_reg_514 = motor_setRPM;
+          pending_reg_514 = effectiveSetRPM;
           pending_reg_515 = 0;
           motor_lastSetRPM = motor_setRPM;
           return false;
@@ -372,13 +374,13 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
         }
       }
       //Check if we've done all commands
-      if(reg_201 == 1 && reg_503 == (Menu1[SETMOTORTORQUE].value*10) && reg_514 == motor_setRPM && reg_515 == 0 && reg_525 == 1) { 
+      if(reg_201 == 1 && reg_503 == (Menu1[SETMOTORTORQUE].value*10) && reg_514 == effectiveSetRPM && reg_515 == 0 && reg_525 == 1) { 
         if(nextCommType == 0) nextCommType = 1; 
       }
     } 
 
     // >>>> REVERSE ROTATION
-     if(motor_setRPM < 0) { 
+     if(effectiveSetRPM < 0) { 
       if(reg_201 != 1) { 
         if(writeSingleRegister(201, 1)) { // Servo ENABLED
           lastCommSend = millis(); 
@@ -397,13 +399,13 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
           return false;
         }
       }
-      if(reg_514 != 0 || reg_515 != -motor_setRPM) { 
-        if(writeMultipleRegisters(514, 2, 0, -motor_setRPM)) { //SET SPEED LIMIT REVERSE, note motor_set is signed and sending UNSIGNED
+      if(reg_514 != 0 || reg_515 != -effectiveSetRPM) { 
+        if(writeMultipleRegisters(514, 2, 0, -effectiveSetRPM)) { //SET SPEED LIMIT REVERSE, note motor_set is signed and sending UNSIGNED
           lastCommSend = millis();
           lastCommType = 0;
           nextCommType = 0;
           pending_reg_514 = 0;
-          pending_reg_515 = -motor_setRPM;
+          pending_reg_515 = -effectiveSetRPM;
           return false;
         }
       }
@@ -417,7 +419,7 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
         }
       }
       //Check if we've done all commands
-      if(reg_201 == 1 && reg_503 == -(Menu1[SETMOTORTORQUE].value*10) && reg_514 == 0 && reg_515 == -motor_setRPM && reg_525 == 2) { 
+      if(reg_201 == 1 && reg_503 == -(Menu1[SETMOTORTORQUE].value*10) && reg_514 == 0 && reg_515 == -effectiveSetRPM && reg_525 == 2) { 
         if(nextCommType == 0) nextCommType = 1; 
       }
   }

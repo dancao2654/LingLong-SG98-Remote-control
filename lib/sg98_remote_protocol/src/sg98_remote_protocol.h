@@ -10,12 +10,14 @@ constexpr char kListSeparator = ',';
 constexpr const char* kFrameAck = "ACK";
 constexpr const char* kFrameStatus = "STAT";
 constexpr const char* kFrameMenu = "MENU";
+constexpr const char* kFramePeer = "PEER";
 
 constexpr const char* kCmdStart = "START";
 constexpr const char* kCmdStop = "STOP";
 constexpr const char* kCmdIdle = "IDLE";
 constexpr const char* kCmdIdleGbw = "IDLE_GBW";
 constexpr const char* kCmdGetStatus = "GET_STATUS";
+constexpr const char* kCmdDiscover = "DISCOVER";
 
 constexpr size_t kMaxMenuValues = 24;
 
@@ -47,6 +49,13 @@ struct MenuFrame {
   uint8_t menuNum = 0;
   int32_t values[kMaxMenuValues] = {};
   uint8_t count = 0;
+};
+
+struct PeerFrame {
+  String name;
+  String mac;
+  String target;
+  int32_t channel = 0;
 };
 
 inline String setRpm(int32_t rpm) {
@@ -81,6 +90,10 @@ inline String action(const char* actionName, const char* arg0 = nullptr) {
   return out;
 }
 
+inline String discoverRequest() {
+  return kCmdDiscover;
+}
+
 inline String ack(bool ok, const String& message) {
   String out;
   out.reserve(message.length() + 8);
@@ -89,6 +102,21 @@ inline String ack(bool ok, const String& message) {
   out += ok ? '1' : '0';
   out += kFrameSeparator;
   out += message;
+  return out;
+}
+
+inline String peer(const String& name, const String& mac, const String& target, int32_t channel) {
+  String out;
+  out.reserve(name.length() + mac.length() + target.length() + 24);
+  out += kFramePeer;
+  out += kFrameSeparator;
+  out += name;
+  out += kFrameSeparator;
+  out += mac;
+  out += kFrameSeparator;
+  out += target;
+  out += kFrameSeparator;
+  out += String(channel);
   return out;
 }
 
@@ -216,6 +244,25 @@ inline bool parseMenuFrame(const String& frame, MenuFrame* out) {
     }
     out->values[out->count++] = parsed;
   }
+  return true;
+}
+
+inline bool parsePeerFrame(const String& frame, PeerFrame* out) {
+  if(out == nullptr || !frame.startsWith(String(kFramePeer) + kFrameSeparator)) {
+    return false;
+  }
+
+  int start = String(kFramePeer).length() + 1;
+  String token;
+  int32_t parsed = 0;
+
+  if(!detail::nextToken(frame, start, kFrameSeparator, &out->name)) return false;
+  if(!detail::nextToken(frame, start, kFrameSeparator, &out->mac)) return false;
+  if(!detail::nextToken(frame, start, kFrameSeparator, &out->target)) return false;
+  if(!detail::nextToken(frame, start, kFrameSeparator, &token) || !detail::parseIntToken(token, &parsed)) {
+    return false;
+  }
+  out->channel = parsed;
   return true;
 }
 
