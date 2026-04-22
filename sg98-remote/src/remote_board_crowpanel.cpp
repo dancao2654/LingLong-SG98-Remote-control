@@ -710,6 +710,10 @@ int32_t crowpanel_battery_millivolts() {
     return -1;
 }
 
+bool crowpanel_input_pending() {
+    return false;
+}
+
 const RemoteBoardDriver kCrowPanelDriver = {
     "crowpanel_rotary_128",
     crowpanel_probe,
@@ -724,6 +728,7 @@ const RemoteBoardDriver kCrowPanelDriver = {
     crowpanel_set_backlight,
     crowpanel_battery_status,
     crowpanel_battery_millivolts,
+    crowpanel_input_pending,
 };
 
 const RemoteBoardDriver* remote_board_crowpanel_driver() {

@@ -27,6 +27,7 @@ bool serverStarted = false;
 
 constexpr uint32_t STA_RETRY_MS = 15000;
 constexpr uint16_t DNS_PORT = 53;
+constexpr bool kDisableWifiModemSleepForTesting = false;
 
 const char kPage[] PROGMEM = R"HTML(
 <!doctype html>
@@ -1169,7 +1170,6 @@ void stopAccessPoint() {
     if(apRunning) {
         WiFi.softAPdisconnect(true);
         apRunning = false;
-        WiFi.mode(staEnabled ? WIFI_STA : WIFI_AP);
         Serial.println("[wifi] ap_off");
     }
 }
@@ -1199,12 +1199,12 @@ bool wifi_ui_start() {
     configureRoutes();
     WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
     WiFi.setAutoReconnect(true);
-    // BLE is always initialized for the scale/console path, so WiFi must keep
-    // modem sleep enabled for ESP32-S3 BT/WiFi coexistence.
-    WiFi.setSleep(true);
+    WiFi.setSleep(!kDisableWifiModemSleepForTesting);
     startAccessPoint();
     beginStaConnect(true);
-    startWifiScan(true);
+    if(!staEnabled || staSsid.isEmpty()) {
+        startWifiScan(true);
+    }
     if(!serverStarted) {
         server.begin();
         serverStarted = true;
@@ -1213,7 +1213,7 @@ bool wifi_ui_start() {
     wifiUiActive = true;
 
     Serial.printf("[wifi] ap_ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
-    Serial.println("[wifi] modem_sleep=on for BLE coexistence");
+    Serial.printf("[wifi] modem_sleep=%s\n", kDisableWifiModemSleepForTesting ? "off(test)" : "on");
     if(staEnabled && !staSsid.isEmpty()) {
         Serial.printf("[wifi] sta_saved=%s status=%s\n", staSsid.c_str(), wifiStatusText().c_str());
     } else {

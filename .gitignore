@@ -7,3 +7,4 @@
 .vscode/extensions-*.json
 .vscode/launch-*.json
 .vscode/ipch
+firmware-backups/

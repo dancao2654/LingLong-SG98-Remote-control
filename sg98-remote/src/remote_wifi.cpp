@@ -5,6 +5,8 @@
 #include <WebServer.h>
 #include <WiFi.h>
 
+#include "remote_config.h"
+
 namespace {
 
 constexpr uint32_t kStaRetryMs = 15000;
@@ -516,7 +518,6 @@ void stopAccessPoint() {
     if(apRunning) {
         WiFi.softAPdisconnect(true);
         apRunning = false;
-        WiFi.mode(staEnabled ? WIFI_STA : WIFI_AP);
         Serial.println("[remote_wifi] ap_off");
     }
 }
@@ -559,10 +560,12 @@ bool remote_wifi_start() {
     configureRoutes();
     WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
     WiFi.setAutoReconnect(true);
-    WiFi.setSleep(staEnabled);
+    WiFi.setSleep(staEnabled && !remote_config::kDisableWifiModemSleepForTesting);
     startAccessPoint();
     beginStaConnect(true);
-    startWifiScan(true);
+    if(!staEnabled || staSsid.isEmpty()) {
+        startWifiScan(true);
+    }
     startPortalServer();
     wifiActive = true;
 
@@ -572,6 +575,8 @@ bool remote_wifi_start() {
     } else {
         Serial.println("[remote_wifi] sta_saved=<none>");
     }
+    Serial.printf("[remote_wifi] modem_sleep=%s\n",
+                  remote_config::kDisableWifiModemSleepForTesting ? "off(test)" : "on");
 
     return true;
 }

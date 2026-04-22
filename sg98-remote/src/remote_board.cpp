@@ -194,3 +194,10 @@ RemoteBatteryStatus remote_board_battery_status() {
 int32_t remote_board_battery_millivolts() {
     return remote_board_battery_status().millivolts;
 }
+
+bool remote_board_input_pending() {
+    if(g_activeDriver != nullptr && g_activeDriver->input_pending != nullptr) {
+        return g_activeDriver->input_pending();
+    }
+    return false;
+}
