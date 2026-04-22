@@ -10,3 +10,4 @@
 firmware-backups/
 tools/windows_updater/assets/
 tools/windows_updater/__pycache__/
+tools/__pycache__/

@@ -75,6 +75,23 @@ The same target also works for remote environments such as `remote-universal-s3`
 Those builds automatically emit `SG98-Remote-Updater-*` artifacts under
 `publish/remote/` and `publish/bundles/`.
 
+To build the controller and remote Windows/macOS bundles in one shot, use:
+
+```bash
+~/.platformio/penv/bin/pio run -e adafruit_feather_esp32s3 -t bundle_all_updaters
+```
+
+That runs:
+
+- controller `bundle_windows_updater`
+- controller `bundle_macos_updater`
+- remote `bundle_windows_updater`
+- remote `bundle_macos_updater`
+
+If you launch `bundle_all_updaters` from a remote environment instead, that
+current remote environment is used automatically and the controller side
+defaults to `adafruit_feather_esp32s3`.
+
 Output:
 
 ```text
@@ -104,6 +121,12 @@ pio run -e adafruit_feather_esp32s3 -t bundle_windows_updater
 
 Remote environments use the same target name and automatically switch to the
 `SG98-Remote-Updater-*` output names.
+
+You can also run the all-in-one target from the standalone remote project:
+
+```powershell
+pio run -d sg98-remote -e remote-universal-s3 -t bundle_all_updaters
+```
 
 Output:
 
