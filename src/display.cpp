@@ -553,6 +553,10 @@ void setBrightness() {
   }
 }
 
+uint16_t getGrindingRpmColor() {
+  return motor_is_direction_reversed() ? COLOR_YELLOW : COLOR_GREEN;
+}
+
 void update_display() { 
   if(!controller_board_has_display()) {
   disp_updateRequired = false;
@@ -1061,7 +1065,7 @@ void drawGrindingOrPurgingScreen() {
 
       tft->fillRect(valX - 2, valY - h, w + 10, h + 8, ST77XX_BLACK);
 
-      tft->setTextColor(direction == 0 ? ST77XX_WHITE : COLOR_GREEN);
+      tft->setTextColor(direction == 0 ? ST77XX_WHITE : (state == PURGING ? COLOR_YELLOW : getGrindingRpmColor()));
       tft->setCursor(valX, valY);
       tft->print(newVal);
 
@@ -1223,7 +1227,7 @@ void drawGrindingGbwScreen() {
     drawSeparatorLine(dividerX, dividerY, dividerW, true);
 
     // --- RPM digits (left side) ---
-      const int16_t displaySetRPM = motor_get_effective_set_rpm();
+      const int16_t displaySetRPM = abs(motor_get_effective_set_rpm());
       if (prevRPM != displaySetRPM) {
       char newVal[10];
       sprintf(newVal, "%d", displaySetRPM);
@@ -1237,7 +1241,7 @@ void drawGrindingGbwScreen() {
 
       tft->fillRect(valX - 2, valY - h, w + 4, h + 8, ST77XX_BLACK);
 
-      tft->setTextColor(ST77XX_WHITE);
+      tft->setTextColor(getGrindingRpmColor());
       tft->setCursor(valX, valY);
       tft->print(newVal);
 

@@ -387,6 +387,7 @@ void do_io() {
                 }
             }
         } else if(pressedLong() == true && menu1Selected == Menu1Items::CALIBRATE) {
+            error = 0;
             state = CALIBRATING;  
             enterMenu = false;
             disp_updateRequired = true;

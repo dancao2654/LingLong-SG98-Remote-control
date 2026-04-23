@@ -301,6 +301,10 @@ lv_color_t rpmStatusColor() {
     return lvColor(kColorAccent);
 }
 
+lv_color_t grindingRpmColor() {
+    return lvColor(motor_is_direction_reversed() ? kColorWarn : kColorRun);
+}
+
 const char* driveStatusSymbol() {
     switch(currentStatus) {
         case MOTOR_READY:
@@ -942,7 +946,7 @@ void syncHeader() {
 }
 
 void syncErrorBanner() {
-    if(error == 0) {
+    if(error == 0 || state == CALIBRATING) {
         setHidden(ui.errorBanner, true);
         return;
     }
@@ -973,6 +977,7 @@ void syncDashboardCommon(const String& mode,
     lv_label_set_text(ui.dashMode, fitText(mode, 18).c_str());
     lv_obj_set_style_text_color(ui.dashMode, accent, 0);
     lv_label_set_text(ui.dashPrimary, fitText(primary, 16).c_str());
+    lv_obj_set_style_text_color(ui.dashPrimary, lvColor(kColorInk), 0);
     lv_label_set_text(ui.dashSecondary, fitText(secondary, 28).c_str());
     lv_label_set_text(ui.dashHint, fitText(hint, 44).c_str());
     setHidden(ui.dashHint, hint.length() == 0);
@@ -1025,9 +1030,10 @@ void syncDashboard() {
         }
         case GRINDING: {
             const int32_t target = abs(setRPM);
-            const int32_t pct = target > 0 ? (abs(liveRpm) * 100) / target : 0;
+            const int32_t displayRpm = abs(liveRpm);
+            const int32_t pct = target > 0 ? (displayRpm * 100) / target : 0;
             syncDashboardCommon("Grinding",
-                                String(liveRpm) + " rpm",
+                                String(displayRpm) + " rpm",
                                 String("Target ") + setRPM + " rpm",
                                 "",
                                 lvColor(kColorRun),
@@ -1039,13 +1045,15 @@ void syncDashboard() {
                                 "Purge",
                                 purgeStatusSymbol(),
                                 purgeStatusColor());
+            lv_obj_set_style_text_color(ui.dashPrimary, grindingRpmColor(), 0);
             break;
         }
         case PURGING: {
             const int32_t target = maxAbs(Menu2[SETPURGERPM].value, Menu2[SETPURGEREVERSE].value);
-            const int32_t pct = target > 0 ? (abs(liveRpm) * 100) / target : 0;
+            const int32_t displayRpm = abs(liveRpm);
+            const int32_t pct = target > 0 ? (displayRpm * 100) / target : 0;
             syncDashboardCommon("Purging",
-                                String(liveRpm) + " rpm",
+                                String(displayRpm) + " rpm",
                                 "Clearing the chute",
                                 "",
                                 lvColor(kColorWarn),
