@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -38,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Copy a full ESP32 flash set into updater assets.")
     parser.add_argument(
         "--env",
-        help="PlatformIO environment to package. Defaults to adafruit_feather_esp32s3 when no source is given.",
+        help="PlatformIO environment to package. Defaults to controller-universal-s3 when no source is given.",
     )
     parser.add_argument(
         "--source",
@@ -55,7 +56,7 @@ def resolve_build_dir(repo: Path, args: argparse.Namespace) -> tuple[str, Path, 
         env_name = args.env or source.parent.name
         return (env_name, source.parent, source)
 
-    env_name = args.env or "adafruit_feather_esp32s3"
+    env_name = args.env or "controller-universal-s3"
     build_dir = repo / ".pio" / "build" / env_name
     return (env_name, build_dir, build_dir / "firmware.bin")
 
@@ -74,6 +75,34 @@ def normalize_offset(value: str) -> str:
     return normalized
 
 
+def platformio_package_dirs() -> list[Path]:
+    roots = []
+    packages_dir = os.environ.get("PLATFORMIO_PACKAGES_DIR")
+    if packages_dir:
+        roots.append(Path(packages_dir))
+    roots.append(Path.home() / ".platformio" / "packages")
+
+    resolved = []
+    for root in roots:
+        if root.exists() and root not in resolved:
+            resolved.append(root)
+    return resolved
+
+
+def resolve_boot_app0_path() -> Path | None:
+    for packages_dir in platformio_package_dirs():
+        direct = packages_dir / "framework-arduinoespressif32" / "tools" / "partitions" / "boot_app0.bin"
+        if direct.exists():
+            return direct
+
+        for framework_dir in sorted(packages_dir.glob("framework-arduinoespressif32*")):
+            candidate = framework_dir / "tools" / "partitions" / "boot_app0.bin"
+            if candidate.exists():
+                return candidate
+
+    return None
+
+
 def resolve_segment_sources(build_dir: Path, firmware_path: Path) -> list[dict]:
     idedata = load_idedata(build_dir)
     flash_images = {}
@@ -88,6 +117,10 @@ def resolve_segment_sources(build_dir: Path, firmware_path: Path) -> list[dict]:
         offset = segment["offset"]
         if segment["kind"] == "application":
             source = firmware_path
+        elif segment["kind"] == "boot_app0":
+            source = flash_images.get(offset, build_dir / segment["source_name"])
+            if not source.exists():
+                source = resolve_boot_app0_path() or source
         else:
             source = flash_images.get(offset, build_dir / segment["source_name"])
 

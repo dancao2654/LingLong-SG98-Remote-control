@@ -9,7 +9,7 @@ import sys
 PROJECT_DIR = Path(env["PROJECT_DIR"])
 SCRIPT_DIR = PROJECT_DIR / "tools" / "windows_updater"
 PYTHON = env.subst("$PYTHONEXE") or sys.executable
-DEFAULT_CONTROLLER_ENV = "adafruit_feather_esp32s3"
+DEFAULT_CONTROLLER_ENV = "controller-universal-s3"
 DEFAULT_REMOTE_ENV = "remote-universal-s3"
 WINDOWS_RID = "win-x64"
 MACOS_RID = "osx-arm64"

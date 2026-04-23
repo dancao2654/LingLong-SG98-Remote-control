@@ -75,13 +75,7 @@ extern bool rs485Sending;
 uint16_t modbus_crc16(uint8_t* buf, int length);
 bool receiveError(uint8_t msgLength); 
 
-inline void setTXmode() { 
-  digitalWrite(RS485DE, HIGH); 
-  digitalWrite(RS485RE, HIGH); 
-} // check if theyre tied together or not??
-inline void setRXmode() { 
-  digitalWrite(RS485DE, LOW); 
-  digitalWrite(RS485RE, LOW); 
-}
+void setTXmode();
+void setRXmode();
 
 #endif

@@ -14,6 +14,7 @@ Each updater bundle embeds a full ESP32-S3 flash set:
 
 In the PlatformIO sidebar, open the `Custom` group under these environments:
 
+- `controller-universal-s3`
 - `adafruit_feather_esp32s3`
 - `waveshare_esp32_s3_rs485_can`
 - `remote-universal-s3`
@@ -28,7 +29,7 @@ Available updater tasks:
 
 The aggregate tasks build the currently shipped updater set:
 
-- controller updater from `adafruit_feather_esp32s3`
+- controller updater from `controller-universal-s3`
 - remote updater from `remote-universal-s3`
 
 Bundle generation is pinned to the release runtimes:
@@ -65,7 +66,7 @@ Examples:
 Build a controller updater from the repo root:
 
 ```bash
-python3 tools/windows_updater/prepare_assets.py --env adafruit_feather_esp32s3
+python3 tools/windows_updater/prepare_assets.py --env controller-universal-s3
 python3 tools/windows_updater/build_updater.py --rid win-x64 --output-base SG98-Updater --publish-subdir controller
 python3 tools/windows_updater/build_updater.py --rid osx-arm64 --output-base SG98-Updater --publish-subdir controller
 ```
