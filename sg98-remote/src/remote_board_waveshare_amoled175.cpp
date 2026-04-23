@@ -3,17 +3,21 @@
 
 #include <Adafruit_GFX.h>
 #include <Arduino_GFX_Library.h>
+#include <SensorQMI8658.hpp>
 #include <TouchDrv.hpp>
 #include <Wire.h>
 #include <XPowersLib.h>
 #include <esp_heap_caps.h>
 #include <math.h>
+#include <new>
 
 namespace {
 
 constexpr int kDisplayWidth = 466;
 constexpr int kDisplayHeight = 466;
 constexpr uint8_t kTouchAddress = 0x5A;
+constexpr uint8_t kRtcAddress = 0x51;
+constexpr uint8_t kAudioCodecAddress = 0x18;
 constexpr uint8_t kIoExpanderAddress = 0x20;
 constexpr uint8_t kIoExpanderInputReg = 0x00;
 constexpr uint8_t kIoExpanderConfigReg = 0x03;
@@ -38,8 +42,21 @@ constexpr uint8_t kTouchReadFailureTripCount = 2;
 constexpr uint8_t kTouchPressConfirmSamples = 1;
 constexpr uint32_t kTouchReleaseHoldMs = 90;
 constexpr uint32_t kPmicSensePollMs = 60;
+constexpr uint8_t kImuAddress = QMI8658_H_SLAVE_ADDRESS;
+constexpr uint32_t kImuPollIntervalMs = 50;
+constexpr uint8_t kImuWakeThresholdMg = 150;
+constexpr SensorQMI8658::AccelODR kImuWakeOdr = SensorQMI8658::ACC_ODR_LOWPOWER_11Hz;
+constexpr float kImuWakeOdrLabelHz = 11.0f;
+constexpr uint32_t kBaseWakeSources = static_cast<uint32_t>(RemoteWakeSource::Touch) |
+                                      static_cast<uint32_t>(RemoteWakeSource::PrimaryButton);
 
-const RemoteBoardPins kBoardPins = [] {
+struct WavesharePinProfile {
+    const char* key = "";
+    const char* label = "";
+    RemoteBoardPins pins = {};
+};
+
+RemoteBoardPins makeStockPins() {
     RemoteBoardPins pins = {};
     pins.displayData0 = 4;
     pins.displayData1 = 5;
@@ -52,6 +69,7 @@ const RemoteBoardPins kBoardPins = [] {
     pins.touchScl = 14;
     pins.touchInt = 11;
     pins.touchReset = 40;
+    pins.imuInt = 21;
     pins.audioDout = 8;
     pins.audioDin = 10;
     pins.audioBclk = 9;
@@ -60,7 +78,85 @@ const RemoteBoardPins kBoardPins = [] {
     pins.audioEnable = 46;
     pins.primaryButton = kBootButtonPin;
     return pins;
-}();
+}
+
+RemoteBoardPins makeAltPins4145() {
+    RemoteBoardPins pins = {};
+    pins.displayData0 = 12;
+    pins.displayData1 = 8;
+    pins.displayData2 = 14;
+    pins.displayData3 = 9;
+    pins.displaySclk = 13;
+    pins.displayCs = 7;
+    pins.displayReset = 11;
+    pins.touchSda = 41;
+    pins.touchScl = 45;
+    pins.touchInt = 42;
+    pins.touchReset = 46;
+    pins.imuInt = 38;
+    pins.primaryButton = kBootButtonPin;
+    return pins;
+}
+
+RemoteBoardServices makeBoardServices(const RemoteBoardPins& pins) {
+    return {
+        &Wire,
+        nullptr,
+        nullptr,
+        &Serial,
+        pins.touchSda,
+        pins.touchScl,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        nullptr,
+        nullptr,
+        nullptr,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        -1,
+        true,
+    };
+}
+
+const WavesharePinProfile kPinProfiles[] = {
+    {"waveshare-stock", "Waveshare stock 1.75", makeStockPins()},
+    {"amoled-alt-4145", "Alt 1.75 AMOLED variant", makeAltPins4145()},
+};
+
+const WavesharePinProfile* g_activeProfile = &kPinProfiles[0];
+RemoteBoardPins g_boardPins = makeStockPins();
+RemoteBoardServices g_boardServices = makeBoardServices(g_boardPins);
+bool g_profileDetected = false;
+#if defined(REMOTE_WAVESHARE_I2C_DIAG)
+bool g_loggedDiagnosticI2cPairs = false;
+#endif
+
+void resetDisplayObjects();
+bool probeI2cDevice(uint8_t address);
+
+void selectProfile(const WavesharePinProfile& profile, bool detected) {
+    if(g_activeProfile != &profile) {
+        resetDisplayObjects();
+    }
+
+    g_activeProfile = &profile;
+    g_boardPins = profile.pins;
+    g_boardServices = makeBoardServices(g_boardPins);
+    g_profileDetected = detected;
+}
+
+const char* activeProfileKey() {
+    return g_activeProfile != nullptr ? g_activeProfile->key : "unknown";
+}
 
 struct ButtonTracker {
     bool initialized = false;
@@ -89,8 +185,11 @@ struct TouchReportTracker {
 
 class BufferedWaveshareDisplay : public Arduino_GFX {
   public:
-    explicit BufferedWaveshareDisplay(Arduino_GFX* output)
-        : Arduino_GFX(kDisplayWidth, kDisplayHeight), output_(output) {}
+    BufferedWaveshareDisplay() : Arduino_GFX(kDisplayWidth, kDisplayHeight) {}
+
+    void setOutput(Arduino_GFX* output) {
+        output_ = output;
+    }
 
     bool begin(int32_t speed = GFX_NOT_DEFINED) override {
         (void)speed;
@@ -400,42 +499,27 @@ class WaveshareCanvas : public RemoteCanvas {
     Arduino_GFX** display_;
 };
 
-Arduino_DataBus* g_bus = new Arduino_ESP32QSPI(
-    kBoardPins.displayCs,
-    kBoardPins.displaySclk,
-    kBoardPins.displayData0,
-    kBoardPins.displayData1,
-    kBoardPins.displayData2,
-    kBoardPins.displayData3);
-
-Arduino_CO5300* g_display = new Arduino_CO5300(
-    g_bus,
-    kBoardPins.displayReset,
-    0,
-    kDisplayWidth,
-    kDisplayHeight,
-    6,
-    0,
-    0,
-    0);
-
-BufferedWaveshareDisplay g_bufferedDisplay(g_display);
-Arduino_GFX* g_drawDisplay = g_display;
+Arduino_ESP32QSPI* g_bus = nullptr;
+Arduino_CO5300* g_display = nullptr;
+BufferedWaveshareDisplay g_bufferedDisplay;
+Arduino_GFX* g_drawDisplay = nullptr;
 WaveshareCanvas g_canvas(&g_drawDisplay);
 TouchDrvCST92xx g_touch;
 XPowersAXP2101 g_pmic;
+SensorQMI8658 g_imu;
 RemoteTouchState g_touchState;
 bool g_pmicReady = false;
 bool g_ioExpanderReady = false;
+bool g_imuReady = false;
 ButtonTracker g_bootButton;
 TouchDebounceTracker g_touchDebounce;
 TouchReportTracker g_touchReport;
 volatile bool g_bootButtonInterruptPending = true;
 volatile bool g_touchInterruptPending = true;
+volatile bool g_imuInterruptPending = false;
 uint8_t g_touchReadFailureCount = 0;
 uint32_t g_touchBackoffUntil = 0;
 uint32_t g_touchLastProbeAt = 0;
-volatile uint32_t g_touchIrqCount = 0;
 uint32_t g_touchSuccessCount = 0;
 bool g_touchStablePressed = false;
 uint8_t g_touchPressSampleCount = 0;
@@ -444,7 +528,9 @@ int16_t g_touchStableX = 0;
 int16_t g_touchStableY = 0;
 uint32_t g_touchLastGoodSampleAt = 0;
 uint32_t g_pmicLastSenseAt = 0;
+uint32_t g_imuLastPollAt = 0;
 bool g_pmicIrqLatched = false;
+bool g_motionActivityPending = false;
 
 const RemoteBoardInfo kBoardInfo = {
     RemoteBoardId::WaveshareAmoled175,
@@ -471,41 +557,13 @@ const RemoteBoardInfo kBoardInfo = {
         static_cast<uint32_t>(RemoteBoardCapability::UsbConsole),
 };
 
-const RemoteBoardServices kBoardServices = {
-    &Wire,
-    nullptr,
-    nullptr,
-    &Serial,
-    kBoardPins.touchSda,
-    kBoardPins.touchScl,
-    -1,
-    -1,
-    -1,
-    -1,
-    -1,
-    -1,
-    nullptr,
-    nullptr,
-    nullptr,
-    -1,
-    -1,
-    -1,
-    -1,
-    -1,
-    -1,
-    -1,
-    -1,
-    true,
-};
-
-const RemoteBoardFeatureMap kBoardFeatureMap = {
+RemoteBoardFeatureMap g_boardFeatureMap = {
     {
         RemoteBoardSupportLevel::Mapped,
         RemoteBoardSupportLevel::Implemented,
         RemoteBoardSupportLevel::Mapped,
         RemoteBoardSupportLevel::Present,
-        static_cast<uint32_t>(RemoteWakeSource::Touch) |
-            static_cast<uint32_t>(RemoteWakeSource::PrimaryButton),
+        kBaseWakeSources,
     },
     {
         RemoteBoardSupportLevel::Implemented,
@@ -542,6 +600,65 @@ const RemoteBoardFeatureMap kBoardFeatureMap = {
         true,
     },
 };
+
+void resetDisplayObjects() {
+    g_drawDisplay = nullptr;
+    g_bufferedDisplay.setOutput(nullptr);
+
+    if(g_display != nullptr) {
+        delete g_display;
+        g_display = nullptr;
+    }
+    if(g_bus != nullptr) {
+        delete g_bus;
+        g_bus = nullptr;
+    }
+}
+
+bool ensureDisplayObjects() {
+    if(g_display != nullptr) {
+        return true;
+    }
+
+    g_bus = new(std::nothrow) Arduino_ESP32QSPI(
+        g_boardPins.displayCs,
+        g_boardPins.displaySclk,
+        g_boardPins.displayData0,
+        g_boardPins.displayData1,
+        g_boardPins.displayData2,
+        g_boardPins.displayData3);
+    if(g_bus == nullptr) {
+        Serial.println("[remote] waveshare display bus alloc failed");
+        return false;
+    }
+
+    g_display = new(std::nothrow) Arduino_CO5300(
+        g_bus,
+        g_boardPins.displayReset,
+        0,
+        kDisplayWidth,
+        kDisplayHeight,
+        6,
+        0,
+        0,
+        0);
+    if(g_display == nullptr) {
+        Serial.println("[remote] waveshare display alloc failed");
+        delete g_bus;
+        g_bus = nullptr;
+        return false;
+    }
+
+    g_bufferedDisplay.setOutput(g_display);
+    g_drawDisplay = g_display;
+    return true;
+}
+
+bool beginSharedI2cBus(int8_t sda, int8_t scl) {
+    Wire.end();
+    delay(2);
+    return Wire.begin(sda, scl, kI2cClock);
+}
 
 bool readIoExpanderRegister(uint8_t reg, uint8_t* value) {
     if(value == nullptr) {
@@ -675,9 +792,90 @@ void IRAM_ATTR waveshareBootButtonIsr() {
 }
 
 void IRAM_ATTR waveshareTouchIsr() {
-    ++g_touchIrqCount;
     g_touchInterruptPending = true;
     remote_runtime_notify_input_from_isr();
+}
+
+void IRAM_ATTR waveshareImuIsr() {
+    g_imuInterruptPending = true;
+    remote_runtime_notify_input_from_isr();
+}
+
+void waveshareImuWakeOnMotion() {
+    g_motionActivityPending = true;
+}
+
+void setImuWakeSupport(bool enabled) {
+    if(enabled) {
+        g_boardFeatureMap.motion.imu = RemoteBoardSupportLevel::Implemented;
+        g_boardFeatureMap.power.wakeSources =
+            kBaseWakeSources | static_cast<uint32_t>(RemoteWakeSource::Motion);
+        return;
+    }
+
+    g_boardFeatureMap.motion.imu = RemoteBoardSupportLevel::Mapped;
+    g_boardFeatureMap.power.wakeSources = kBaseWakeSources;
+}
+
+bool initImuMotion() {
+    if(!beginSharedI2cBus(g_boardPins.touchSda, g_boardPins.touchScl)) {
+        Serial.println("[remote] waveshare imu bus reinit failed");
+        return false;
+    }
+
+    const bool imuHighReady = probeI2cDevice(QMI8658_H_SLAVE_ADDRESS);
+    const bool imuLowReady = probeI2cDevice(QMI8658_L_SLAVE_ADDRESS);
+    const uint8_t imuAddress = imuHighReady ? QMI8658_H_SLAVE_ADDRESS
+                                            : (imuLowReady ? QMI8658_L_SLAVE_ADDRESS : kImuAddress);
+    Serial.printf("[remote] waveshare imu probe 0x%02X=%d 0x%02X=%d selected=0x%02X\n",
+                  QMI8658_H_SLAVE_ADDRESS,
+                  imuHighReady ? 1 : 0,
+                  QMI8658_L_SLAVE_ADDRESS,
+                  imuLowReady ? 1 : 0,
+                  imuAddress);
+
+    Wire.end();
+    delay(2);
+
+    pinMode(g_boardPins.imuInt, INPUT_PULLUP);
+    if(!g_imu.begin(Wire, imuAddress, g_boardPins.touchSda, g_boardPins.touchScl)) {
+        Serial.println("[remote] waveshare imu init failed");
+        return false;
+    }
+
+    g_imu.setPins(g_boardPins.imuInt);
+    g_imu.setWakeupMotionEventCallBack(waveshareImuWakeOnMotion);
+    if(!g_imu.configWakeOnMotion(
+           kImuWakeThresholdMg, kImuWakeOdr, SensorQMI8658::INTERRUPT_PIN_2)) {
+        Serial.println("[remote] waveshare imu wake-on-motion config failed");
+        return false;
+    }
+
+    Serial.printf("[remote] waveshare imu ready irq=%d thr=%u odr=%.1fHz\n",
+                  g_boardPins.imuInt,
+                  kImuWakeThresholdMg,
+                  kImuWakeOdrLabelHz);
+    return true;
+}
+
+void serviceImuMotion(RemoteInputState* input) {
+    if(input == nullptr || !g_imuReady) {
+        return;
+    }
+
+    const uint32_t now = millis();
+    const bool updateDue = g_imuInterruptPending || g_imuLastPollAt == 0 ||
+                           static_cast<uint32_t>(now - g_imuLastPollAt) >= kImuPollIntervalMs;
+    if(updateDue) {
+        g_imuLastPollAt = now;
+        g_imu.update();
+        g_imuInterruptPending = false;
+    }
+
+    if(g_motionActivityPending) {
+        input->motionDetected = true;
+        g_motionActivityPending = false;
+    }
 }
 
 bool readPmicIrqActive(bool* active) {
@@ -803,52 +1001,200 @@ void updateTouchDebounceTracker(TouchDebounceTracker* tracker,
     }
 }
 
-bool pingTouchController() {
-    pinMode(kBoardPins.touchReset, OUTPUT);
+bool pingTouchController(const WavesharePinProfile& profile) {
+    const RemoteBoardPins& pins = profile.pins;
+    pinMode(pins.touchReset, OUTPUT);
     pinMode(kBootButtonPin, INPUT_PULLUP);
-    pinMode(kBoardPins.touchInt, INPUT_PULLUP);
-    digitalWrite(kBoardPins.touchReset, LOW);
+    pinMode(pins.touchInt, INPUT_PULLUP);
+    digitalWrite(pins.touchReset, LOW);
     delay(30);
-    digitalWrite(kBoardPins.touchReset, HIGH);
+    digitalWrite(pins.touchReset, HIGH);
     delay(kTouchResetSettleMs);
-    Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, kI2cClock);
+    if(!beginSharedI2cBus(pins.touchSda, pins.touchScl)) {
+        Serial.printf("[remote] waveshare probe %s bus %d/%d init failed\n",
+                      profile.key,
+                      pins.touchSda,
+                      pins.touchScl);
+        return false;
+    }
     for(uint8_t attempt = 1; attempt <= kTouchProbeAttempts; ++attempt) {
         Wire.beginTransmission(kTouchAddress);
         if(Wire.endTransmission() == 0) {
             if(attempt > 1) {
-                Serial.printf("[remote] waveshare probe touch ready after %u attempts\n", attempt);
+                Serial.printf("[remote] waveshare probe %s touch ready after %u attempts\n",
+                              profile.key,
+                              attempt);
             }
             return true;
         }
         delay(kTouchProbeRetryMs);
     }
-    Serial.println("[remote] waveshare probe touch controller not detected");
+    Serial.printf("[remote] waveshare probe %s touch controller not detected\n", profile.key);
+    return false;
+}
+
+bool probeI2cDevice(uint8_t address) {
+    Wire.beginTransmission(address);
+    return Wire.endTransmission() == 0;
+}
+
+String scanI2cDevices() {
+    String devices;
+    for(uint8_t address = 0x03; address < 0x78; ++address) {
+        if(!probeI2cDevice(address)) {
+            continue;
+        }
+
+        char formatted[8] = {};
+        snprintf(formatted, sizeof(formatted), "0x%02X", address);
+        if(!devices.isEmpty()) {
+            devices += ' ';
+        }
+        devices += formatted;
+    }
+
+    if(devices.isEmpty()) {
+        devices = "<none>";
+    }
+    return devices;
+}
+
+#if defined(REMOTE_WAVESHARE_I2C_DIAG)
+void logDiagnosticI2cPairs() {
+    constexpr int8_t kCandidatePins[] = {
+        1,  2,  3,  8,  9,  10, 11, 13, 14, 15, 16, 17,
+        18, 21, 38, 39, 40, 41, 42, 43, 44, 45, 46,
+    };
+
+    bool anyMatch = false;
+    for(size_t sdaIndex = 0; sdaIndex < (sizeof(kCandidatePins) / sizeof(kCandidatePins[0])); ++sdaIndex) {
+        for(size_t sclIndex = 0; sclIndex < (sizeof(kCandidatePins) / sizeof(kCandidatePins[0])); ++sclIndex) {
+            const int8_t sda = kCandidatePins[sdaIndex];
+            const int8_t scl = kCandidatePins[sclIndex];
+            if(sda == scl) {
+                continue;
+            }
+
+            Wire.begin(sda, scl, kI2cClock);
+            delay(2);
+
+            const bool touchReady = probeI2cDevice(kTouchAddress);
+            const bool ioExpanderReady = probeI2cDevice(kIoExpanderAddress);
+            const bool pmicReady = probeI2cDevice(AXP2101_SLAVE_ADDRESS);
+            const bool rtcReady = probeI2cDevice(kRtcAddress);
+            const bool imuReady = probeI2cDevice(kImuAddress);
+            const bool codecReady = probeI2cDevice(kAudioCodecAddress);
+            if(!(touchReady || ioExpanderReady || pmicReady || rtcReady || imuReady || codecReady)) {
+                continue;
+            }
+
+            anyMatch = true;
+            Serial.printf(
+                "[remote] waveshare diag bus %d/%d touch=%d ioexp=%d pmic=%d rtc=%d imu=%d codec=%d\n",
+                sda,
+                scl,
+                touchReady ? 1 : 0,
+                ioExpanderReady ? 1 : 0,
+                pmicReady ? 1 : 0,
+                rtcReady ? 1 : 0,
+                imuReady ? 1 : 0,
+                codecReady ? 1 : 0);
+        }
+    }
+
+    if(!anyMatch) {
+        Serial.println("[remote] waveshare diag no candidate i2c pairs responded");
+    }
+}
+#endif
+
+bool probeWavesharePeripherals(const WavesharePinProfile& profile) {
+    const RemoteBoardPins& pins = profile.pins;
+    if(!beginSharedI2cBus(pins.touchSda, pins.touchScl)) {
+        Serial.printf("[remote] waveshare profile %s bus %d/%d init failed\n",
+                      profile.key,
+                      pins.touchSda,
+                      pins.touchScl);
+        return false;
+    }
+    const String devices = scanI2cDevices();
+    Serial.printf("[remote] waveshare profile %s bus %d/%d devices: %s\n",
+                  profile.key,
+                  pins.touchSda,
+                  pins.touchScl,
+                  devices.c_str());
+
+    const bool ioExpanderReady = probeI2cDevice(kIoExpanderAddress);
+    const bool pmicReady = probeI2cDevice(AXP2101_SLAVE_ADDRESS);
+    const bool imuReady = probeI2cDevice(kImuAddress);
+    if(ioExpanderReady || pmicReady || imuReady) {
+        Serial.printf("[remote] waveshare profile %s fallback ioexp=%d pmic=%d imu=%d\n",
+                      profile.key,
+                      ioExpanderReady ? 1 : 0,
+                      pmicReady ? 1 : 0,
+                      imuReady ? 1 : 0);
+        return true;
+    }
+
+    return false;
+}
+
+bool detectWaveshareProfile() {
+    for(const WavesharePinProfile& profile : kPinProfiles) {
+        if(pingTouchController(profile)) {
+            selectProfile(profile, true);
+            Serial.printf("[remote] waveshare selected profile %s via touch probe\n", profile.key);
+            return true;
+        }
+        if(probeWavesharePeripherals(profile)) {
+            selectProfile(profile, true);
+            Serial.printf("[remote] waveshare selected profile %s via i2c fallback\n", profile.key);
+            return true;
+        }
+    }
+
+    selectProfile(kPinProfiles[0], false);
+#if defined(REMOTE_WAVESHARE_I2C_DIAG)
+    if(!g_loggedDiagnosticI2cPairs) {
+        g_loggedDiagnosticI2cPairs = true;
+        logDiagnosticI2cPairs();
+    }
+#endif
     return false;
 }
 
 }  // namespace
 
 bool waveshare_probe() {
-    return pingTouchController();
+    return detectWaveshareProfile();
 }
 
 bool waveshare_init() {
-    Serial.println("[remote] waveshare init start");
-    Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, kI2cClock);
+    if(!g_profileDetected) {
+        detectWaveshareProfile();
+    }
+
+    Serial.printf("[remote] waveshare init start profile=%s (%s)\n",
+                  activeProfileKey(),
+                  g_activeProfile != nullptr ? g_activeProfile->label : "unknown");
+    if(!beginSharedI2cBus(g_boardPins.touchSda, g_boardPins.touchScl)) {
+        Serial.println("[remote] waveshare i2c init failed");
+        return false;
+    }
     pinMode(kBootButtonPin, INPUT_PULLUP);
 
-    pinMode(kBoardPins.touchReset, OUTPUT);
-    pinMode(kBoardPins.touchInt, INPUT_PULLUP);
-    digitalWrite(kBoardPins.touchReset, LOW);
+    pinMode(g_boardPins.touchReset, OUTPUT);
+    pinMode(g_boardPins.touchInt, INPUT_PULLUP);
+    digitalWrite(g_boardPins.touchReset, LOW);
     delay(30);
-    digitalWrite(kBoardPins.touchReset, HIGH);
+    digitalWrite(g_boardPins.touchReset, HIGH);
     delay(50);
     delay(kTouchResetSettleMs);
 
-    g_touch.setPins(kBoardPins.touchReset, kBoardPins.touchInt);
+    g_touch.setPins(g_boardPins.touchReset, g_boardPins.touchInt);
     bool touchReady = false;
     for(uint8_t attempt = 1; attempt <= kTouchInitAttempts; ++attempt) {
-        if(g_touch.begin(Wire, kTouchAddress, kBoardPins.touchSda, kBoardPins.touchScl)) {
+        if(g_touch.begin(Wire, kTouchAddress, -1, -1)) {
             touchReady = true;
             if(attempt > 1) {
                 Serial.printf("[remote] waveshare touch init succeeded on attempt %u\n", attempt);
@@ -858,9 +1204,9 @@ bool waveshare_init() {
         Serial.printf("[remote] waveshare touch init failed on attempt %u/%u\n",
                       attempt,
                       kTouchInitAttempts);
-        digitalWrite(kBoardPins.touchReset, LOW);
+        digitalWrite(g_boardPins.touchReset, LOW);
         delay(20);
-        digitalWrite(kBoardPins.touchReset, HIGH);
+        digitalWrite(g_boardPins.touchReset, HIGH);
         delay(kTouchInitRetryMs);
     }
     if(!touchReady) {
@@ -869,18 +1215,18 @@ bool waveshare_init() {
     }
     g_touch.reset();
     delay(120);
-    pinMode(kBoardPins.touchInt, INPUT_PULLUP);
+    pinMode(g_boardPins.touchInt, INPUT_PULLUP);
     g_touch.setMaxCoordinates(kDisplayWidth, kDisplayHeight);
     g_touch.setMirrorXY(true, true);
     Serial.printf("[remote] waveshare touch ready int=%d\n",
-                  digitalRead(kBoardPins.touchInt) == LOW ? 0 : 1);
+                  digitalRead(g_boardPins.touchInt) == LOW ? 0 : 1);
 
     g_ioExpanderReady = initIoExpander();
     if(!g_ioExpanderReady) {
         Serial.println("[remote] waveshare power button sense unavailable");
     }
 
-    g_pmicReady = g_pmic.begin(Wire, AXP2101_SLAVE_ADDRESS, kBoardPins.touchSda, kBoardPins.touchScl);
+    g_pmicReady = g_pmic.begin(Wire, AXP2101_SLAVE_ADDRESS, -1, -1);
     if(g_pmicReady) {
         g_pmic.enableBattDetection();
         g_pmic.enableBattVoltageMeasure();
@@ -891,6 +1237,13 @@ bool waveshare_init() {
         Serial.println("[remote] waveshare pmic ready");
     } else {
         Serial.println("[remote] waveshare pmic init failed");
+    }
+
+    g_imuReady = initImuMotion();
+    setImuWakeSupport(g_imuReady);
+
+    if(!ensureDisplayObjects()) {
+        return false;
     }
 
     bool displayReady = false;
@@ -938,7 +1291,6 @@ bool waveshare_init() {
     g_touchReadFailureCount = 0;
     g_touchBackoffUntil = 0;
     g_touchLastProbeAt = 0;
-    g_touchIrqCount = 0;
     g_touchSuccessCount = 0;
     g_touchStablePressed = false;
     g_touchPressSampleCount = 0;
@@ -948,8 +1300,14 @@ bool waveshare_init() {
     g_touchLastGoodSampleAt = 0;
     g_pmicLastSenseAt = 0;
     g_pmicIrqLatched = false;
+    g_imuInterruptPending = false;
+    g_imuLastPollAt = 0;
+    g_motionActivityPending = false;
     attachInterrupt(kBootButtonPin, waveshareBootButtonIsr, CHANGE);
-    attachInterrupt(kBoardPins.touchInt, waveshareTouchIsr, FALLING);
+    attachInterrupt(g_boardPins.touchInt, waveshareTouchIsr, FALLING);
+    if(g_imuReady) {
+        attachInterrupt(g_boardPins.imuInt, waveshareImuIsr, CHANGE);
+    }
     Serial.println("[remote] waveshare init complete");
     g_touchDebounce = {};
     g_touchReport = {};
@@ -962,6 +1320,7 @@ void waveshare_poll_input(RemoteInputState* input) {
     }
 
     *input = {};
+    serviceImuMotion(input);
 
     bool bootPressed = g_bootButton.stablePressed;
     bool bootJustPressed = false;
@@ -990,7 +1349,7 @@ void waveshare_poll_input(RemoteInputState* input) {
     bool sampledTouch = false;
     int16_t touchX = g_touchStablePressed ? g_touchStableX : g_touchState.x;
     int16_t touchY = g_touchStablePressed ? g_touchStableY : g_touchState.y;
-    const bool touchIrqActive = digitalRead(kBoardPins.touchInt) == LOW;
+    const bool touchIrqActive = digitalRead(g_boardPins.touchInt) == LOW;
     const bool touchNeedsSample = g_touchInterruptPending || touchIrqActive || g_touchStablePressed;
     updatePmicButton(input, touchNeedsSample);
     if(touchNeedsSample) {
@@ -1063,7 +1422,8 @@ void waveshare_poll_input(RemoteInputState* input) {
 bool waveshare_input_pending() {
     return g_bootButtonInterruptPending ||
            (g_bootButton.initialized && g_bootButton.lastSamplePressed != g_bootButton.stablePressed) ||
-           g_touchInterruptPending || g_touchStablePressed;
+           g_touchInterruptPending || g_touchStablePressed || g_imuInterruptPending ||
+           g_motionActivityPending;
 }
 
 RemoteCanvas& waveshare_canvas() {
@@ -1075,20 +1435,23 @@ const RemoteBoardInfo& waveshare_info() {
 }
 
 const RemoteBoardServices& waveshare_services() {
-    return kBoardServices;
+    return g_boardServices;
 }
 
 const RemoteBoardPins& waveshare_pins() {
-    return kBoardPins;
+    return g_boardPins;
 }
 
 const RemoteBoardFeatureMap& waveshare_feature_map() {
-    return kBoardFeatureMap;
+    return g_boardFeatureMap;
 }
 
 void waveshare_apply_indicator(const RemoteIndicatorState&) {}
 
 bool waveshare_set_backlight(uint8_t level) {
+    if(g_display == nullptr) {
+        return false;
+    }
     g_display->setBrightness(level);
     return true;
 }

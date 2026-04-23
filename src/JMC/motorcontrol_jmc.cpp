@@ -1,4 +1,6 @@
 #include "motorcontrol_jmc.h"
+#include "motor_hal.h"
+#include "motor_probe.h"
 #include "main.h"
 #include "pdata.h"
 #include "comm.h"
@@ -24,6 +26,7 @@ constexpr uint16_t JMC_MODE_RESPONSE_REG = 0x6061;
 constexpr uint16_t JMC_DRIVE_ERROR_REG = 0x605E;
 constexpr unsigned long JMC_RPM_LOG_ZERO_DELAY_MS = 2000;
 constexpr uint8_t JMC_RPM_MAX_MISSES = 2;
+constexpr uint8_t JMC_MONITOR_PROBE_RETRIES = 2;
 uint16_t jmcRpmReadReg = JMC_RPM_REG_LEGACY;
 unsigned long jmcRpmSessionStartedAt = 0;
 bool jmcRpmLoggedSample = false;
@@ -67,6 +70,35 @@ uint16_t alternateJmcRpmReg(uint16_t currentReg) {
 
 uint16_t jmcRpmRegisterCount(uint16_t reg) {
     return reg == JMC_RPM_REG_LEGACY ? 2 : 1;
+}
+
+bool probeJmcAtRate(JmcCommRate rate, MotorProbeReport* report) {
+    if(report == nullptr) {
+        return false;
+    }
+
+    report->jmc_status_word = false;
+    report->jmc_magic_word = false;
+    report->jmc_control_word = false;
+    report->jmc_baud = 0;
+
+    comm_set_jmc_rate(rate, true);
+    motor_probe_set_profile(COMM_PROFILE_JMC);
+
+    report->jmc_status_word = motor_probe_read_register(0x6041, 1, JMC_MONITOR_PROBE_RETRIES);
+    if(!report->jmc_status_word) {
+        report->jmc_magic_word = motor_probe_read_register(0x1010, 2, JMC_MONITOR_PROBE_RETRIES);
+    }
+    if(!report->jmc_status_word && !report->jmc_magic_word) {
+        report->jmc_control_word = motor_probe_write_register(0x6040, 1);
+    }
+
+    if(report->jmc_status_word || report->jmc_magic_word || report->jmc_control_word) {
+        report->jmc_baud = motor_probe_baud_from_jmc_rate(rate);
+        return true;
+    }
+
+    return false;
 }
 
 int16_t decodeJmcRpmValue(uint16_t reg, const uint16_t* words) {
@@ -332,6 +364,26 @@ void motor_jmc_init_backend() {
   currentStatus = MOTOR_NOT_CONNECTED;
 }
 
+bool motor_jmc_probe_backend(MotorProbeReport* report) {
+  if(report == nullptr) {
+    return false;
+  }
+
+  JmcCommRate probeRates[6] = {};
+  const JmcCommRate originalRate = comm_get_jmc_rate();
+  const uint8_t probeRateCount = motor_probe_build_jmc_order(originalRate, probeRates, 6);
+
+  for(uint8_t i = 0; i < probeRateCount; ++i) {
+    if(probeJmcAtRate(probeRates[i], report)) {
+      comm_set_jmc_rate(originalRate, false);
+      return true;
+    }
+  }
+
+  comm_set_jmc_rate(originalRate, false);
+  return false;
+}
+
 bool motor_jmc_do_comm_backend() { // can be called continously and will update all values. Returns true when new data packet is available.
     /* COMM TYPES
     0 = send RPM
@@ -342,6 +394,9 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
   // static uint8_t lastCommType;
   static uint8_t nextCommType;
   static int16_t motor_lastSetRPM = -1;
+  const int16_t configuredRamp = motor_get_command_menu_value(MOTOR_COMMAND_RAMP_LEVEL);
+  const int16_t configuredTorque = motor_get_formatted_command_value(MOTOR_COMMAND_TORQUE_LIMIT, 1);
+  const int16_t configuredReverseTorque = motor_get_formatted_command_value(MOTOR_COMMAND_TORQUE_LIMIT, -1);
 
   //Disconnect flow
   // BLE scale activity can momentarily stretch the loop timing; use the explicit
@@ -381,9 +436,7 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
   }
 
   // Motor stall flow
-  int16_t torquePercent;
-  if((Menu1[SETMOTORTORQUE].value) > 0) torquePercent = 10 * (motor_currentTorque / Menu1[SETMOTORTORQUE].value); //A value 
-  else torquePercent = 0;
+  const int16_t torquePercent = motor_get_torque_percent();
   if(motor_setRPM != 0 && torquePercent > 90 && abs(motor_currentRPM) < rpm_scalar) { 
     motor_setRPM = 0;
     state = IDLE; 
@@ -413,7 +466,7 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
 
         // Motor rigidity settings.. automatic mode with 0 gain and 2000 filter.
         if(writeConfirm(0x2102, 1)) { reg_0102 = 1; score++; } // MODE 1 - semi auto
-        if(writeConfirm(0x2103, Menu1[SETMOTORRAMP].value)) { reg_0103 = Menu1[SETMOTORRAMP].value; score++; } //P103 set, this is set in the MENU
+        if(writeConfirm(0x2103, configuredRamp)) { reg_0103 = configuredRamp; score++; } //P103 set, this is set in the MENU
 
         if(writeConfirm(0x2121, 30)) { reg_0121 = 30;  score ++; } //This is the quickstop ramp down torque (currently not used i believe the way we use it)
 
@@ -426,13 +479,13 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
         if(writeConfirm(0x2501, 1)) { reg_0501 = 1; score++; } 
         if(writeConfirm(0x2502, 0)) { reg_0502 = 0; score++; }
         if(writeConfirm(0x2503, 0)) { reg_0503 = 0; score++; }
-        if(writeConfirm(0x2510, (Menu1[SETMOTORTORQUE].value))) { reg_0510 = (Menu1[SETMOTORTORQUE].value); score++; } 
-        if(writeConfirm(0x2511, -(Menu1[SETMOTORTORQUE].value))) { reg_0511 = -(Menu1[SETMOTORTORQUE].value); score++; } 
+        if(writeConfirm(0x2510, configuredTorque)) { reg_0510 = configuredTorque; score++; } 
+        if(writeConfirm(0x2511, configuredReverseTorque)) { reg_0511 = configuredReverseTorque; score++; } 
        if (score < 12) { error = 7; return false; } // Total score count = 12 if i can count 
       } else { 
         reg_0101 = 2;
         reg_0102 = 1;
-        reg_0103 = Menu1[SETMOTORRAMP].value;
+        reg_0103 = configuredRamp;
         reg_0121 = 30;
         reg_0500 = 1;
         reg_0501 = 1;
@@ -622,9 +675,9 @@ if(effectiveSetRPM == 0) {
     }
 
     // SET ONCE >> 
-    if(reg_0103 != Menu1[SETMOTORRAMP].value && (state == IDLE || state == IDLE_GBW)) { 
-      if(writeConfirm(0x2103, Menu1[SETMOTORRAMP].value)) { // Set rigidity LVL (restart required)
-        reg_0103 = Menu1[SETMOTORRAMP].value;
+    if(reg_0103 != configuredRamp && (state == IDLE || state == IDLE_GBW)) { 
+      if(writeConfirm(0x2103, configuredRamp)) { // Set rigidity LVL (restart required)
+        reg_0103 = configuredRamp;
         error = 107; // reboot drive error
         lastCommSend = millis();
         nextCommType = 0;
@@ -633,16 +686,16 @@ if(effectiveSetRPM == 0) {
       }
     }
 
-    if(reg_0510 != (Menu1[SETMOTORTORQUE].value)) { 
-      if(writeSingleRegister(0x2510, (Menu1[SETMOTORTORQUE].value))) { // Set fw torque limit 
+    if(reg_0510 != configuredTorque) { 
+      if(writeSingleRegister(0x2510, configuredTorque)) { // Set fw torque limit 
         lastCommSend = millis();
         nextCommType = 0;
         motor_lastSetRPM = motor_setRPM;
         return false;
       }
     }
-    if(reg_0511 != -(Menu1[SETMOTORTORQUE].value)) { 
-      if(writeSingleRegister(0x2511, -(Menu1[SETMOTORTORQUE].value))) { // Set fw torque limit 
+    if(reg_0511 != configuredReverseTorque) { 
+      if(writeSingleRegister(0x2511, configuredReverseTorque)) { // Set fw torque limit 
         lastCommSend = millis();
         nextCommType = 0;
         motor_lastSetRPM = motor_setRPM;
@@ -686,8 +739,8 @@ if(effectiveSetRPM == 0) {
       }
     }
 
-    if(reg_0503 != (Menu1[SETMOTORTORQUE].value)) { 
-      if(writeSingleRegister(0x2503, (Menu1[SETMOTORTORQUE].value))) { // Set fw torque target
+    if(reg_0503 != configuredTorque) { 
+      if(writeSingleRegister(0x2503, configuredTorque)) { // Set fw torque target
         lastCommSend = millis();
         nextCommType = 0;
         motor_lastSetRPM = motor_setRPM;
@@ -696,7 +749,7 @@ if(effectiveSetRPM == 0) {
     }
 
     //Check if we've done all commands
-    if(reg_6040 == 0x0F && reg_0502 == effectiveSetRPM && reg_0503 == (Menu1[SETMOTORTORQUE].value)) { 
+    if(reg_6040 == 0x0F && reg_0502 == effectiveSetRPM && reg_0503 == configuredTorque) { 
       if(nextCommType == 0) nextCommType = 1; 
     }
   }
@@ -730,8 +783,8 @@ if(effectiveSetRPM == 0) {
       }
     }
 
-    if(reg_0503 != -(Menu1[SETMOTORTORQUE].value)) { 
-      if(writeSingleRegister(0x2503, -(Menu1[SETMOTORTORQUE].value))) { // Set rv torque limit 
+    if(reg_0503 != configuredReverseTorque) { 
+      if(writeSingleRegister(0x2503, configuredReverseTorque)) { // Set rv torque limit 
         lastCommSend = millis();
         nextCommType = 0;
         motor_lastSetRPM = motor_setRPM;
@@ -740,7 +793,7 @@ if(effectiveSetRPM == 0) {
     }
 
     //Check if we've done all commands
-    if(reg_6040 == 0x0F && reg_0502 == -effectiveSetRPM && reg_0503 == -(Menu1[SETMOTORTORQUE].value)) { 
+    if(reg_6040 == 0x0F && reg_0502 == -effectiveSetRPM && reg_0503 == configuredReverseTorque) { 
       if(nextCommType == 0) nextCommType = 1; 
     }
   }
@@ -903,3 +956,21 @@ bool motor_jmc_calibrate_backend() {
 
     return false;
 }
+
+const MotorBackendDefinition MOTOR_BACKEND_JMC = {
+    "jmc",
+    "JMC servo backend",
+    "Torque-mode JMC backend with CiA402 and vendor register handling.",
+    "Probe 0x6041 / 0x1010 / 0x6040 across the supported UART baud list until one path responds cleanly.",
+    "Fill torque, ramp, speed, and save-register paths from the JMC programmer guide. Keep the current sign handling split between forward and reverse torque targets.",
+    "Decode RPM from 0x606C as signed I32 across two registers and keep the 2114 fallback only when the legacy path fails.",
+    {
+        motor_jmc_probe_backend,
+        motor_jmc_init_backend,
+        motor_jmc_do_comm_backend,
+        motor_jmc_off_backend,
+        motor_jmc_calibrate_backend,
+        motor_jmc_sleep_backend,
+        motor_jmc_reset_backend,
+    },
+};

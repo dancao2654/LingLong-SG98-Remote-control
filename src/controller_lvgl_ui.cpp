@@ -454,7 +454,24 @@ String toggleValueText(int menuNum, int selectedIdx, int32_t value) {
     return value == 0 ? "Disabled" : "Enabled";
 }
 
+const MotorCommandDescriptor* motorCommandForMenuItem(int menuNum, int selectedIdx) {
+    if(menuNum <= 0 || selectedIdx < 0) return nullptr;
+    return motor_get_current_command_descriptor_for_menu(static_cast<uint8_t>(menuNum),
+                                                         static_cast<uint8_t>(selectedIdx));
+}
+
+String menuItemLabel(const menuEntry& item, int menuNum, int selectedIdx) {
+    const MotorCommandDescriptor* command = motorCommandForMenuItem(menuNum, selectedIdx);
+    if(command != nullptr && command->label != nullptr && command->label[0] != '\0') {
+        return command->label;
+    }
+    return stripMenuName(item.name);
+}
+
 String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
+    const MotorCommandDescriptor* command = motorCommandForMenuItem(menuNum, selectedIdx);
+    if(command != nullptr && !command->supported) return "N/A";
+
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) {
         if(menuNum == 1 && (selectedIdx == PURGESETTINGS || selectedIdx == GBWSETTINGS || selectedIdx == JMCBAUDMENU)) return "Open";
         if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return String(baudForJmcMenuItem(selectedIdx));
@@ -467,7 +484,11 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
     }
 
     String value = String(item.value);
-    if(item.unit != nullptr && item.unit[0] != '\0') value += item.unit;
+    const char* unit = item.unit;
+    if(command != nullptr && command->unit != nullptr) {
+        unit = command->unit;
+    }
+    if(unit != nullptr && unit[0] != '\0') value += unit;
     return value;
 }
 
@@ -481,6 +502,11 @@ String menuDetailValue(const menuEntry& item, int menuNum, int selectedIdx) {
 }
 
 String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
+    const MotorCommandDescriptor* command = motorCommandForMenuItem(menuNum, selectedIdx);
+    if(command != nullptr) {
+        if(!command->supported) return String(motor_get_type_label()) + " does not use this control";
+        if(command->helpText != nullptr && command->helpText[0] != '\0') return command->helpText;
+    }
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Hold encoder to start";
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Writes drive baud for next boot";
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Encoder saves radio transport";
@@ -491,6 +517,11 @@ String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
 }
 
 String menuDetailHint(const menuEntry& item, int menuNum, int selectedIdx) {
+    const MotorCommandDescriptor* command = motorCommandForMenuItem(menuNum, selectedIdx);
+    if(command != nullptr) {
+        if(!command->supported) return motor_get_type_guidance();
+        if(command->guidance != nullptr && command->guidance[0] != '\0') return command->guidance;
+    }
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Encoder writes. Power cycle drive after the change.";
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Start cancels and goes back.";
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) return "Start goes back.";
@@ -1140,7 +1171,7 @@ void syncMenuList() {
         const int idx = (start + row) % count;
         const bool active = idx == selected;
 
-        lv_label_set_text(ui.menuRowLabel[row], fitText(stripMenuName(menu[idx].name), 20).c_str());
+        lv_label_set_text(ui.menuRowLabel[row], fitText(menuItemLabel(menu[idx], menuNum, idx), 20).c_str());
         lv_label_set_text(ui.menuRowValue[row], fitText(menuItemSummary(menu[idx], menuNum, idx), 11).c_str());
 
         stylePanel(ui.menuRows[row],
@@ -1159,15 +1190,19 @@ void syncMenuDetail() {
     if(menu == nullptr) return;
 
     const menuEntry& item = menu[selected];
-    lv_label_set_text(ui.detailTitle, fitText(stripMenuName(item.name), 24).c_str());
+    lv_label_set_text(ui.detailTitle, fitText(menuItemLabel(item, menuNum, selected), 24).c_str());
     lv_label_set_text(ui.detailValue, fitText(menuDetailValue(item, menuNum, selected), 18).c_str());
     lv_label_set_text(ui.detailMeta, fitText(menuDetailMeta(item, menuNum, selected), 30).c_str());
     lv_label_set_text(ui.detailHint, fitText(menuDetailHint(item, menuNum, selected), 70).c_str());
 
     const bool warning = menuNum == 1 && (selected == Menu1Items::RESET || selected == Menu1Items::RESETNETWORK);
     const bool action = item.scalar == 0 && item.maxValue == 0 && item.minValue == 0;
+    const bool unsupportedMotorSetting = motorCommandForMenuItem(menuNum, selected) != nullptr &&
+                                         !motorCommandForMenuItem(menuNum, selected)->supported;
     lv_obj_set_style_text_color(ui.detailValue,
-                                warning ? lvColor(kColorWarn) : (action ? lvColor(kColorAccent) : lvColor(kColorGood)),
+                                warning ? lvColor(kColorWarn)
+                                        : (unsupportedMotorSetting ? lvColor(kColorMuted)
+                                                                   : (action ? lvColor(kColorAccent) : lvColor(kColorGood))),
                                 0);
 }
 

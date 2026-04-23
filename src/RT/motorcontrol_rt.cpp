@@ -1,4 +1,6 @@
 #include "motorcontrol_rt.h"
+#include "motor_hal.h"
+#include "motor_probe.h"
 #include "main.h"
 #include "pdata.h"
 #include "comm.h"
@@ -8,6 +10,7 @@
 namespace {
 uint16_t motor_currentStatus = 0;
 constexpr unsigned long RT_RPM_LOG_ZERO_DELAY_MS = 2000;
+constexpr uint8_t RT_STATUS_PROBE_RETRIES = 2;
 unsigned long rtRpmSessionStartedAt = 0;
 bool rtRpmLoggedSample = false;
 bool rtRpmLoggedZero = false;
@@ -34,6 +37,16 @@ void resetRtRpmLogSession() {
     rtRpmSessionStartedAt = 0;
     rtRpmLoggedSample = false;
     rtRpmLoggedZero = false;
+}
+
+bool probeRtStatusBlock(MotorProbeReport* report) {
+    if(report == nullptr) {
+        return false;
+    }
+
+    motor_probe_set_profile(COMM_PROFILE_RT);
+    report->rt_status_block = motor_probe_read_register(1300, 4, RT_STATUS_PROBE_RETRIES);
+    return report->rt_status_block;
 }
 
 void noteRtRpmRead(int16_t rpm) {
@@ -118,6 +131,15 @@ void motor_rt_init_backend() {
   currentStatus = MOTOR_NOT_CONNECTED;
 }
 
+bool motor_rt_probe_backend(MotorProbeReport* report) {
+  if(report == nullptr) {
+    return false;
+  }
+
+  report->rt_status_block = false;
+  return probeRtStatusBlock(report);
+}
+
 bool motor_rt_do_comm_backend() { // can be called continously and will update all values. Returns true when new data packet is available.
     /* COMM TYPES
     0 = send RPM
@@ -128,6 +150,8 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
   static uint8_t lastCommType;
   static uint8_t nextCommType;
   static int16_t motor_lastSetRPM;
+  const int16_t configuredTorque = motor_get_formatted_command_value(MOTOR_COMMAND_TORQUE_LIMIT, 1);
+  const int16_t configuredReverseTorque = motor_get_formatted_command_value(MOTOR_COMMAND_TORQUE_LIMIT, -1);
 
   //Disconnect flow
   // BLE scale activity can momentarily stretch the loop timing; use the explicit
@@ -163,9 +187,7 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
   }
 
   // Motor stall flow
-  int16_t torquePercent;
-  if((Menu1[SETMOTORTORQUE].value*10) > 0) torquePercent = (1000 * motor_currentTorque / (Menu1[SETMOTORTORQUE].value*10)); //A value 
-  else torquePercent = 0;
+  const int16_t torquePercent = motor_get_torque_percent();
   if(motor_setRPM != 0 && torquePercent > 90 && abs(motor_currentRPM) < rpm_scalar) { 
     motor_setRPM = 0;
     state = IDLE; 
@@ -344,8 +366,8 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
           return false;
         }
       }
-      if(reg_503 != (Menu1[SETMOTORTORQUE].value*10)) { 
-        if(writeSingleRegister(503, (Menu1[SETMOTORTORQUE].value*10))) {// MOTOR TORQUE SET
+      if(reg_503 != configuredTorque) { 
+        if(writeSingleRegister(503, configuredTorque)) {// MOTOR TORQUE SET
           lastCommSend = millis(); 
           lastCommType = 0;
           nextCommType = 0;
@@ -374,7 +396,7 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
         }
       }
       //Check if we've done all commands
-      if(reg_201 == 1 && reg_503 == (Menu1[SETMOTORTORQUE].value*10) && reg_514 == effectiveSetRPM && reg_515 == 0 && reg_525 == 1) { 
+      if(reg_201 == 1 && reg_503 == configuredTorque && reg_514 == effectiveSetRPM && reg_515 == 0 && reg_525 == 1) { 
         if(nextCommType == 0) nextCommType = 1; 
       }
     } 
@@ -390,8 +412,8 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
           return false;
         }
       }
-      if(reg_503 != -(Menu1[SETMOTORTORQUE].value*10)) { 
-        if(writeSingleRegister(503, -(Menu1[SETMOTORTORQUE].value*10))) { // MOTOR TORQUE SET
+      if(reg_503 != configuredReverseTorque) { 
+        if(writeSingleRegister(503, configuredReverseTorque)) { // MOTOR TORQUE SET
           lastCommSend = millis(); 
           lastCommType = 0;
           nextCommType = 0;
@@ -419,7 +441,7 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
         }
       }
       //Check if we've done all commands
-      if(reg_201 == 1 && reg_503 == -(Menu1[SETMOTORTORQUE].value*10) && reg_514 == 0 && reg_515 == -effectiveSetRPM && reg_525 == 2) { 
+      if(reg_201 == 1 && reg_503 == configuredReverseTorque && reg_514 == 0 && reg_515 == -effectiveSetRPM && reg_525 == 2) { 
         if(nextCommType == 0) nextCommType = 1; 
       }
   }
@@ -555,3 +577,21 @@ bool motor_rt_calibrate_backend() {
 
     return false;
 }
+
+const MotorBackendDefinition MOTOR_BACKEND_RT = {
+    "rt",
+    "RT servo backend",
+    "RT jog-speed backend using the documented 1300/503/514/515/525 register family.",
+    "Probe the RT status block at 1300..1303 after switching the bus to the RT profile and only claim RT when that block responds.",
+    "Fill jog enable, torque, speed-limit, and direction registers from the RT programmer manual. This backend expects forward and reverse speed limits in separate registers.",
+    "Use the 1300 status block as the primary telemetry source and keep torque/status decoding aligned with the manual's running-state values.",
+    {
+        motor_rt_probe_backend,
+        motor_rt_init_backend,
+        motor_rt_do_comm_backend,
+        motor_rt_off_backend,
+        motor_rt_calibrate_backend,
+        motor_rt_sleep_backend,
+        nullptr,
+    },
+};

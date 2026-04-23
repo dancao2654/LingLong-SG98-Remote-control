@@ -1955,6 +1955,7 @@ uint64_t deepSleepWakeMask() {
     addDeepSleepWakePin(&mask, pins.touchInt, RemoteWakeSource::Touch);
     addDeepSleepWakePin(&mask, pins.primaryButton, RemoteWakeSource::PrimaryButton);
     addDeepSleepWakePin(&mask, pins.encoderSwitch, RemoteWakeSource::EncoderSwitch);
+    addDeepSleepWakePin(&mask, pins.imuInt, RemoteWakeSource::Motion);
     return mask;
 }
 
@@ -6354,9 +6355,18 @@ void resumeAfterIdleLightSleep(LinkTransport resumeTransport) {
 void enterIdleLightSleep(LinkTransport resumeTransport) {
     const RemoteBoardPins& pins = remote_board_pins();
     bool wakeConfigured = false;
-    wakeConfigured = configureWakePin(pins.touchInt) || wakeConfigured;
-    wakeConfigured = configureWakePin(pins.primaryButton) || wakeConfigured;
-    wakeConfigured = configureWakePin(pins.encoderSwitch) || wakeConfigured;
+    if(remote_board_wake_supported(RemoteWakeSource::Touch)) {
+        wakeConfigured = configureWakePin(pins.touchInt) || wakeConfigured;
+    }
+    if(remote_board_wake_supported(RemoteWakeSource::PrimaryButton)) {
+        wakeConfigured = configureWakePin(pins.primaryButton) || wakeConfigured;
+    }
+    if(remote_board_wake_supported(RemoteWakeSource::EncoderSwitch)) {
+        wakeConfigured = configureWakePin(pins.encoderSwitch) || wakeConfigured;
+    }
+    if(remote_board_wake_supported(RemoteWakeSource::Motion)) {
+        wakeConfigured = configureWakePin(pins.imuInt) || wakeConfigured;
+    }
     if(!wakeConfigured) {
         return;
     }
@@ -6371,6 +6381,7 @@ void enterIdleLightSleep(LinkTransport resumeTransport) {
     clearWakePin(pins.touchInt);
     clearWakePin(pins.primaryButton);
     clearWakePin(pins.encoderSwitch);
+    clearWakePin(pins.imuInt);
 
     resumeAfterIdleLightSleep(resumeTransport);
 }
@@ -6392,6 +6403,10 @@ bool enterIdleDeepSleep(uint64_t wakeMask) {
     if(pins.encoderSwitch >= 0 &&
        (wakeMask & (uint64_t{1} << static_cast<unsigned>(pins.encoderSwitch))) != 0) {
         pinMode(pins.encoderSwitch, INPUT_PULLUP);
+    }
+    if(pins.imuInt >= 0 &&
+       (wakeMask & (uint64_t{1} << static_cast<unsigned>(pins.imuInt))) != 0) {
+        pinMode(pins.imuInt, INPUT_PULLUP);
     }
 
     esp_sleep_pd_config(ESP_PD_DOMAIN_RTC_PERIPH, ESP_PD_OPTION_ON);
@@ -7813,7 +7828,8 @@ void remote_app_loop() {
     remote_audio_service();
     remoteConsolePoll();
 
-    if(input.dialDelta != 0 || input.primaryPressed || input.primaryLongPress || input.primaryShortPress ||
+    if(input.dialDelta != 0 || input.motionDetected || input.primaryPressed ||
+       input.primaryLongPress || input.primaryShortPress ||
        input.secondaryPressed || input.secondaryLongPress || input.secondaryShortPress ||
        input.touch.pressed || input.touch.justPressed || input.touch.justReleased) {
         markUserActivity();

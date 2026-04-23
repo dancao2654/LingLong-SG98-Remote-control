@@ -22,6 +22,7 @@ def _candidate_tool_bins(prefix):
     tools_base = home / ".platformio" / "tools" / "toolchain-xtensa-esp-elf"
 
     yield tools_base / "bin"
+    yield tools_base / "xtensa-esp-elf" / "bin"
 
     for package_name in package_names:
         try:
@@ -33,10 +34,12 @@ def _candidate_tool_bins(prefix):
 
         base = Path(package_dir)
         yield base / "bin"
+        yield base / "xtensa-esp-elf" / "bin"
 
     packages_base = home / ".platformio" / "packages"
     for package_name in package_names:
         yield packages_base / package_name / "bin"
+        yield packages_base / package_name / "xtensa-esp-elf" / "bin"
 
 
 def _toolchain_ready(candidate):
@@ -95,6 +98,9 @@ def _all_candidate_tool_bins():
 
 for candidate in reversed(_all_candidate_tool_bins()):
     env.PrependENVPath("PATH", str(candidate))
+
+
+env.Append(CXXFLAGS=["-Wno-volatile"])
 
 
 current_cxx = str(env.get("CXX", ""))

@@ -1,6 +1,7 @@
 #include "motor_hal.h"
 
 #include <HardwareSerial.h>
+#include <limits.h>
 
 #include "comm.h"
 #include "display.h"
@@ -23,9 +24,7 @@ DriveType motorDriveType = DRIVE_TYPE_UNKNOWN;
 namespace {
 constexpr unsigned long MOTOR_PROBE_INTERVAL = 3000;
 constexpr unsigned long PROFILE_SETTLE_MS = 20;
-constexpr unsigned long BETWEEN_PROBE_ATTEMPTS_MS = 40;
-constexpr uint8_t JMC_MONITOR_PROBE_RETRIES = 2;
-constexpr uint8_t RT_STATUS_PROBE_RETRIES = 2;
+constexpr uint8_t MOTOR_MENU_NONE = 0xFF;
 unsigned long lastProbeAt = 0;
 DriveType lastProfileType = static_cast<DriveType>(-1);
 uint32_t lastProbeLogValue = 0xFFFFFFFFUL;
@@ -37,10 +36,140 @@ uint32_t jmcBaudTrialResultBaud = 0;
 uint32_t jmcBaudTrialReadBeforeBaud = 0;
 uint32_t jmcBaudTrialReadAfterBaud = 0;
 
+const MotorCommandDescriptor UNKNOWN_COMMANDS[] = {
+    {MOTOR_COMMAND_SET_RPM, MOTOR_MENU_NONE, MOTOR_MENU_NONE, 1, false, "Set RPM", "rpm", "No live drive detected yet.", "Run AUTO detect or force a drive first."},
+    {MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 1, false, "Motor torque", "%", "Torque limit depends on the detected drive.", "Detect a drive before tuning torque."},
+    {MOTOR_COMMAND_RAMP_LEVEL, 1, static_cast<uint8_t>(SETMOTORRAMP), 1, false, "Motor ramp", "lvl", "Ramp support depends on the detected drive.", "Detect a drive before tuning ramp."},
+    {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the command sign."},
+};
+
+const MotorCommandDescriptor JMC_COMMANDS[] = {
+    {MOTOR_COMMAND_SET_RPM, MOTOR_MENU_NONE, MOTOR_MENU_NONE, 1, true, "Set RPM", "rpm", "Primary grind speed target for JMC.", "Keep the target inside the motor's stable grind range."},
+    {MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 1, true, "Motor torque", "%", "Forward and reverse torque ceiling for JMC.", "Higher values push harder but can increase stall load."},
+    {MOTOR_COMMAND_RAMP_LEVEL, 1, static_cast<uint8_t>(SETMOTORRAMP), 1, true, "Motor ramp", "lvl", "JMC rigidity / ramp profile.", "Changing ramp requires a drive reboot to fully apply."},
+    {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the command sign."},
+};
+
+const MotorCommandDescriptor RT_COMMANDS[] = {
+    {MOTOR_COMMAND_SET_RPM, MOTOR_MENU_NONE, MOTOR_MENU_NONE, 1, true, "Set RPM", "rpm", "Jog speed target for RT.", "Keep the target inside the motor's stable grind range."},
+    {MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 10, true, "Motor torque", "%", "Torque ceiling for RT servo control.", "Higher values hit harder. RT applies this with its internal x10 scaling."},
+    {MOTOR_COMMAND_RAMP_LEVEL, 1, static_cast<uint8_t>(SETMOTORRAMP), 1, false, "Motor ramp", "lvl", "RT drive does not use the shared ramp setting.", "Ramp tuning is only available on supported drives like JMC."},
+    {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the command sign."},
+};
+
+const MotorDescriptor MOTOR_DESCRIPTORS[] = {
+    {
+        DRIVE_TYPE_UNKNOWN,
+        "auto",
+        "AUTO",
+        "Auto-detect attached motor drive.",
+        "Use AUTO to probe the RS-485 bus and lock onto the live drive.",
+        COMM_PROFILE_RT,
+        MOTOR_MAX_RPM_JMC,
+        0,
+        0,
+        UNKNOWN_COMMANDS,
+        static_cast<uint8_t>(sizeof(UNKNOWN_COMMANDS) / sizeof(UNKNOWN_COMMANDS[0])),
+        nullptr,
+    },
+    {
+        DRIVE_TYPE_JMC,
+        "jmc",
+        "JMC",
+        "JMC servo using torque-mode control.",
+        "Supports ramp tuning and JMC baud tools.",
+        COMM_PROFILE_JMC,
+        MOTOR_MAX_RPM_JMC,
+        10,
+        10,
+        JMC_COMMANDS,
+        static_cast<uint8_t>(sizeof(JMC_COMMANDS) / sizeof(JMC_COMMANDS[0])),
+        &MOTOR_BACKEND_JMC,
+    },
+    {
+        DRIVE_TYPE_RT,
+        "rt",
+        "RT",
+        "RT servo using jog-speed control.",
+        "Ramp tuning is not available on RT drives.",
+        COMM_PROFILE_RT,
+        MOTOR_MAX_RPM_RT,
+        100,
+        20,
+        RT_COMMANDS,
+        static_cast<uint8_t>(sizeof(RT_COMMANDS) / sizeof(RT_COMMANDS[0])),
+        &MOTOR_BACKEND_RT,
+    },
+};
+
 struct ProbeCycleResult {
     MotorProbeReport report;
     DriveType detectedType;
 };
+
+const MotorDescriptor* findMotorDescriptor(DriveType driveType) {
+    for(const MotorDescriptor& descriptor : MOTOR_DESCRIPTORS) {
+        if(descriptor.driveType == driveType) {
+            return &descriptor;
+        }
+    }
+    return &MOTOR_DESCRIPTORS[0];
+}
+
+const MotorCommandDescriptor* findCommandDescriptor(const MotorDescriptor* descriptor, MotorCommandId commandId) {
+    if(descriptor == nullptr || descriptor->commands == nullptr) {
+        return nullptr;
+    }
+
+    for(uint8_t i = 0; i < descriptor->commandCount; ++i) {
+        const MotorCommandDescriptor& command = descriptor->commands[i];
+        if(command.id == commandId) {
+            return &command;
+        }
+    }
+
+    return nullptr;
+}
+
+const MotorCommandDescriptor* findCommandDescriptorForMenu(const MotorDescriptor* descriptor,
+                                                           uint8_t menuNum,
+                                                           uint8_t itemIdx) {
+    if(descriptor == nullptr || descriptor->commands == nullptr) {
+        return nullptr;
+    }
+
+    for(uint8_t i = 0; i < descriptor->commandCount; ++i) {
+        const MotorCommandDescriptor& command = descriptor->commands[i];
+        if(command.menuNum == menuNum && command.itemIdx == itemIdx) {
+            return &command;
+        }
+    }
+
+    return nullptr;
+}
+
+const menuEntry* menuForNumber(uint8_t menuNum) {
+    switch(menuNum) {
+        case 1: return Menu1;
+        case 2: return Menu2;
+        case 3: return Menu3;
+        case 4: return Menu4;
+        default: return nullptr;
+    }
+}
+
+int16_t readCommandMenuValue(const MotorCommandDescriptor* command) {
+    if(command == nullptr || !command->supported || command->menuNum == MOTOR_MENU_NONE) {
+        return 0;
+    }
+
+    const menuEntry* menu = menuForNumber(command->menuNum);
+    if(menu == nullptr) {
+        return 0;
+    }
+
+    return menu[command->itemIdx].value;
+}
 
 JmcCommRate jmcRateFromBaud(uint32_t baud) {
     switch (baud) {
@@ -72,41 +201,6 @@ uint32_t baudFromJmcRate(JmcCommRate rate) {
         default:
             return 9600;
     }
-}
-
-uint8_t buildJmcProbeOrder(JmcCommRate preferredRate, JmcCommRate* rates, uint8_t maxCount) {
-    if(rates == nullptr || maxCount == 0) {
-        return 0;
-    }
-
-    const JmcCommRate candidates[] = {
-        preferredRate,
-        JMC_COMM_RATE_9600,
-        JMC_COMM_RATE_19200,
-        JMC_COMM_RATE_38400,
-        JMC_COMM_RATE_57600,
-        JMC_COMM_RATE_115200,
-    };
-
-    uint8_t count = 0;
-    for(JmcCommRate candidate : candidates) {
-        bool alreadyAdded = false;
-        for(uint8_t i = 0; i < count; ++i) {
-            if(rates[i] == candidate) {
-                alreadyAdded = true;
-                break;
-            }
-        }
-        if(alreadyAdded) {
-            continue;
-        }
-        rates[count++] = candidate;
-        if(count >= maxCount) {
-            break;
-        }
-    }
-
-    return count;
 }
 
 uint32_t packJmcBaudLogValue(uint8_t subtype, uint32_t baud) {
@@ -223,14 +317,7 @@ void rememberPreferredJmcRate(JmcCommRate rate, bool persist, bool logChange) {
 }
 
 CommProfile profileForDriveType(DriveType driveType) {
-    switch (driveType) {
-        case DRIVE_TYPE_JMC:
-            return COMM_PROFILE_JMC;
-        case DRIVE_TYPE_RT:
-        case DRIVE_TYPE_UNKNOWN:
-        default:
-            return COMM_PROFILE_RT;
-    }
+    return findMotorDescriptor(driveType)->commProfile;
 }
 
 void resetMotorState() {
@@ -241,64 +328,6 @@ void resetMotorState() {
     commCounter = 0;
     commStatus = COMM_DISCONNECTED;
     currentStatus = MOTOR_NOT_CONNECTED;
-}
-
-bool probeRegister(uint16_t regAddr, uint16_t regCount, uint16_t* values = nullptr, uint16_t maxValues = 0) {
-    while (Serial2.available()) Serial2.read();
-
-    const unsigned long sendDeadline = millis() + comm_get_send_delay_ms() + 20;
-    while (!readRegister(regAddr, regCount)) {
-        if (millis() >= sendDeadline) return false;
-        delay(1);
-    }
-
-    const unsigned long receiveDeadline = millis() + comm_get_receive_delay_ms() + 250;
-    while (millis() < receiveDeadline) {
-        const int16_t received = receive();
-        if (received == regAddr) {
-            if (values != nullptr && maxValues > 0) {
-                const uint16_t copyCount = (regCount < maxValues) ? regCount : maxValues;
-                for (uint16_t i = 0; i < copyCount; ++i) {
-                    values[i] = lastRead[i];
-                }
-            }
-            commCounter = 0;
-            return true;
-        }
-        delay(1);
-    }
-
-    while (Serial2.available()) Serial2.read();
-    commCounter = 0;
-    return false;
-}
-
-bool probeWriteRegister(uint16_t regAddr, uint16_t value) {
-    const bool success = writeConfirm(regAddr, value);
-    commCounter = 0;
-    return success;
-}
-
-bool setProbeProfile(CommProfile profile) {
-    const bool changed = comm_set_profile(profile);
-    if(changed) {
-        delay(PROFILE_SETTLE_MS);
-    }
-    return changed;
-}
-
-bool probeRegisterWithRetries(uint16_t regAddr,
-                              uint16_t regCount,
-                              uint8_t retries,
-                              uint16_t* values = nullptr,
-                              uint16_t maxValues = 0) {
-    for(uint8_t attempt = 0; attempt < retries; ++attempt) {
-        if(probeRegister(regAddr, regCount, values, maxValues)) {
-            return true;
-        }
-        delay(BETWEEN_PROBE_ATTEMPTS_MS);
-    }
-    return false;
 }
 
 uint32_t packProbeLogValue(const MotorProbeReport& report, DriveType detectedType) {
@@ -316,107 +345,35 @@ uint32_t packProbeLogValue(const MotorProbeReport& report, DriveType detectedTyp
     return value;
 }
 
-bool probeJmcAtRate(JmcCommRate rate, MotorProbeReport* report) {
-    if(report == nullptr) {
-        return false;
-    }
-
-    report->jmc_status_word = false;
-    report->jmc_magic_word = false;
-    report->jmc_control_word = false;
-    report->jmc_baud = 0;
-
-    comm_set_jmc_rate(rate, true);
-    setProbeProfile(COMM_PROFILE_JMC);
-
-    // The live JMC unit responds cleanly on the original
-    // 0x6041 / 0x1010 / 0x6040 path. We probe at each known-good UART rate so
-    // a drive moved between 9600, 19200, or future experimental settings can
-    // still reconnect after reboot.
-    report->jmc_status_word = probeRegisterWithRetries(0x6041, 1, JMC_MONITOR_PROBE_RETRIES);
-    if(!report->jmc_status_word) {
-        report->jmc_magic_word = probeRegisterWithRetries(0x1010, 2, JMC_MONITOR_PROBE_RETRIES);
-    }
-    if(!report->jmc_status_word && !report->jmc_magic_word) {
-        report->jmc_control_word = probeWriteRegister(0x6040, 1);
-    }
-
-    if(report->jmc_status_word || report->jmc_magic_word || report->jmc_control_word) {
-        report->jmc_baud = baudFromJmcRate(rate);
-        return true;
-    }
-
-    return false;
-}
-
-bool verifyCurrentJmcLink() {
-    MotorProbeReport report = {};
-    return probeJmcAtRate(comm_get_jmc_rate(), &report);
-}
-
-bool enableJmcParameterWrites() {
-    if(readReturn(0x1010, 2) != 0xFFFF) {
-        if(lastRead[0] == 0x6576 && lastRead[1] == 0x6173) {
-            return true;
-        }
-    }
-
-    return writeMultipleConfirm(0x1010, 2, 0x6576, 0x6173);
-}
-
-void disableJmcParameterWritesBestEffort() {
-    writeMultipleConfirm(0x1010, 2, 0, 0);
-}
-
-bool recoverJmcAtRate(JmcCommRate rate) {
-    MotorProbeReport report = {};
-    if(!probeJmcAtRate(rate, &report)) {
-        return false;
-    }
-
-    motor_jmc_init_backend();
-    return true;
-}
-
-bool probeRtStatusBlock(MotorProbeReport* report) {
-    if(report == nullptr) {
-        return false;
-    }
-
-    setProbeProfile(COMM_PROFILE_RT);
-    // RT documents P13.00..P13.03 at 1300..1303 as read-only monitoring
-    // registers for running status, speed, command, and torque.
-    report->rt_status_block = probeRegisterWithRetries(1300, 4, RT_STATUS_PROBE_RETRIES);
-    return report->rt_status_block;
-}
-
 ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
     ProbeCycleResult cycle = {};
     const uint8_t savedError = error;
     const uint16_t savedErrorCode = errorCode;
     const JmcCommRate initialPreferredJmcRate = preferredJmcRate;
-    JmcCommRate probeRates[6] = {};
-    const uint8_t probeRateCount = buildJmcProbeOrder(preferredJmcRate, probeRates, 6);
-    bool jmcDetected = false;
+    int bestPriority = -1;
 
-    for(uint8_t i = 0; i < probeRateCount; ++i) {
-        if(probeJmcAtRate(probeRates[i], &cycle.report)) {
-            jmcDetected = true;
-            break;
+    for(const MotorDescriptor& descriptor : MOTOR_DESCRIPTORS) {
+        if(descriptor.backend == nullptr || descriptor.backend->api.probe == nullptr) {
+            continue;
         }
+
+        MotorProbeReport candidateReport = {};
+        if(!descriptor.backend->api.probe(&candidateReport)) {
+            continue;
+        }
+
+        if(static_cast<int>(descriptor.probePriority) < bestPriority) {
+            continue;
+        }
+
+        bestPriority = descriptor.probePriority;
+        cycle.report = candidateReport;
+        cycle.detectedType = descriptor.driveType;
     }
 
     comm_set_jmc_rate(initialPreferredJmcRate, false);
-    const bool rtDetected = probeRtStatusBlock(&cycle.report);
 
-    // RT drives can answer enough of the JMC probe family to look like a
-    // partial JMC match. When both signatures are present, treat the RT
-    // monitor block as authoritative so attached RT motors do not get
-    // misclassified as JMC.
-    if(rtDetected) {
-        cycle.detectedType = DRIVE_TYPE_RT;
-    } else if(jmcDetected) {
-        cycle.detectedType = DRIVE_TYPE_JMC;
+    if(cycle.detectedType == DRIVE_TYPE_JMC) {
         const JmcCommRate detectedRate = jmcRateFromBaud(cycle.report.jmc_baud);
         rememberPreferredJmcRate(detectedRate,
                                  persistDetectedJmcRate,
@@ -428,7 +385,7 @@ ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
                                 ? ERROR_HISTORY_LEVEL_INFO
                                 : ERROR_HISTORY_LEVEL_WARN);
         }
-    } else {
+    } else if(cycle.detectedType == DRIVE_TYPE_UNKNOWN) {
         cycle.detectedType = DRIVE_TYPE_UNKNOWN;
     }
 
@@ -459,7 +416,7 @@ void applyDriveProfile(bool persist) {
     if (lastProfileType == motorDriveType) return;
 
     Menu1[SETMAX].maxValue = motor_get_max_rpm();
-    if (motorDriveType != DRIVE_TYPE_JMC) {
+    if (!motor_command_supported(MOTOR_COMMAND_RAMP_LEVEL)) {
         Menu1[SETMOTORRAMP].value = default_motor_ramp;
     }
 
@@ -474,21 +431,13 @@ void selectDriveType(DriveType detectedType, bool persist) {
     motor_currentTorque = 0;
     currentCal = 0;
 
-    switch (motorDriveType) {
-        case DRIVE_TYPE_JMC:
-            comm_set_profile(COMM_PROFILE_JMC, true);
-            delay(PROFILE_SETTLE_MS);
-            motor_jmc_init_backend();
-            break;
-        case DRIVE_TYPE_RT:
-            comm_set_profile(COMM_PROFILE_RT, true);
-            delay(PROFILE_SETTLE_MS);
-            motor_rt_init_backend();
-            break;
-        case DRIVE_TYPE_UNKNOWN:
-        default:
-            resetMotorState();
-            break;
+    const MotorDescriptor* descriptor = findMotorDescriptor(motorDriveType);
+    if(descriptor->backend == nullptr || descriptor->backend->api.init == nullptr) {
+        resetMotorState();
+    } else {
+        comm_set_profile(descriptor->commProfile, true);
+        delay(PROFILE_SETTLE_MS);
+        descriptor->backend->api.init();
     }
 
     applyDriveProfile(persist);
@@ -521,96 +470,129 @@ void motor_init() {
 }
 
 bool do_comm() {
-    if (motorDriveType == DRIVE_TYPE_UNKNOWN) {
+    const MotorDescriptor* descriptor = motor_get_current_descriptor();
+    if(descriptor == nullptr || descriptor->backend == nullptr || descriptor->backend->api.tick == nullptr) {
         return false;
     }
-
-    switch (motorDriveType) {
-        case DRIVE_TYPE_JMC:
-            return motor_jmc_do_comm_backend();
-        case DRIVE_TYPE_RT:
-            return motor_rt_do_comm_backend();
-        default:
-            return false;
-    }
+    return descriptor->backend->api.tick();
 }
 
 bool motorOff() {
-    switch (motorDriveType) {
-        case DRIVE_TYPE_JMC:
-            return motor_jmc_off_backend();
-        case DRIVE_TYPE_RT:
-            return motor_rt_off_backend();
-        default:
-            motor_setRPM = 0;
-            return false;
+    const MotorDescriptor* descriptor = motor_get_current_descriptor();
+    if(descriptor == nullptr || descriptor->backend == nullptr || descriptor->backend->api.off == nullptr) {
+        motor_setRPM = 0;
+        return false;
     }
+    return descriptor->backend->api.off();
 }
 
 bool Calibrate() {
-    switch (motorDriveType) {
-        case DRIVE_TYPE_JMC:
-            return motor_jmc_calibrate_backend();
-        case DRIVE_TYPE_RT:
-            return motor_rt_calibrate_backend();
-        default:
-            error = 101;
-            state = MENU1;
-            return false;
+    const MotorDescriptor* descriptor = motor_get_current_descriptor();
+    if(descriptor == nullptr || descriptor->backend == nullptr || descriptor->backend->api.calibrate == nullptr) {
+        error = 101;
+        state = MENU1;
+        return false;
     }
+    return descriptor->backend->api.calibrate();
 }
 
 void motorSleep() {
-    switch (motorDriveType) {
-        case DRIVE_TYPE_JMC:
-            motor_jmc_sleep_backend();
-            break;
-        case DRIVE_TYPE_RT:
-            motor_rt_sleep_backend();
-            break;
-        default:
-            break;
+    const MotorDescriptor* descriptor = motor_get_current_descriptor();
+    if(descriptor != nullptr && descriptor->backend != nullptr && descriptor->backend->api.sleep != nullptr) {
+        descriptor->backend->api.sleep();
     }
 }
 
 void motorReset() {
-    if (motorDriveType == DRIVE_TYPE_JMC) {
-        motor_jmc_reset_backend();
+    const MotorDescriptor* descriptor = motor_get_current_descriptor();
+    if(descriptor != nullptr && descriptor->backend != nullptr && descriptor->backend->api.reset != nullptr) {
+        descriptor->backend->api.reset();
     }
+}
+
+const MotorDescriptor* motor_get_descriptor(DriveType driveType) {
+    return findMotorDescriptor(driveType);
+}
+
+const MotorDescriptor* motor_get_current_descriptor() {
+    return findMotorDescriptor(motorDriveType);
+}
+
+const MotorBackendDefinition* motor_get_backend_definition(DriveType driveType) {
+    const MotorDescriptor* descriptor = motor_get_descriptor(driveType);
+    return descriptor != nullptr ? descriptor->backend : nullptr;
+}
+
+const MotorBackendDefinition* motor_get_current_backend_definition() {
+    return motor_get_backend_definition(motorDriveType);
+}
+
+const MotorCommandDescriptor* motor_get_command_descriptor(DriveType driveType, MotorCommandId commandId) {
+    return findCommandDescriptor(findMotorDescriptor(driveType), commandId);
+}
+
+const MotorCommandDescriptor* motor_get_current_command_descriptor(MotorCommandId commandId) {
+    return motor_get_command_descriptor(motorDriveType, commandId);
+}
+
+const MotorCommandDescriptor* motor_get_command_descriptor_for_menu(DriveType driveType, uint8_t menuNum, uint8_t itemIdx) {
+    return findCommandDescriptorForMenu(findMotorDescriptor(driveType), menuNum, itemIdx);
+}
+
+const MotorCommandDescriptor* motor_get_current_command_descriptor_for_menu(uint8_t menuNum, uint8_t itemIdx) {
+    return motor_get_command_descriptor_for_menu(motorDriveType, menuNum, itemIdx);
 }
 
 DriveType motor_get_drive_type() {
     return motorDriveType;
 }
 
+const char* motor_get_type_key() {
+    return motor_get_current_descriptor()->key;
+}
+
 const char* motor_get_type_label() {
-    switch (motorDriveType) {
-        case DRIVE_TYPE_JMC:
-            return "JMC";
-        case DRIVE_TYPE_RT:
-            return "RT";
-        default:
-            return "AUTO";
-    }
+    return motor_get_current_descriptor()->label;
+}
+
+const char* motor_get_type_description() {
+    return motor_get_current_descriptor()->description;
+}
+
+const char* motor_get_type_guidance() {
+    return motor_get_current_descriptor()->guidance;
+}
+
+const char* motor_get_backend_family_label() {
+    const MotorBackendDefinition* backend = motor_get_current_backend_definition();
+    return backend != nullptr ? backend->familyLabel : "";
+}
+
+const char* motor_get_backend_probe_guidance() {
+    const MotorBackendDefinition* backend = motor_get_current_backend_definition();
+    return backend != nullptr ? backend->probeGuidance : "";
+}
+
+const char* motor_get_backend_command_guidance() {
+    const MotorBackendDefinition* backend = motor_get_current_backend_definition();
+    return backend != nullptr ? backend->commandGuidance : "";
+}
+
+const char* motor_get_backend_telemetry_guidance() {
+    const MotorBackendDefinition* backend = motor_get_current_backend_definition();
+    return backend != nullptr ? backend->telemetryGuidance : "";
 }
 
 int16_t motor_get_max_rpm() {
-    switch (motorDriveType) {
-        case DRIVE_TYPE_RT:
-            return MOTOR_MAX_RPM_RT;
-        case DRIVE_TYPE_JMC:
-            return MOTOR_MAX_RPM_JMC;
-        default:
-            return MOTOR_MAX_RPM_JMC;
-    }
+    return motor_get_current_descriptor()->maxRpm;
 }
 
 bool motor_supports_ramp() {
-    return motorDriveType == DRIVE_TYPE_JMC;
+    return motor_command_supported(MOTOR_COMMAND_RAMP_LEVEL);
 }
 
 bool motor_is_direction_reversed() {
-    return Menu1[SETMOTORDIRECTION].value != 0;
+    return motor_get_command_menu_value(MOTOR_COMMAND_DIRECTION) != 0;
 }
 
 int8_t motor_get_direction_multiplier() {
@@ -634,16 +616,44 @@ int16_t motor_get_effective_set_rpm() {
 }
 
 int16_t motor_get_torque_percent() {
-    if (Menu1[SETMOTORTORQUE].value <= 0) return 0;
+    const int16_t menuTorque = motor_get_command_menu_value(MOTOR_COMMAND_TORQUE_LIMIT);
+    if(menuTorque <= 0) return 0;
 
-    switch (motorDriveType) {
-        case DRIVE_TYPE_RT:
-            return (100 * motor_currentTorque) / Menu1[SETMOTORTORQUE].value;
-        case DRIVE_TYPE_JMC:
-            return (10 * motor_currentTorque) / Menu1[SETMOTORTORQUE].value;
-        default:
-            return 0;
+    const MotorDescriptor* descriptor = motor_get_current_descriptor();
+    if(descriptor == nullptr || descriptor->torquePercentNumerator <= 0) {
+        return 0;
     }
+
+    return static_cast<int16_t>((descriptor->torquePercentNumerator * motor_currentTorque) / menuTorque);
+}
+
+bool motor_command_supported(MotorCommandId commandId) {
+    const MotorCommandDescriptor* command = motor_get_current_command_descriptor(commandId);
+    return command != nullptr && command->supported;
+}
+
+int16_t motor_get_command_menu_value(MotorCommandId commandId) {
+    return readCommandMenuValue(motor_get_current_command_descriptor(commandId));
+}
+
+int16_t motor_format_command_value(MotorCommandId commandId, int16_t uiValue, int8_t sign) {
+    const MotorCommandDescriptor* command = motor_get_current_command_descriptor(commandId);
+    if(command == nullptr || !command->supported) {
+        return 0;
+    }
+
+    long formatted = static_cast<long>(uiValue) * static_cast<long>(command->valueScale);
+    if(sign < 0) {
+        formatted = -formatted;
+    }
+
+    if(formatted > INT16_MAX) return INT16_MAX;
+    if(formatted < INT16_MIN) return INT16_MIN;
+    return static_cast<int16_t>(formatted);
+}
+
+int16_t motor_get_formatted_command_value(MotorCommandId commandId, int8_t sign) {
+    return motor_format_command_value(commandId, motor_get_command_menu_value(commandId), sign);
 }
 
 void motor_force_drive_type(DriveType driveType, bool persist) {
