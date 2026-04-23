@@ -13,7 +13,11 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Include="..\assets\sg98-firmware.bin" LogicalName="Assets.sg98-firmware.bin" />
+    <EmbeddedResource Include="..\assets\sg98-flash-manifest.json" LogicalName="Assets.sg98-flash-manifest.json" />
+    <EmbeddedResource Include="..\assets\flash-00-0x0000-bootloader.bin" LogicalName="Assets.flash-00-0x0000-bootloader.bin" />
+    <EmbeddedResource Include="..\assets\flash-01-0x8000-partitions.bin" LogicalName="Assets.flash-01-0x8000-partitions.bin" />
+    <EmbeddedResource Include="..\assets\flash-02-0xe000-boot_app0.bin" LogicalName="Assets.flash-02-0xe000-boot_app0.bin" />
+    <EmbeddedResource Include="..\assets\flash-03-0x10000-firmware.bin" LogicalName="Assets.flash-03-0x10000-firmware.bin" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(RuntimeIdentifier)' == 'win-x64'">

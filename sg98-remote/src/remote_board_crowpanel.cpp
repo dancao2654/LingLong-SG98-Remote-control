@@ -470,9 +470,8 @@ void initBacklight() {
     digitalWrite(kAuxPowerPin1, HIGH);
     pinMode(kAuxPowerPin2, OUTPUT);
     digitalWrite(kAuxPowerPin2, HIGH);
-    ledcSetup(1, 5000, 8);
-    ledcAttachPin(kBoardPins.backlight, 1);
-    ledcWrite(1, 255);
+    ledcAttach(kBoardPins.backlight, 5000, 8);
+    ledcWrite(kBoardPins.backlight, 255);
 }
 
 void initEncoderButton() {
@@ -698,7 +697,7 @@ void crowpanel_apply_indicator(const RemoteIndicatorState& indicator) {
 }
 
 bool crowpanel_set_backlight(uint8_t level) {
-    ledcWrite(1, level);
+    ledcWrite(kBoardPins.backlight, level);
     return true;
 }
 

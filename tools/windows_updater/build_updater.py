@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -168,6 +169,17 @@ def write_md5_file(archive_path: Path) -> Path:
     return md5_path
 
 
+def load_manifest(assets: Path) -> dict:
+    manifest_path = assets / "sg98-flash-manifest.json"
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"Missing updater asset: {manifest_path}")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    segments = manifest.get("segments") or []
+    if not segments:
+        raise ValueError("Flash manifest does not list any segments")
+    return manifest
+
+
 def main() -> int:
     args = parse_args()
     rid = args.rid
@@ -177,7 +189,8 @@ def main() -> int:
 
     root = Path(__file__).resolve().parent
     assets = root / "assets"
-    required_assets = ["sg98-firmware.bin"]
+    manifest = load_manifest(assets)
+    required_assets = ["sg98-flash-manifest.json", *[segment["fileName"] for segment in manifest["segments"]]]
     if rid.startswith("win"):
         required_assets.append("esptool.exe")
 

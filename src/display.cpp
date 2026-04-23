@@ -1,6 +1,7 @@
 #include "display.h" 
 #include "main.h"   
 #include "gbw.h"
+#include "controller_board.h"
 #include "definitions.h"
 
 #include <Adafruit_GFX.h>    // Core graphics library
@@ -421,8 +422,10 @@ void drawTopIndicators(int screenId) {
   // Reserve only as much of the header as the short motor badge needs so the
   // Wi-Fi status line has enough room for a full IPv4 address.
   const int regionWidth = 88;
-  const int motorBaselineY = 18;
-  const int wifiBaselineY = 18;
+  const int indicatorClearHeight = HEADER_HEIGHT + 4;
+  // Drop the header text a little farther so the enclosure lip does not clip it.
+  const int motorBaselineY = 22;
+  const int wifiBaselineY = 22;
   const int rightX = SCREEN_WIDTH - rightMargin;
   const int regionX = SCREEN_WIDTH - (regionWidth + 12);
   const int leftRegionWidth = regionX - leftMargin - 8;
@@ -431,7 +434,7 @@ void drawTopIndicators(int screenId) {
   const uint16_t wifiColor = radio_mode_status_ok() ? COLOR_GREEN : COLOR_YELLOW;
 
   if (forceRedraw || motorLabel != prevMotorLabel) {
-    tft->fillRect(regionX, 0, SCREEN_WIDTH - regionX, HEADER_HEIGHT, ST77XX_BLACK);
+    tft->fillRect(regionX, 0, SCREEN_WIDTH - regionX, indicatorClearHeight, ST77XX_BLACK);
   }
   if (forceRedraw || wifiLabel != prevWifiLabel) {
     clearLeftAlignedLine(leftMargin, wifiBaselineY, prevWifiLabel, WIFI_STATUS_FONT);
@@ -495,15 +498,17 @@ void drawSeparatorLine(int x, int y, int width, bool animated) {
 
 
 void display_init() { 
-#if !SG98_HAS_DISPLAY
+  if(!controller_board_has_display()) {
   displayDisabled = true;
   dimmed = false;
   appliedBrightness = 0;
   return;
-#else
+  }
+
+  const ControllerBoardPins& pins = controller_board_pins();
   SPIClass *spi = new SPIClass(HSPI);
-  spi->begin(DISP_SCL, -1, DISP_SDA, DISP_CS);
-  tft = new Adafruit_ST7789(spi, DISP_CS, DISP_DC, DISP_RST);
+  spi->begin(pins.displaySclk, -1, pins.displaySda, pins.displayCs);
+  tft = new Adafruit_ST7789(spi, pins.displayCs, pins.displayDc, pins.displayReset);
   // 80MHz should work, but may need lower speeds if attached to the motor
   tft->setSPISpeed(80000000);
   // this will vary depending on display type
@@ -512,20 +517,20 @@ void display_init() {
 
   // Set backlight pin as output and turn on backlight
   //pinMode(DISP_BL, OUTPUT);
-  ledcSetup(1,4000,8);
-  ledcAttachPin(DISP_BL, 1);
-  ledcWrite(1, 0);
+  ledcAttach(pins.displayBacklight, 4000, 8);
+  ledcWrite(pins.displayBacklight, 0);
   appliedBrightness = 0;
   displayDisabled = false;
   update_display();
-#endif
 }
 
 void setBrightness() { 
-#if !SG98_HAS_DISPLAY
+  if(!controller_board_has_display()) {
   dimmed = false;
   return;
-#else
+  }
+
+  const ControllerBoardPins& pins = controller_board_pins();
   uint8_t newBrightness;
   static int dimTime = 15; 
 
@@ -538,17 +543,17 @@ void setBrightness() {
   }
 
   if(appliedBrightness != newBrightness) { 
-    ledcWrite(1, newBrightness);
+    ledcWrite(pins.displayBacklight, newBrightness);
     appliedBrightness = newBrightness;
   }
-#endif
 }
 
 void update_display() { 
-#if !SG98_HAS_DISPLAY
+  if(!controller_board_has_display()) {
   disp_updateRequired = false;
   return;
-#else
+  }
+
   static unsigned long lastUpdate;
   if(newData == true) disp_updateRequired = true;
   if(displayDisabled) return;
@@ -611,14 +616,15 @@ void update_display() {
     if(state == MOTOR_SELECT) {
       drawMotorSelectScreen();
     }
-#endif
 }
 
 void display_off() {
-#if !SG98_HAS_DISPLAY
+    if(!controller_board_has_display()) {
     displayDisabled = true;
     return;
-#else
+    }
+
+    const ControllerBoardPins& pins = controller_board_pins();
     if(displayDisabled) {
         return;
     }
@@ -627,19 +633,19 @@ void display_off() {
         tft->fillScreen(ST77XX_BLACK);
         tft->enableDisplay(false); // turn off display output (if supported)
     }
-    ledcWrite(1,0);
+    ledcWrite(pins.displayBacklight,0);
     appliedBrightness = 0;
     displayDisabled = true;
-#endif
 }
 
 void display_on() {
-#if !SG98_HAS_DISPLAY
+    if(!controller_board_has_display()) {
     displayDisabled = false;
     dimmed = false;
     disp_updateRequired = false;
     return;
-#else
+    }
+
     if(!displayDisabled) {
         setBrightness();
         disp_updateRequired = true;
@@ -655,7 +661,6 @@ void display_on() {
     appliedBrightness = 0;
     setBrightness();
     disp_updateRequired = true;
-#endif
 }
 
 void display_show_motor_probe_splash(const char* motorLabel) {

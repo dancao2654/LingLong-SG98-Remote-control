@@ -1,5 +1,6 @@
 #include <driver/rtc_io.h>
 #include "esp_task_wdt.h"
+#include "controller_board.h"
 #include "display.h"
 #include "main.h"
 #include "gbw.h"
@@ -178,6 +179,7 @@ void scaleTask(void *pvParameters) {
 
 void setup() { 
     Serial.begin(115200);
+    controller_board_init();
     scaleMutex = xSemaphoreCreateMutex();
     if (scaleMutex == NULL) {
         #ifdef DEBUG 
@@ -192,7 +194,7 @@ void setup() {
     delay(250);
     #endif
     Serial.printf("[fw] SG98 controller build=%s\n", BUILD_ID);
-    Serial.printf("[fw] target=%s\n", SG98_CONTROLLER_TARGET_NAME);
+    Serial.printf("[fw] target=%s\n", controller_board_target_name());
     
     setCpuFrequencyMhz(80);
 
@@ -458,7 +460,12 @@ void do_purge() {
 
 
 void vitals_init() { 
-  esp_task_wdt_init(3, false);
+  const esp_task_wdt_config_t wdt_config = {
+      .timeout_ms = 3000,
+      .idle_core_mask = 0,
+      .trigger_panic = false,
+  };
+  esp_task_wdt_init(&wdt_config);
   esp_task_wdt_add(NULL); // Add current task (loop task)
 }
 
@@ -505,19 +512,27 @@ void controller_note_activity() {
 
 
 void sleep_init() { 
-#if !SG98_HAS_START_BUTTON
+    const ControllerBoardPins& pins = controller_board_pins();
+    if(!controller_board_has_start_button() ||
+       !controller_board_pin_valid(pins.startButton) ||
+       !controller_board_gpio_valid(pins.wakeButton)) {
     #ifdef DEBUG
     Serial.println("[sleep] no local wake button on this target; restarting instead");
     #endif
     ESP.restart();
     return;
-#else
+    }
+
     delay(100); //Allow shit to pass
-    digitalWrite(RS485RE, HIGH); // Low power state
-    digitalWrite(RS485DE, LOW); 
-#if SG98_HAS_DISPLAY
-    digitalWrite(DISP_BL, LOW);
-#endif
+    if(controller_board_pin_valid(pins.rs485Re)) {
+        digitalWrite(pins.rs485Re, HIGH); // Low power state
+    }
+    if(controller_board_pin_valid(pins.rs485De)) {
+        digitalWrite(pins.rs485De, LOW);
+    }
+    if(controller_board_has_display() && controller_board_pin_valid(pins.displayBacklight)) {
+        digitalWrite(pins.displayBacklight, LOW);
+    }
     delay(1);
 
     // Set BTN as input with pullup
@@ -526,24 +541,28 @@ void sleep_init() {
     rtc_bootFlag1 = true;
 
     // --- Enable RTC GPIO hold for RE, DE, DISP_BL ---
-    rtc_gpio_hold_en((gpio_num_t)RS485RE);
-    rtc_gpio_hold_en((gpio_num_t)RS485DE);
-#if SG98_HAS_DISPLAY
-    rtc_gpio_hold_en((gpio_num_t)DISP_BL);
-#endif
+    if(controller_board_gpio_valid(pins.sleepRe)) {
+        rtc_gpio_hold_en(pins.sleepRe);
+    }
+    if(controller_board_gpio_valid(pins.sleepDe)) {
+        rtc_gpio_hold_en(pins.sleepDe);
+    }
+    if(controller_board_has_display() && controller_board_pin_valid(pins.displayBacklight)) {
+        rtc_gpio_hold_en(static_cast<gpio_num_t>(pins.displayBacklight));
+    }
 
-    rtc_gpio_hold_dis((gpio_num_t)BTN);
-    rtc_gpio_init((gpio_num_t)BTN);
-    rtc_gpio_set_direction((gpio_num_t)BTN, RTC_GPIO_MODE_INPUT_ONLY);
-    rtc_gpio_pullup_en((gpio_num_t)BTN);
-    rtc_gpio_pulldown_dis((gpio_num_t)BTN);
+    rtc_gpio_hold_dis(pins.wakeButton);
+    rtc_gpio_init(pins.wakeButton);
+    rtc_gpio_set_direction(pins.wakeButton, RTC_GPIO_MODE_INPUT_ONLY);
+    rtc_gpio_pullup_en(pins.wakeButton);
+    rtc_gpio_pulldown_dis(pins.wakeButton);
 
     // Configure EXT0 wakeup on BTN, wake on LOW level (button press)
-    esp_sleep_enable_ext0_wakeup(WAKE_BTN, 0); // 0 = wake on LOW
+    esp_sleep_enable_ext0_wakeup(pins.wakeButton, 0); // 0 = wake on LOW
 
     #ifdef DEBUG
         Serial.println("Entering deep sleep, waiting for BTN press to wake up...");
-        Serial.print("BTN: "); Serial.println(digitalRead(BTN));
+        Serial.print("BTN: "); Serial.println(digitalRead(pins.startButton));
     #endif
 
     // Flush serial before sleeping
@@ -551,17 +570,23 @@ void sleep_init() {
 
     // Enter deep sleep (will not return until reset/wakeup)
     esp_deep_sleep_start();
-#endif
 }
 
 void sleep_release() { 
+    const ControllerBoardPins& pins = controller_board_pins();
    // --- Release RTC GPIO hold for RE, DE, DISP_BL ---
-    rtc_gpio_hold_dis((gpio_num_t)RS485RE);
-    rtc_gpio_hold_dis((gpio_num_t)RS485DE);
-#if SG98_HAS_DISPLAY
-    rtc_gpio_hold_dis((gpio_num_t)DISP_BL);
-#endif
-    rtc_gpio_deinit((gpio_num_t)BTN);
+    if(controller_board_gpio_valid(pins.sleepRe)) {
+        rtc_gpio_hold_dis(pins.sleepRe);
+    }
+    if(controller_board_gpio_valid(pins.sleepDe)) {
+        rtc_gpio_hold_dis(pins.sleepDe);
+    }
+    if(controller_board_has_display() && controller_board_pin_valid(pins.displayBacklight)) {
+        rtc_gpio_hold_dis(static_cast<gpio_num_t>(pins.displayBacklight));
+    }
+    if(controller_board_gpio_valid(pins.wakeButton)) {
+        rtc_gpio_deinit(pins.wakeButton);
+    }
 
     // Disable EXT0 wakeup source (optional, for clarity)
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_EXT0);

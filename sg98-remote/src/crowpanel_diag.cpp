@@ -194,9 +194,8 @@ void powerOnBoardPeripherals() {
 }
 
 void initBacklight() {
-    ledcSetup(1, 5000, 8);
-    ledcAttachPin(kBacklightPin, 1);
-    ledcWrite(1, 255);
+    ledcAttach(kBacklightPin, 5000, 8);
+    ledcWrite(kBacklightPin, 255);
 }
 
 void setPanelPowerState(bool indicatorHigh, bool lcdRailHigh, bool out5vHigh) {
@@ -216,12 +215,12 @@ void setBacklightMode(BacklightMode mode) {
             initBacklight();
             break;
         case BacklightMode::DigitalHigh:
-            ledcDetachPin(kBacklightPin);
+            ledcDetach(kBacklightPin);
             pinMode(kBacklightPin, OUTPUT);
             digitalWrite(kBacklightPin, HIGH);
             break;
         case BacklightMode::DigitalLow:
-            ledcDetachPin(kBacklightPin);
+            ledcDetach(kBacklightPin);
             pinMode(kBacklightPin, OUTPUT);
             digitalWrite(kBacklightPin, LOW);
             break;
@@ -248,7 +247,7 @@ void initDisplay() {
 }
 
 void setBacklightLevel(uint8_t level) {
-    ledcWrite(1, level);
+    ledcWrite(kBacklightPin, level);
 }
 
 void showDisplayStage() {

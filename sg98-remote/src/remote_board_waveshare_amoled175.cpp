@@ -50,6 +50,12 @@ const RemoteBoardPins kBoardPins = [] {
     pins.touchScl = 14;
     pins.touchInt = 11;
     pins.touchReset = 40;
+    pins.audioDout = 8;
+    pins.audioDin = 10;
+    pins.audioBclk = 9;
+    pins.audioLrclk = 45;
+    pins.audioMclk = 42;
+    pins.audioEnable = 46;
     pins.primaryButton = kBootButtonPin;
     return pins;
 }();
@@ -439,8 +445,8 @@ const RemoteBoardFeatureMap kBoardFeatureMap = {
         RemoteBoardSupportLevel::Implemented,
     },
     {
-        RemoteBoardSupportLevel::Present,
-        RemoteBoardSupportLevel::Present,
+        RemoteBoardSupportLevel::Mapped,
+        RemoteBoardSupportLevel::Mapped,
         true,
         true,
     },

@@ -13,6 +13,7 @@
 #include <esp_wifi.h>
 
 #include "remote_board.h"
+#include "remote_audio.h"
 #include "remote_config.h"
 #include "remote_runtime.h"
 #include "remote_wifi.h"
@@ -66,9 +67,10 @@ enum class Screen : uint8_t {
     Main = 1,
     Purge = 2,
     Gbw = 3,
-    Drive = 4,
-    EspNowPeers = 5,
-    Network = 6,
+    AudioDiag = 4,
+    Drive = 5,
+    EspNowPeers = 6,
+    Network = 7,
 };
 
 enum class ItemKind : uint8_t {
@@ -84,7 +86,7 @@ enum class LinkTransport : uint8_t {
     WebSocket = 2,
 };
 
-constexpr uint8_t kScreenCount = 7;
+constexpr uint8_t kScreenCount = 8;
 constexpr uint8_t kEspNowPeerSlots = 6;
 constexpr uint8_t kPendingMenuWriteSlots = 8;
 constexpr uint32_t kEspNowDiscoveryIntervalMs = 1200;
@@ -188,6 +190,7 @@ struct TouchTracker {
     int16_t lastX = 0;
     int16_t lastY = 0;
     int16_t scrollAccum = 0;
+    int16_t previewAudioSteps = 0;
     float lastAngle = 0.0f;
     float angleAccum = 0.0f;
     uint32_t startedAt = 0;
@@ -263,6 +266,7 @@ struct AppState {
     int32_t manualRpm = default_setRPM;
     int32_t weightMg = default_setWeight;
     int32_t localInvertScroll = 0;
+    int32_t localUiSounds = 0;
     int32_t localDriveSelection = 0;
     int32_t menuValues[5][sg98_protocol::kMaxMenuValues] = {};
     int32_t controllerMenuValues[5][sg98_protocol::kMaxMenuValues] = {};
@@ -360,6 +364,7 @@ struct SleepSnapshot {
     int32_t manualRpm = default_setRPM;
     int32_t weightMg = default_setWeight;
     int32_t localInvertScroll = 0;
+    int32_t localUiSounds = 0;
     int32_t localDriveSelection = 0;
     int32_t menuValues[5][sg98_protocol::kMaxMenuValues] = {};
     uint8_t menuSyncedMask = 0;
@@ -440,7 +445,16 @@ constexpr SettingItem kGbwItems[] = {
 constexpr SettingItem kNetworkItems[] = {
     {"Radio mode", ItemKind::Toggle, 1, RADIOMODE, 0, 1, 1, "", nullptr, nullptr},
     {"Controller link", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "peers"},
+    {"Audio diag", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "audio"},
     {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
+};
+
+constexpr SettingItem kAudioItems[] = {
+    {"UI sounds", ItemKind::Toggle, 0, 0, 0, 1, 1, "", "ui_sounds", nullptr},
+    {"Probe codec", ItemKind::Action, 0, 0, 0, 0, 0, "", "audio_probe", nullptr},
+    {"Play click", ItemKind::Action, 0, 0, 0, 0, 0, "", "audio_click", nullptr},
+    {"Play swipe", ItemKind::Action, 0, 0, 0, 0, 0, "", "audio_swipe", nullptr},
+    {"Play sweep", ItemKind::Action, 0, 0, 0, 0, 0, "", "audio_sweep", nullptr},
 };
 
 constexpr SettingItem kDriveItems[] = {
@@ -501,7 +515,7 @@ char g_consoleLineBuffer[160] = {};
 size_t g_consoleLineLen = 0;
 
 constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
-constexpr uint16_t kSleepSnapshotVersion = 5;
+constexpr uint16_t kSleepSnapshotVersion = 6;
 constexpr uint32_t kInteractiveLoopWaitMs = 4;
 constexpr uint32_t kAnimatingLoopWaitMs = 16;
 constexpr uint32_t kIdleLoopWaitCapMs = 80;
@@ -760,7 +774,13 @@ bool useRoundNavigation() {
 }
 
 bool useWaveshareRoundUi() {
-    return remote_board_info().id == RemoteBoardId::WaveshareAmoled175;
+    switch(remote_board_info().id) {
+        case RemoteBoardId::WaveshareAmoled175:
+        case RemoteBoardId::CrowPanelRotary21:
+            return true;
+        default:
+            return false;
+    }
 }
 
 RemoteTextStyle heroTextStyle() {
@@ -941,6 +961,8 @@ String upperText(const String& text) {
     return out;
 }
 
+bool isLinkOnline();
+
 String roundHomeTopLabel() {
     if(app.hasStatus) {
         if(app.status.motor.length() > 0) {
@@ -954,6 +976,21 @@ String roundHomeTopLabel() {
 }
 
 String roundHomeBottomLabel() {
+    if(app.toastUntil > millis()) {
+        return upperText(app.toast);
+    }
+    if(!isLinkOnline()) {
+        if(app.currentTransport == LinkTransport::EspNow) {
+            return hasActiveEspNowPeer() ? "CONTROLLER OFFLINE" : "ESP-NOW SCAN";
+        }
+        if(remote_wifi_is_active()) {
+            if(remote_wifi_sta_connected()) {
+                return "CONTROLLER OFFLINE";
+            }
+            return "CONNECTING WI-FI";
+        }
+        return "CONTROLLER OFFLINE";
+    }
     if(remote_wifi_is_active()) {
         if(remote_wifi_sta_connected()) {
             return String("WI-FI ") + remote_wifi_sta_ip();
@@ -965,9 +1002,6 @@ String roundHomeBottomLabel() {
             return "ESP-NOW SCAN";
         }
         return (app.hasStatus && (millis() - app.lastStatusAt) < remote_config::kLinkTimeoutMs) ? "ESP-NOW LINK" : "ESP-NOW";
-    }
-    if(app.toastUntil > millis()) {
-        return upperText(app.toast);
     }
     return "";
 }
@@ -1039,6 +1073,7 @@ constexpr Screen kMenuScreens[] = {
     Screen::Purge,
     Screen::Gbw,
     Screen::Network,
+    Screen::AudioDiag,
 };
 
 const char* screenTitle(Screen screen) {
@@ -1047,6 +1082,7 @@ const char* screenTitle(Screen screen) {
         case Screen::Main: return "SYSTEM";
         case Screen::Purge: return "PURGE";
         case Screen::Gbw: return "GRINDER";
+        case Screen::AudioDiag: return "AUDIO";
         case Screen::Drive: return "DRIVE";
         case Screen::EspNowPeers: return "ESP-NOW";
         case Screen::Network: return "NETWORK";
@@ -1075,6 +1111,9 @@ Screen roundNavMenuTarget(Screen current, int delta) {
         return Screen::Main;
     }
     if(current == Screen::EspNowPeers) {
+        return Screen::Network;
+    }
+    if(current == Screen::AudioDiag) {
         return Screen::Network;
     }
     return cycleMenuScreen(current, delta);
@@ -1225,6 +1264,32 @@ bool isGbwState() {
 bool isRunningState() {
     return app.hasStatus &&
            (app.status.state == "GRINDING" || app.status.state == "GRINDING_GBW" || app.status.state == "PURGING");
+}
+
+bool isRunActionAvailable() {
+    return isLinkOnline();
+}
+
+String homeActionButtonLabel() {
+    return isRunActionAvailable() ? (isRunningState() ? "STOP" : "START") : "NO LINK";
+}
+
+uint16_t homeActionButtonFill(const HomePalette& palette) {
+    if(!isRunActionAvailable()) {
+        return blendColor565(palette.panel, kColorDanger, 0.26f);
+    }
+    return isRunningState() ? kColorDanger : kColorGood;
+}
+
+uint16_t homeActionButtonTextColor() {
+    return isRunActionAvailable() ? kColorBlack : kColorText;
+}
+
+String homePrimaryStatusLine() {
+    if(!isLinkOnline()) {
+        return "CONTROLLER OFFLINE";
+    }
+    return app.hasStatus ? app.status.state : "WAITING";
 }
 
 float manualRpmWarningLevel() {
@@ -1387,6 +1452,10 @@ bool isDisplayBrightnessItem(const SettingItem& item) {
 
 bool isInvertScrollItem(const SettingItem& item) {
     return item.menuNum == 1 && item.itemIdx == INVERT_SCROLL;
+}
+
+bool isUiSoundsItem(const SettingItem& item) {
+    return item.action != nullptr && strcmp(item.action, "ui_sounds") == 0;
 }
 
 LocalDriveSelection sanitizeLocalDriveSelection(int32_t value) {
@@ -1608,6 +1677,9 @@ String toggleOffLabel(const SettingItem& item) {
     if(isInvertScrollItem(item)) {
         return "CLOCKWISE";
     }
+    if(isUiSoundsItem(item)) {
+        return "MUTE";
+    }
     if(isConfirmActionItem(item)) {
         return "NO";
     }
@@ -1623,6 +1695,9 @@ String toggleOffLabel(const SettingItem& item) {
 String toggleOnLabel(const SettingItem& item) {
     if(isInvertScrollItem(item)) {
         return "COUNTER-CLOCKWISE";
+    }
+    if(isUiSoundsItem(item)) {
+        return "ON";
     }
     if(isConfirmActionItem(item)) {
         return "YES";
@@ -1714,6 +1789,7 @@ void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
     snapshot->manualRpm = app.manualRpm;
     snapshot->weightMg = app.weightMg;
     snapshot->localInvertScroll = app.localInvertScroll;
+    snapshot->localUiSounds = app.localUiSounds;
     snapshot->localDriveSelection = app.localDriveSelection;
     memcpy(snapshot->menuValues, app.menuValues, sizeof(snapshot->menuValues));
     snapshot->menuSyncedMask = 0;
@@ -1746,6 +1822,7 @@ void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTrans
     app.manualRpm = snapshot.manualRpm;
     app.weightMg = snapshot.weightMg;
     app.localInvertScroll = 0;
+    app.localUiSounds = clampValue(snapshot.localUiSounds, 0, 1);
     setLocalDriveSelection(sanitizeLocalDriveSelection(snapshot.localDriveSelection));
     memcpy(app.menuValues, snapshot.menuValues, sizeof(app.menuValues));
     for(uint8_t menu = 0; menu < 5; ++menu) {
@@ -1983,7 +2060,8 @@ int applyDialDirection(int delta) {
 
 bool isVisibleControllerMenuScreen(Screen screen, uint8_t menuNum) {
     switch(menuNum) {
-        case 1: return screen == Screen::Main || screen == Screen::Gbw || screen == Screen::Network;
+        case 1: return screen == Screen::Main || screen == Screen::Gbw || screen == Screen::Network ||
+                       screen == Screen::AudioDiag;
         case 2: return screen == Screen::Purge;
         case 3: return screen == Screen::Gbw;
         default: return false;
@@ -2105,6 +2183,9 @@ const SettingItem* itemsForScreen(Screen screen, size_t* count) {
         case Screen::Network:
             if(count != nullptr) *count = arrayCount(kNetworkItems);
             return kNetworkItems;
+        case Screen::AudioDiag:
+            if(count != nullptr) *count = arrayCount(kAudioItems);
+            return kAudioItems;
         case Screen::Drive:
             if(count != nullptr) *count = arrayCount(kDriveItems);
             return kDriveItems;
@@ -2171,6 +2252,9 @@ void sanitizeSelections() {
 int32_t menuValue(const SettingItem& item) {
     if(isInvertScrollItem(item)) {
         return app.localInvertScroll;
+    }
+    if(isUiSoundsItem(item)) {
+        return app.localUiSounds;
     }
     if(item.menuNum == 0) {
         return 0;
@@ -2280,6 +2364,7 @@ void seedMenuDefaults() {
     app.menuValues[1][DISP_BRIGHTNESS] = default_brightness;
     app.menuValues[1][LED_BRIGHTNESS] = default_led_brightness;
     app.localInvertScroll = 0;
+    app.localUiSounds = 0;
     setLocalDriveSelection(LOCAL_DRIVE_AUTO);
     app.menuValues[1][INVERT_SCROLL] = 0;
     app.menuValues[1][SETMAX] = default_maxRPM;
@@ -3052,16 +3137,37 @@ void drawButton(RemoteCanvas& canvas,
         drawNestCard(canvas, rect, fill, blendColor565(fill, kColorText, 0.24f));
         const uint16_t accentDot = blendColor565(textColor, fill, 0.18f);
         const int16_t dotRadius = rect.h >= 30 ? 4 : 3;
+        const bool narrow = rect.w <= 60;
+        const RemoteTextStyle roundStyle = narrow ? RemoteTextStyle::Tiny : style;
+        const int16_t padding = narrow ? 6 : 16;
         canvas.fillCircle(static_cast<int16_t>(rect.x + rect.w / 2),
                           static_cast<int16_t>(rect.y + rect.h - 9),
                           dotRadius,
                           accentDot);
-        canvas.drawCenteredText(fitTextToWidth(label, rect.w, style, 16),
-                                rect.x + rect.w / 2,
-                                static_cast<int16_t>(rect.y + rect.h / 2 - 2),
-                                style,
-                                textColor,
-                                fill);
+        const int split = narrow ? label.indexOf(' ') : -1;
+        if(split > 0 && split < (label.length() - 1)) {
+            const String top = fitTextToWidth(label.substring(0, split), rect.w, roundStyle, 4);
+            const String bottom = fitTextToWidth(label.substring(split + 1), rect.w, roundStyle, 4);
+            canvas.drawCenteredText(top,
+                                    rect.x + rect.w / 2,
+                                    static_cast<int16_t>(rect.y + rect.h / 2 - 7),
+                                    roundStyle,
+                                    textColor,
+                                    fill);
+            canvas.drawCenteredText(bottom,
+                                    rect.x + rect.w / 2,
+                                    static_cast<int16_t>(rect.y + rect.h / 2 + 6),
+                                    roundStyle,
+                                    textColor,
+                                    fill);
+        } else {
+            canvas.drawCenteredText(fitTextToWidth(label, rect.w, roundStyle, padding),
+                                    rect.x + rect.w / 2,
+                                    static_cast<int16_t>(rect.y + rect.h / 2 - (narrow ? 1 : 2)),
+                                    roundStyle,
+                                    textColor,
+                                    fill);
+        }
         return;
     }
 
@@ -3605,6 +3711,27 @@ int16_t roundMenuScrollThreshold(const Layout& layout) {
     return clampI16(static_cast<int16_t>(layout.rowH / 3), 24, 48);
 }
 
+void playUiStepTick(uint8_t count = 1) {
+    if(app.localUiSounds == 0) {
+        return;
+    }
+
+    for(uint8_t i = 0; i < count; ++i) {
+        remote_audio_play(RemoteAudioTone::Click);
+    }
+}
+
+void syncTouchScrollPreviewAudio(int16_t previewSteps) {
+    while(touchTracker.previewAudioSteps < previewSteps) {
+        ++touchTracker.previewAudioSteps;
+        playUiStepTick();
+    }
+    while(touchTracker.previewAudioSteps > previewSteps) {
+        --touchTracker.previewAudioSteps;
+        playUiStepTick();
+    }
+}
+
 void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title) {
     size_t count = 0;
     const SettingItem* items = itemsForScreen(app.screen, &count);
@@ -3673,6 +3800,89 @@ void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, cons
         return;
     }
 
+    if(count == 2) {
+        const uint8_t selected = selectionFor(app.screen);
+        const uint8_t other = static_cast<uint8_t>(wrapMenuItemIndex(selected, 1, count));
+        const Rect content = roundMenuContentRect(layout);
+        const int16_t centerX = static_cast<int16_t>(content.x + content.w / 2);
+        const int16_t centerY = static_cast<int16_t>(layout.menuRows[1].y + layout.menuRows[1].h / 2);
+        const int16_t stepDistance = max<int16_t>(1, abs(static_cast<int16_t>(layout.menuRows[1].y - layout.menuRows[0].y)));
+        const float offsetSteps = app.menuRollOffset / static_cast<float>(stepDistance);
+        const int16_t farInsetMax = clampI16(static_cast<int16_t>(content.w / 9), 12, 22);
+        const int relOrder[] = {-1, 1, 0};
+
+        drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+
+        for(size_t i = 0; i < (sizeof(relOrder) / sizeof(relOrder[0])); ++i) {
+            const int rel = relOrder[i];
+            const float visualOffset = static_cast<float>(rel) + offsetSteps;
+            const float distance = fabsf(visualOffset);
+            if(distance > 1.35f) {
+                continue;
+            }
+
+            float prominence = 1.0f - (distance / 1.35f);
+            if(prominence < 0.0f) {
+                prominence = 0.0f;
+            }
+            prominence *= prominence;
+
+            const bool focused = rel == 0;
+            const SettingItem& item = items[focused ? selected : other];
+            const bool dangerArmed = focused && item.kind == ItemKind::Danger && dangerIsArmed(app.screen, selected);
+            const uint16_t accent = dangerArmed ? kColorDanger : roundMenuItemAccentColor(item);
+            const int16_t inset =
+                focused ? 8 : clampI16(static_cast<int16_t>(8.0f + distance * static_cast<float>(farInsetMax)), 8, farInsetMax);
+            const int16_t rowW = focused ? max<int16_t>(200, static_cast<int16_t>(content.w - 16))
+                                         : max<int16_t>(180, static_cast<int16_t>(content.w - inset * 2));
+            const int16_t rowH = focused ? clampI16(static_cast<int16_t>(layout.rowH + 8), 52, 72)
+                                         : clampI16(static_cast<int16_t>(46.0f + prominence * 18.0f), 44, 62);
+            const int16_t rowX = static_cast<int16_t>(centerX - (rowW / 2));
+            const int16_t rowY =
+                static_cast<int16_t>(centerY + lroundf(visualOffset * static_cast<float>(stepDistance)) - (rowH / 2));
+            const Rect rowRect = {rowX, rowY, rowW, rowH};
+            const uint16_t baseFace = blendColor565(kColorPanel, accent, focused ? 0.28f : (0.10f + prominence * 0.20f));
+            const uint16_t face = blendColor565(kColorBg, baseFace, focused ? 0.84f : (0.18f + prominence * 0.70f));
+            const uint16_t border = focused ? blendColor565(accent, kColorText, 0.20f)
+                                            : blendColor565(face, accent, 0.10f + prominence * 0.12f);
+            const uint16_t textBase = blendColor565(kColorMuted, kColorBg, 0.16f);
+            const uint16_t textColor = focused ? blendColor565(kColorText, accent, 0.08f)
+                                               : blendColor565(textBase, kColorText, 0.18f + prominence * 0.72f);
+            const int16_t radius = clampI16(static_cast<int16_t>(rowRect.h / 2), 16, 28);
+            const String label = upperText(displayLabelForItem(item));
+            const RemoteTextStyle labelStyle =
+                focused ? chooseMenuHeroTextStyle(label, static_cast<int16_t>(rowRect.w - 20))
+                        : (distance < 1.05f ? chooseLabelTextStyle(label, static_cast<int16_t>(rowRect.w - 18))
+                                            : RemoteTextStyle::Small);
+
+            canvas.fillRoundRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, radius, face);
+            canvas.drawRoundRect(rowRect.x, rowRect.y, rowRect.w, rowRect.h, radius, border);
+            if(focused && rowRect.w > 8 && rowRect.h > 8) {
+                const int16_t innerRadius = clampI16(static_cast<int16_t>(radius - 2), 12, 24);
+                canvas.drawRoundRect(rowRect.x + 2,
+                                     rowRect.y + 2,
+                                     rowRect.w - 4,
+                                     rowRect.h - 4,
+                                     innerRadius,
+                                     blendColor565(border, kColorText, 0.18f));
+            }
+
+            drawSoftCenteredText(canvas,
+                                 fitTextToWidthNoTilde(label, static_cast<int16_t>(rowRect.w - 24), labelStyle, 4),
+                                 centerX,
+                                 static_cast<int16_t>(rowRect.y + rowRect.h / 2),
+                                 labelStyle,
+                                 textColor,
+                                 face,
+                                 accent,
+                                 !focused);
+        }
+
+        const String footerText = (app.toastUntil > millis()) ? upperText(app.toast) : String("SWIPE TO BROWSE");
+        drawFooter(canvas, layout, footerText);
+        drawRoundNav(canvas, layout);
+        return;
+    }
     for(int rel = -2; rel <= 2; ++rel) {
         const float visualOffset = static_cast<float>(rel) + offsetSteps;
         const float distance = fabsf(visualOffset);
@@ -3895,11 +4105,11 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                stateAllowsModeToggle() ? kColorBlack : kColorMuted);
     drawButton(canvas,
                layout.homeActionButton,
-               isRunningState() ? "STOP" : "START",
-               isRunningState() ? kColorDanger : kColorGood,
-               kColorBlack);
+               homeActionButtonLabel(),
+               homeActionButtonFill(palette),
+               homeActionButtonTextColor());
 
-    const String stateLine = app.hasStatus ? app.status.state : "WAITING";
+    const String stateLine = homePrimaryStatusLine();
     const String telemetryLine =
         String("RPM ") + (app.hasStatus ? String(homeWheelDisplayRpm()) : "-") +
         "  WT " + (app.hasStatus ? weightLabel(app.status.currentWeightMg) : String("-"));
@@ -4357,6 +4567,8 @@ void redrawUi() {
         drawMenuList(canvas, layout, "PURGE");
     } else if(app.screen == Screen::Gbw) {
         drawMenuList(canvas, layout, "GRINDER");
+    } else if(app.screen == Screen::AudioDiag) {
+        drawMenuList(canvas, layout, "AUDIO");
     } else if(app.screen == Screen::Network) {
         drawMenuList(canvas, layout, "NETWORK");
     } else if(app.screen == Screen::Drive) {
@@ -4488,7 +4700,7 @@ bool discoverControllerService(bool force) {
     }
 
     for(int i = 0; i < serviceCount; ++i) {
-        const IPAddress ip = MDNS.IP(i);
+        const IPAddress ip = MDNS.address(i);
         const uint16_t port = MDNS.port(i);
         if(ip[0] == 0 || port == 0) {
             continue;
@@ -5353,12 +5565,12 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
     }
 }
 
-void onEspNowSent(const uint8_t*, esp_now_send_status_t status) {
+void onEspNowSent(const esp_now_send_info_t*, esp_now_send_status_t status) {
     app.sendOk = (status == ESP_NOW_SEND_SUCCESS);
     app.sendComplete = true;
 }
 
-void onEspNowReceive(const uint8_t*, const uint8_t* data, int len) {
+void onEspNowReceive(const esp_now_recv_info_t*, const uint8_t* data, int len) {
     if(data == nullptr || len <= 0) {
         return;
     }
@@ -5522,6 +5734,11 @@ void syncPolling() {
 bool applyMenuValue(const SettingItem& item, int32_t value) {
     if(isInvertScrollItem(item)) {
         app.localInvertScroll = clampValue(value, 0, 1);
+        markPersistentStateDirty();
+        return true;
+    }
+    if(isUiSoundsItem(item)) {
+        app.localUiSounds = clampValue(value, 0, 1);
         markPersistentStateDirty();
         return true;
     }
@@ -5708,6 +5925,9 @@ void activateSelectedItem() {
     if(item.kind == ItemKind::Toggle) {
         const int32_t nextValue = menuValue(item) == 0 ? 1 : 0;
         if(applyMenuValue(item, nextValue)) {
+            if(app.localUiSounds != 0) {
+                remote_audio_play(RemoteAudioTone::Click);
+            }
             setToast(String(item.label) + ": " + formatValueLabel(item, nextValue));
         } else {
             setToast("Send failed", 1000);
@@ -5726,6 +5946,8 @@ void activateSelectedItem() {
     if(item.action != nullptr && strcmp(item.action, "screen") == 0) {
         if(item.actionArg != nullptr && strcmp(item.actionArg, "drive") == 0) {
             setScreen(Screen::Drive);
+        } else if(item.actionArg != nullptr && strcmp(item.actionArg, "audio") == 0) {
+            setScreen(Screen::AudioDiag);
         } else if(isControllerLinkItem(item)) {
             if(controllerLinkUsesWebSocketScan()) {
                 if(!remote_wifi_has_saved_network()) {
@@ -5738,6 +5960,35 @@ void activateSelectedItem() {
                 setScreen(Screen::EspNowPeers);
             }
         }
+        app.redraw = true;
+        return;
+    }
+
+    if(item.action != nullptr && strcmp(item.action, "audio_probe") == 0) {
+        remote_audio_init();
+        const RemoteAudioStatus status = remote_audio_status();
+        setToast(status.codecDetected ? "Audio codec detected" : String("Audio: ") + remote_audio_detail(), 1400);
+        app.redraw = true;
+        return;
+    }
+
+    if(item.action != nullptr && strcmp(item.action, "audio_click") == 0) {
+        const bool ok = remote_audio_play(RemoteAudioTone::Click);
+        setToast(ok ? "Click tone" : String("Audio: ") + remote_audio_detail(), 1400);
+        app.redraw = true;
+        return;
+    }
+
+    if(item.action != nullptr && strcmp(item.action, "audio_swipe") == 0) {
+        const bool ok = remote_audio_play(RemoteAudioTone::SwipeRight);
+        setToast(ok ? "Swipe tone" : String("Audio: ") + remote_audio_detail(), 1400);
+        app.redraw = true;
+        return;
+    }
+
+    if(item.action != nullptr && strcmp(item.action, "audio_sweep") == 0) {
+        const bool ok = remote_audio_play(RemoteAudioTone::Sweep);
+        setToast(ok ? "Sweep tone" : String("Audio: ") + remote_audio_detail(), 1400);
         app.redraw = true;
         return;
     }
@@ -5803,6 +6054,9 @@ void setScreen(Screen screen) {
     sanitizeSelections();
     if(screen == Screen::EspNowPeers && app.currentTransport == LinkTransport::EspNow) {
         requestEspNowDiscovery(true);
+    }
+    if(app.localUiSounds != 0) {
+        remote_audio_play(RemoteAudioTone::Click);
     }
     markPersistentStateDirty();
 }
@@ -5904,6 +6158,11 @@ void handleDialDelta(int delta) {
 }
 
 void triggerRunAction() {
+    if(!isRunActionAvailable()) {
+        setToast("Controller offline", 1200);
+        return;
+    }
+
     const bool nextRunning = !isRunningState();
     const bool gbwMode = isGbwState();
     const char* expectedState = nextRunning ? (gbwMode ? "GRINDING_GBW" : "GRINDING")
@@ -6310,6 +6569,7 @@ void updateDialTouch(int16_t x, int16_t y, bool editorMode) {
 
         if(steps != 0) {
             touchTracker.dragUsed = true;
+            playUiStepTick(static_cast<uint8_t>(abs(steps)));
             handleDialDelta(steps);
         }
         return;
@@ -6336,6 +6596,7 @@ void updateDialTouch(int16_t x, int16_t y, bool editorMode) {
 
     if(steps != 0) {
         touchTracker.dragUsed = true;
+        playUiStepTick(static_cast<uint8_t>(abs(steps)));
         handleDialDelta(steps);
     }
 }
@@ -6373,6 +6634,10 @@ void updateMenuScrollTouch(int16_t x, int16_t y) {
         if(abs(touchTracker.scrollAccum) >= static_cast<int16_t>(threshold / 3)) {
             touchTracker.dragUsed = true;
         }
+        const int previewSteps = stepDistance > 0
+                                     ? -lroundf(app.menuRollOffset / static_cast<float>(stepDistance))
+                                     : 0;
+        syncTouchScrollPreviewAudio(static_cast<int16_t>(previewSteps));
         app.redraw = true;
         return;
     }
@@ -6401,6 +6666,7 @@ void updateMenuScrollTouch(int16_t x, int16_t y) {
 
     if(steps != 0) {
         touchTracker.dragUsed = true;
+        playUiStepTick(static_cast<uint8_t>(abs(steps)));
         debugRoundInput("touch_scroll", y, steps, touchTracker.scrollAccum, threshold);
         moveSelection(steps, !useRoundNavigation());
         if(useRoundNavigation()) {
@@ -6990,7 +7256,7 @@ void printRemoteConsolePeers() {
 void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan>");
+    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
     Serial.println("[remote-diag] raw: raw <protocol-frame>");
@@ -7216,6 +7482,30 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
             *message = g_consoleFrameTraceEnabled ? "on" : "off";
         }
         return true;
+    }
+
+    if(action == "audio_probe") {
+        remote_audio_init();
+        const RemoteAudioStatus status = remote_audio_status();
+        if(message != nullptr) {
+            *message = status.codecDetected ? "codec detected" : remote_audio_detail();
+        }
+        return status.codecDetected;
+    }
+
+    if(action == "audio_click" || action == "audio_swipe" || action == "audio_sweep") {
+        remote_audio_init();
+        RemoteAudioTone tone = RemoteAudioTone::Click;
+        if(action == "audio_swipe") {
+            tone = RemoteAudioTone::SwipeRight;
+        } else if(action == "audio_sweep") {
+            tone = RemoteAudioTone::Sweep;
+        }
+        const bool ok = remote_audio_play(tone);
+        if(message != nullptr) {
+            *message = ok ? "tone attempted" : remote_audio_detail();
+        }
+        return ok;
     }
 
     if(message != nullptr) {
@@ -7444,7 +7734,6 @@ void remote_app_setup() {
     if(!remote_board_init()) {
         setToast("Board init failed", 60000);
     }
-
     if(!kDisableTransportPerfTest) {
         remote_wifi_init();
         wsClient.onEvent(onWsEvent);
@@ -7488,6 +7777,7 @@ void remote_app_loop() {
     RemoteInputState input = {};
     const uint32_t now = millis();
     remote_board_poll_input(&input);
+    remote_audio_service();
     remoteConsolePoll();
 
     if(input.dialDelta != 0 || input.primaryPressed || input.primaryLongPress || input.primaryShortPress ||

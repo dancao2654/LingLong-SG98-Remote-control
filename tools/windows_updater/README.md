@@ -3,6 +3,13 @@
 This folder builds self-contained desktop updater bundles for the SG98
 controller and the SG98 handheld remote.
 
+Each updater bundle embeds a full ESP32-S3 flash set:
+
+- bootloader
+- partitions
+- `boot_app0`
+- application firmware
+
 ## PlatformIO Tasks
 
 In the PlatformIO sidebar, open the `Custom` group under these environments:
@@ -75,5 +82,6 @@ python3 tools/windows_updater/build_updater.py --rid osx-arm64 --output-base SG9
 
 - Windows bundles embed `esptool.exe`.
 - macOS bundles use the local `python3 -m esptool` path at runtime.
+- Bundles flash the full image set instead of only replacing the app at `0x10000`.
 - Each generated zip also gets a matching `.md5` file.
 - `tools/windows_updater/assets/` is a transient staging area.

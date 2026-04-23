@@ -1,6 +1,7 @@
 Import("env")
 
 from pathlib import Path
+import os
 import subprocess
 import sys
 
@@ -14,6 +15,37 @@ WINDOWS_RID = "win-x64"
 MACOS_RID = "osx-arm64"
 
 
+def _project_core_dir() -> Path:
+    try:
+        resolved = env.subst("$PROJECT_CORE_DIR")
+    except Exception:
+        resolved = ""
+
+    if resolved and not resolved.startswith("$"):
+        return Path(resolved)
+    return Path.home() / ".platformio"
+
+
+def _toolchain_bin_dirs() -> list[Path]:
+    core_dir = _project_core_dir()
+    candidates = [
+        core_dir / "packages" / "toolchain-xtensa-esp-elf" / "xtensa-esp-elf" / "bin",
+        core_dir / "tools" / "toolchain-xtensa-esp-elf" / "xtensa-esp-elf" / "bin",
+        core_dir / "packages" / "toolchain-riscv32-esp" / "bin",
+        core_dir / "tools" / "toolchain-riscv32-esp" / "bin",
+        core_dir / "packages" / "toolchain-xtensa-esp32s3" / "bin",
+    ]
+    return [candidate for candidate in candidates if candidate.exists()]
+
+
+def _platformio_subprocess_env() -> dict[str, str]:
+    child_env = os.environ.copy()
+    existing_path = child_env.get("PATH", "")
+    prepend = [str(path) for path in _toolchain_bin_dirs()]
+    child_env["PATH"] = os.pathsep.join([*prepend, existing_path] if existing_path else prepend)
+    return child_env
+
+
 def _run_step(script_name: str, *args: str) -> None:
     script_path = SCRIPT_DIR / script_name
     print(f"[updater_bundle] running {script_path} {' '.join(args)}".strip())
@@ -23,7 +55,7 @@ def _run_step(script_name: str, *args: str) -> None:
 def _run_platformio(*args: str) -> None:
     cmd = [PYTHON, "-m", "platformio", *args]
     print(f"[updater_bundle] running {' '.join(cmd)}")
-    subprocess.run(cmd, cwd=PROJECT_DIR, check=True)
+    subprocess.run(cmd, cwd=PROJECT_DIR, check=True, env=_platformio_subprocess_env())
 
 
 def _bundle_config(env_name: str) -> tuple[str, str]:

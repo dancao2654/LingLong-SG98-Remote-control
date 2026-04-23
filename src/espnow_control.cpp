@@ -8,6 +8,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
+#include "controller_board.h"
 #include "definitions.h"
 #include "comm.h"
 #include "display.h"
@@ -64,14 +65,14 @@ bool isDiscoverCommand(const char* payload) {
 
 String controllerDiscoveryName() {
     String out = "SG98 ";
-    out += SG98_CONTROLLER_TARGET_NAME;
+    out += controller_board_target_name();
     return out;
 }
 
 String controllerDiscoveryFrame() {
     return sg98_protocol::peer(controllerDiscoveryName(),
                                WiFi.macAddress(),
-                               SG98_CONTROLLER_TARGET_NAME,
+                               controller_board_target_name(),
                                espnowChannelValue);
 }
 
@@ -135,12 +136,13 @@ void processEvent(const EspNowEvent& event) {
     disp_updateRequired = true;
 }
 
-void onEspNowReceive(const uint8_t* mac_addr, const uint8_t* data, int data_len) {
+void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, int data_len) {
     if(espnowQueue == nullptr || data == nullptr || data_len <= 0) {
         return;
     }
 
     EspNowEvent event = {};
+    const uint8_t* mac_addr = recv_info != nullptr ? recv_info->src_addr : nullptr;
     if(mac_addr != nullptr) {
         memcpy(event.mac, mac_addr, sizeof(event.mac));
     }

@@ -773,9 +773,8 @@ bool readEncoderButtonRaw(bool* raw) {
 }
 
 void initBacklight() {
-    ledcSetup(kBacklightPwmChannel, 5000, 8);
-    ledcAttachPin(kBoardPins.backlight, kBacklightPwmChannel);
-    ledcWrite(kBacklightPwmChannel, kBacklightDefault);
+    ledcAttachChannel(kBoardPins.backlight, 5000, 8, kBacklightPwmChannel);
+    ledcWrite(kBoardPins.backlight, kBacklightDefault);
 }
 
 void initEncoderButton() {
@@ -966,7 +965,7 @@ const RemoteBoardFeatureMap& crowpanel_rotary21_feature_map() {
 void crowpanel_rotary21_apply_indicator(const RemoteIndicatorState&) {}
 
 bool crowpanel_rotary21_set_backlight(uint8_t level) {
-    ledcWrite(kBacklightPwmChannel, level);
+    ledcWrite(kBoardPins.backlight, level);
     return true;
 }
 

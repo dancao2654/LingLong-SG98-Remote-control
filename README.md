@@ -18,13 +18,16 @@ This repo contains two different ESP32-S3 firmware projects:
 
 For PlatformIO in the repo root `Project Tasks`:
 
-- `adafruit_feather_esp32s3` = controller box
-- `remote-universal-s3` = universal handheld remote firmware for supported
-  ESP32-S3 remote boards
+- `adafruit_feather_esp32s3` = controller box on Adafruit hardware
+- `waveshare_esp32_s3_rs485_can` = controller box on Waveshare hardware
+- `remote-crowpanel-128` = CrowPanel 1.28 handheld remote
+- `remote-crowpanel-21` = CrowPanel 2.1 handheld remote
+- `remote-waveshare-175` = Waveshare 1.75 handheld remote
+- `remote-universal-s3` = compatibility alias for the auto-detect remote image
 
 The remote code still lives as a separate project in `sg98-remote/`, but the
-root `platformio.ini` exposes thin remote build aliases so you can build both
-controller and remote firmware from one PlatformIO task tree.
+root `platformio.ini` now exposes the same shipped remote hardware variants so
+you can build both controller and remote firmware from one PlatformIO task tree.
 
 The current universal remote image auto-detects these boards at boot:
 
@@ -36,6 +39,20 @@ The supported remote boards now share:
 - a common remote HAL for board detect, input, display, power, and debug
 - on-screen battery status for the Waveshare `AXP2101` PMIC path
 - idle light-sleep with wake by touch/button on supported boards
+
+The custom PlatformIO targets now also expose one-shot aggregate builds:
+
+- `Build Universal Controller Firmware`
+- `Build Universal Remote Firmware`
+- `Build Universal Firmware Set`
+
+Those aggregate/default project builds now target only:
+
+- `controller-universal-s3`
+- `remote-universal-s3`
+
+The board-specific environments remain available for forced hardware debugging,
+but they are no longer part of the normal aggregate build flow.
 
 Do not flash `sg98-remote` onto the SG98 controller box.
 

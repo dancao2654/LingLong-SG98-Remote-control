@@ -1,6 +1,7 @@
 #include "definitions.h"
 #include "HardwareSerial.h"
 #include "comm.h"  
+#include "controller_board.h"
 #include "main.h"
 #include "motor_hal.h"
 
@@ -338,18 +339,44 @@ bool debugFinalizeWriteSingle(uint8_t slave,
 }
 
 void debugApplyUart(uint32_t baudRate, uint32_t serialConfig) {
+  const ControllerBoardPins& pins = controller_board_pins();
   Serial2.flush();
   Serial2.end();
   delay(2);
-  Serial2.begin(baudRate, serialConfig, RS485_RXD, RS485_TXD);
+  Serial2.begin(baudRate, serialConfig, pins.rs485Rxd, pins.rs485Txd);
   setRXmode();
   delay(2);
 }
 }
 
+void setTXmode() {
+  const ControllerBoardPins& pins = controller_board_pins();
+  if(controller_board_pin_valid(pins.rs485De)) {
+    digitalWrite(pins.rs485De, HIGH);
+  }
+  if(controller_board_pin_valid(pins.rs485Re)) {
+    digitalWrite(pins.rs485Re, HIGH);
+  }
+}
+
+void setRXmode() {
+  const ControllerBoardPins& pins = controller_board_pins();
+  if(controller_board_pin_valid(pins.rs485De)) {
+    digitalWrite(pins.rs485De, LOW);
+  }
+  if(controller_board_pin_valid(pins.rs485Re)) {
+    digitalWrite(pins.rs485Re, LOW);
+  }
+}
+
 void comm_init() { 
-  pinMode(RS485DE, OUTPUT);
-  pinMode(RS485RE, OUTPUT);
+  const ControllerBoardPins& pins = controller_board_pins();
+  if(controller_board_pin_valid(pins.rs485De)) {
+    pinMode(pins.rs485De, OUTPUT);
+  }
+  if(controller_board_pin_valid(pins.rs485Re)) {
+    pinMode(pins.rs485Re, OUTPUT);
+  }
   setRXmode();
   comm_set_profile(COMM_PROFILE_JMC, true);
   #ifdef DEBUG_COMM
@@ -358,12 +385,13 @@ void comm_init() {
 }
 
 bool comm_set_profile(CommProfile profile, bool force) {
+  const ControllerBoardPins& pins = controller_board_pins();
   if (!force && profile == activeCommProfile) return false;
 
   Serial2.flush();
   Serial2.end();
   delay(2);
-  Serial2.begin(baudRateForProfile(profile), serialConfigForProfile(profile), RS485_RXD, RS485_TXD);
+  Serial2.begin(baudRateForProfile(profile), serialConfigForProfile(profile), pins.rs485Rxd, pins.rs485Txd);
   setRXmode();
   delay(2);
 
