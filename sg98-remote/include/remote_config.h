@@ -36,8 +36,8 @@ constexpr uint32_t kToastHoldMs = 2200;
 constexpr uint32_t kDangerConfirmMs = 3000;
 constexpr uint32_t kLinkTimeoutMs = 5000;
 constexpr uint32_t kTapMaxDurationMs = 420;
-constexpr bool kDisableWifiModemSleepForTesting = true;
-constexpr bool kDisableIdleSleepForTesting = true;
+constexpr bool kDisableWifiModemSleepForTesting = false;
+constexpr bool kDisableIdleSleepForTesting = false;
 constexpr uint32_t kIdleSleepAfterMs = 90000;
 constexpr uint32_t kWakeToastMs = 900;
 

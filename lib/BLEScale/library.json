@@ -1,0 +1,8 @@
+{
+  "name": "BLEScale",
+  "version": "0.1.0",
+  "build": {
+    "includeDir": "src",
+    "srcDir": "src"
+  }
+}

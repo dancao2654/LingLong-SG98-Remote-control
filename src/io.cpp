@@ -115,6 +115,7 @@ void applyDriveSelection() {
     controller_note_activity();
     state = motorSelectReturnState;
 }
+}
 
 bool isJmcBaudMenuItem(int selectedIdx) {
     return selectedIdx >= Menu4Items::JMCBAUD9600 && selectedIdx <= Menu4Items::JMCBAUD115200;
@@ -129,7 +130,6 @@ uint32_t baudForJmcMenuItem(int selectedIdx) {
         case Menu4Items::JMCBAUD115200: return 115200;
         default: return 0;
     }
-}
 }
 ESP32Encoder encoder;
 Button* start_button = nullptr;
@@ -171,6 +171,7 @@ void io_init() {
     if(controller_board_has_start_led() && controller_board_pin_valid(pins.startButtonLed)) {
         pinMode(pins.startButtonLed, OUTPUT);
         ledcAttach(pins.startButtonLed, 2000, 10);
+        ledcWrite(pins.startButtonLed, 0);
     }
 
     if(controller_board_has_encoder() &&
@@ -659,7 +660,7 @@ void ledAction(uint8_t type) {  //Type: 0 = off, 1 = on, 2 = flashing, 3 = fadin
     static unsigned long lastCall;
     static uint8_t lastType;
     static unsigned long lastFlash;
-    static uint16_t lastLedValue;
+    static uint16_t lastLedValue = 0xFFFF;
     uint16_t ledValue;
     bool ledOn = true;
     

@@ -100,7 +100,7 @@ unsigned long lastLoopTime = 0;
 int loopcount = 0;
 
 namespace {
-constexpr bool kDisableIdleSleepForTesting = true;
+constexpr bool kDisableIdleSleepForTesting = false;
 
 uint8_t purgeFrameCounter = 0;
 int16_t purgeLastSetRPM = 0;

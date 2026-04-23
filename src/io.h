@@ -15,6 +15,8 @@ bool START_BUTTON();
 bool ENC_BUTTON();
 bool ENC_BUTTON_DOWN();
 bool pressedLong();
+bool isJmcBaudMenuItem(int selectedIdx);
+uint32_t baudForJmcMenuItem(int selectedIdx);
 
 extern int16_t storedSetRPM;
 extern uint32_t storedSetWeight;

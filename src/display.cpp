@@ -1,6 +1,7 @@
 #include "display.h" 
 #include "main.h"   
 #include "gbw.h"
+#include "controller_lvgl_ui.h"
 #include "controller_board.h"
 #include "definitions.h"
 
@@ -413,6 +414,7 @@ void drawTopIndicators(int screenId) {
   static int prevScreenId = -1;
   static String prevMotorLabel = "";
   static String prevWifiLabel = "";
+  static uint16_t prevWifiColor = 0;
 
   const bool forceRedraw = prevScreenId != screenId;
   const int leftMargin = 8;
@@ -432,21 +434,23 @@ void drawTopIndicators(int screenId) {
   const String motorLabel = fitHeaderLabel(getMotorDisplayLabel(), regionWidth);
   const String wifiLabel = fitLabelToFont(radio_mode_lcd_status(), leftRegionWidth, WIFI_STATUS_FONT);
   const uint16_t wifiColor = radio_mode_status_ok() ? COLOR_GREEN : COLOR_YELLOW;
+  const bool motorChanged = forceRedraw || motorLabel != prevMotorLabel;
+  const bool wifiChanged = forceRedraw || wifiLabel != prevWifiLabel || wifiColor != prevWifiColor;
 
-  if (forceRedraw || motorLabel != prevMotorLabel) {
+  if (motorChanged) {
     tft->fillRect(regionX, 0, SCREEN_WIDTH - regionX, indicatorClearHeight, ST77XX_BLACK);
+    drawRightAlignedPill(rightX, motorBaselineY, motorLabel, HEADER_FONT, COLOR_BRIGHT_BLUE, COLOR_NAVY);
   }
-  if (forceRedraw || wifiLabel != prevWifiLabel) {
+  if (wifiChanged) {
     clearLeftAlignedLine(leftMargin, wifiBaselineY, prevWifiLabel, WIFI_STATUS_FONT);
     clearLeftAlignedLine(leftMargin, wifiBaselineY, wifiLabel, WIFI_STATUS_FONT);
+    drawLeftAlignedLine(leftMargin, wifiBaselineY, wifiLabel, WIFI_STATUS_FONT, wifiColor);
   }
-
-  drawLeftAlignedLine(leftMargin, wifiBaselineY, wifiLabel, WIFI_STATUS_FONT, wifiColor);
-  drawRightAlignedPill(rightX, motorBaselineY, motorLabel, HEADER_FONT, COLOR_BRIGHT_BLUE, COLOR_NAVY);
 
   prevScreenId = screenId;
   prevMotorLabel = motorLabel;
   prevWifiLabel = wifiLabel;
+  prevWifiColor = wifiColor;
 }
 
 void drawScaleNameLegend(const String& label, const String& previousLabel) {
@@ -521,6 +525,7 @@ void display_init() {
   ledcWrite(pins.displayBacklight, 0);
   appliedBrightness = 0;
   displayDisabled = false;
+  controller_lvgl_init(tft, SCREEN_WIDTH, SCREEN_HEIGHT);
   update_display();
 }
 
@@ -564,58 +569,7 @@ void update_display() {
   lastUpdate = millis();
   disp_updateRequired = false;
   setBrightness();
-
-    if(drawMotorProbeSplashIfActive()) {
-      return;
-    }
-
-    if(state == IDLE) { 
-      drawIdleScreen();
-    }
-
-    if(state == IDLE_GBW) { 
-      drawGbWIdleScreen();
-    }
-
-    if(state == IDLE || state == IDLE_GBW) { 
-      drawErrorOverlay(); 
-    } 
-
-    if(state == GRINDING) { 
-      drawGrindingOrPurgingScreen();
-    }
-
-    if(state == PURGING) { 
-      drawGrindingOrPurgingScreen();
-    }
-
-    if(state == GRINDING_GBW) { 
-      drawGrindingGbwScreen();
-    }
-
-    if(state == MENU1) { 
-      enterMenu == true ? drawMenuValueScreen(1, menu1Selected) : drawMenuScreen(1, NUM_MENU1_ITEMS, menu1Selected);
-    }
-
-    if(state == MENU2) { 
-      enterMenu == true ? drawMenuValueScreen(2, menu2Selected) : drawMenuScreen(2, NUM_MENU2_ITEMS, menu2Selected);
-    }
-
-    if(state == MENU3) { 
-      enterMenu == true ? drawMenuValueScreen(3, menu3Selected) : drawMenuScreen(3, NUM_MENU3_ITEMS, menu3Selected);
-    }
-
-    if(state == MENU4) {
-      enterMenu == true ? drawMenuValueScreen(4, menu4Selected) : drawMenuScreen(4, NUM_MENU4_ITEMS, menu4Selected);
-    }
-
-    if(state == CALIBRATING) { 
-      drawCalibratingScreen();
-    }
-
-    if(state == MOTOR_SELECT) {
-      drawMotorSelectScreen();
-    }
+  controller_lvgl_sync();
 }
 
 void display_off() {
@@ -633,6 +587,7 @@ void display_off() {
         tft->fillScreen(ST77XX_BLACK);
         tft->enableDisplay(false); // turn off display output (if supported)
     }
+    controller_lvgl_set_output_enabled(false);
     ledcWrite(pins.displayBacklight,0);
     appliedBrightness = 0;
     displayDisabled = true;
@@ -657,6 +612,8 @@ void display_on() {
         tft->enableDisplay(true);
         tft->fillScreen(ST77XX_BLACK);
     }
+    controller_lvgl_set_output_enabled(true);
+    controller_lvgl_invalidate();
     initializedScreenId = -1;
     appliedBrightness = 0;
     setBrightness();
@@ -667,10 +624,7 @@ void display_show_motor_probe_splash(const char* motorLabel) {
   if (motorLabel == nullptr || motorLabel[0] == '\0') {
     return;
   }
-
-  motorSplashLabel = motorLabel;
-  motorSplashStartedAt = millis();
-  motorSplashUntil = motorSplashStartedAt + MOTOR_SPLASH_DURATION_MS;
+  controller_lvgl_show_motor_probe_splash(motorLabel);
   disp_updateRequired = true;
 }
 

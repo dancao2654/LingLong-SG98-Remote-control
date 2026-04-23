@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "PlatformIO: Build SG98 Controller Firmware",
+      "label": "PlatformIO: Build SG98 Universal Controller Firmware",
       "type": "process",
       "command": "platformio",
       "windows": {
@@ -17,7 +17,7 @@
       "args": [
         "run",
         "-e",
-        "adafruit_feather_esp32s3"
+        "controller-universal-s3"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -33,7 +33,7 @@
       }
     },
     {
-      "label": "PlatformIO: Upload SG98 Controller Firmware",
+      "label": "PlatformIO: Upload SG98 Universal Controller Firmware",
       "type": "process",
       "command": "platformio",
       "windows": {
@@ -48,7 +48,7 @@
       "args": [
         "run",
         "-e",
-        "adafruit_feather_esp32s3",
+        "controller-universal-s3",
         "-t",
         "upload"
       ],
@@ -130,7 +130,42 @@
       }
     },
     {
-      "label": "PlatformIO: Update Packages",
+      "label": "PlatformIO: Warm Shared Package Cache",
+      "type": "process",
+      "command": "platformio",
+      "windows": {
+        "command": "${env:USERPROFILE}\\.platformio\\penv\\Scripts\\platformio.exe"
+      },
+      "osx": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "linux": {
+        "command": "${env:HOME}/.platformio/penv/bin/platformio"
+      },
+      "args": [
+        "pkg",
+        "install",
+        "-e",
+        "controller-universal-s3",
+        "-e",
+        "remote-universal-s3",
+        "-e",
+        "remote-waveshare-175"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [
+        "$platformio"
+      ],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
+      "label": "PlatformIO: Force Update Packages",
       "type": "process",
       "command": "platformio",
       "windows": {
@@ -145,7 +180,7 @@
       "args": [
         "run",
         "-e",
-        "adafruit_feather_esp32s3",
+        "controller-universal-s3",
         "-t",
         "update_packages"
       ],
@@ -162,7 +197,7 @@
       }
     },
     {
-      "label": "PlatformIO: Update, Clean, Build",
+      "label": "PlatformIO: Force Update, Clean, Build",
       "type": "process",
       "command": "platformio",
       "windows": {
@@ -177,7 +212,7 @@
       "args": [
         "run",
         "-e",
-        "adafruit_feather_esp32s3",
+        "controller-universal-s3",
         "-t",
         "update_clean_build"
       ],
@@ -210,7 +245,7 @@
       "args": [
         "run",
         "-e",
-        "adafruit_feather_esp32s3",
+        "controller-universal-s3",
         "-t",
         "bundle_windows_updater"
       ],
@@ -243,7 +278,7 @@
       "args": [
         "run",
         "-e",
-        "adafruit_feather_esp32s3",
+        "controller-universal-s3",
         "-t",
         "bundle_macos_updater"
       ],
@@ -276,7 +311,7 @@
       "args": [
         "run",
         "-e",
-        "adafruit_feather_esp32s3",
+        "controller-universal-s3",
         "-t",
         "bundle_all_updaters"
       ],

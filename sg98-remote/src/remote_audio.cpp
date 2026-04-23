@@ -15,11 +15,12 @@ constexpr uint32_t kMclkHz = kSampleRate * 256;
 constexpr uint16_t kAmplitude = 1800;
 constexpr uint8_t kCodecVolume = 90;
 constexpr uint8_t kCodecMicGain = 3;
+constexpr uint32_t kPrepareRetryMs = 1500;
 
 RemoteAudioStatus g_status;
 bool g_initialized = false;
-bool g_probeAttempted = false;
 bool g_codecConfigured = false;
+uint32_t g_lastPrepareAttemptAt = 0;
 I2SClass g_audioI2s;
 
 void setDetail(const char* text) {
@@ -33,6 +34,24 @@ void setDetail(const char* text) {
 
 bool isSupportedBoard() {
     return remote_board_info().id == RemoteBoardId::WaveshareAmoled175;
+}
+
+void enableOutputStage() {
+    const RemoteBoardPins& pins = remote_board_pins();
+    if(pins.audioEnable >= 0) {
+        pinMode(pins.audioEnable, OUTPUT);
+        digitalWrite(pins.audioEnable, HIGH);
+        g_status.outputEnabled = true;
+    }
+}
+
+void resetAudioTransportState() {
+    if(g_status.i2sReady) {
+        g_audioI2s.end();
+    }
+    g_status.i2sReady = false;
+    g_status.codecDetected = false;
+    g_codecConfigured = false;
 }
 
 TwoWire* audioWire() {
@@ -220,39 +239,56 @@ bool writeTone(float startHz, float endHz, uint32_t durationMs) {
     return true;
 }
 
-}  // namespace
-
-void remote_audio_init() {
-    if(g_initialized) {
-        return;
-    }
-    g_initialized = true;
-
-    g_status = {};
+bool prepareAudio(bool forceRetry) {
     g_status.supported = isSupportedBoard();
     if(!g_status.supported) {
         setDetail("board has no audio helper");
-        return;
+        return false;
     }
 
-    const RemoteBoardPins& pins = remote_board_pins();
-    if(pins.audioEnable >= 0) {
-        pinMode(pins.audioEnable, OUTPUT);
-        digitalWrite(pins.audioEnable, HIGH);
-        g_status.outputEnabled = true;
+    const bool ready = g_status.codecDetected && g_status.i2sReady && g_codecConfigured;
+    if(ready && !forceRetry) {
+        return true;
     }
 
-    if(!g_probeAttempted) {
-        g_probeAttempted = true;
-        g_status.codecDetected = probeCodec();
+    const uint32_t now = millis();
+    if(!forceRetry && g_lastPrepareAttemptAt != 0 &&
+       (now - g_lastPrepareAttemptAt) < kPrepareRetryMs) {
+        return false;
     }
+
+    g_lastPrepareAttemptAt = now;
+    enableOutputStage();
+    resetAudioTransportState();
+
+    if(!probeCodec()) {
+        setDetail("codec not found on i2c");
+        return false;
+    }
+    g_status.codecDetected = true;
 
     if(!ensureI2sReady()) {
-        return;
+        return false;
     }
-    if(configureCodec()) {
-        setDetail("codec ready");
-    } else {
+
+    if(!configureCodec()) {
+        g_status.lastPlayOk = false;
+        return false;
+    }
+
+    setDetail("codec ready");
+    return true;
+}
+
+}  // namespace
+
+void remote_audio_init() {
+    if(!g_initialized) {
+        g_initialized = true;
+        g_status = {};
+    }
+
+    if(!prepareAudio(true)) {
         g_status.lastPlayOk = false;
     }
 }
@@ -268,7 +304,7 @@ bool remote_audio_play(RemoteAudioTone tone) {
         ++g_status.failedPlays;
         return false;
     }
-    if(!g_status.codecDetected) {
+    if(!prepareAudio(false)) {
         g_status.lastPlayOk = false;
         ++g_status.failedPlays;
         return false;

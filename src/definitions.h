@@ -52,7 +52,7 @@
 #define default_minRPM 100
 #define default_motor_torque 100
 #define default_led_brightness 100
-#define default_radio_mode 0
+#define default_radio_mode 1
 #define default_espnow_channel 1
 
 #define default_motor_ramp 1

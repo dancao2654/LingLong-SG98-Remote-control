@@ -266,7 +266,7 @@ struct AppState {
     int32_t manualRpm = default_setRPM;
     int32_t weightMg = default_setWeight;
     int32_t localInvertScroll = 0;
-    int32_t localUiSounds = 0;
+    int32_t localUiSounds = 1;
     int32_t localDriveSelection = 0;
     int32_t menuValues[5][sg98_protocol::kMaxMenuValues] = {};
     int32_t controllerMenuValues[5][sg98_protocol::kMaxMenuValues] = {};
@@ -364,7 +364,7 @@ struct SleepSnapshot {
     int32_t manualRpm = default_setRPM;
     int32_t weightMg = default_setWeight;
     int32_t localInvertScroll = 0;
-    int32_t localUiSounds = 0;
+    int32_t localUiSounds = 1;
     int32_t localDriveSelection = 0;
     int32_t menuValues[5][sg98_protocol::kMaxMenuValues] = {};
     uint8_t menuSyncedMask = 0;
@@ -515,7 +515,8 @@ char g_consoleLineBuffer[160] = {};
 size_t g_consoleLineLen = 0;
 
 constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
-constexpr uint16_t kSleepSnapshotVersion = 6;
+constexpr uint16_t kSleepSnapshotVersion = 7;
+constexpr uint16_t kSleepSnapshotVersionLegacyUiSoundsOff = 6;
 constexpr uint32_t kInteractiveLoopWaitMs = 4;
 constexpr uint32_t kAnimatingLoopWaitMs = 16;
 constexpr uint32_t kIdleLoopWaitCapMs = 80;
@@ -683,6 +684,14 @@ LinkTransport sanitizeTransport(uint8_t raw) {
 void setToast(const String& text, uint32_t durationMs);
 void setScreen(Screen screen);
 void sanitizeSelections();
+
+void clearRecoveredSendFailureToast() {
+    if(app.toast == "Send failed" && app.toastUntil > millis()) {
+        app.toast = "";
+        app.toastUntil = 0;
+        app.redraw = true;
+    }
+}
 
 bool prefersWebSocket() {
     return (app.radioModeKnown && transportFromRadioMode(app.menuValues[1][RADIOMODE]) == LinkTransport::WebSocket) ||
@@ -1821,8 +1830,11 @@ void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTrans
     sanitizeSelections();
     app.manualRpm = snapshot.manualRpm;
     app.weightMg = snapshot.weightMg;
-    app.localInvertScroll = 0;
+    app.localInvertScroll = clampValue(snapshot.localInvertScroll, 0, 1);
     app.localUiSounds = clampValue(snapshot.localUiSounds, 0, 1);
+    if(snapshot.version <= kSleepSnapshotVersionLegacyUiSoundsOff && app.localUiSounds == 0) {
+        app.localUiSounds = 1;
+    }
     setLocalDriveSelection(sanitizeLocalDriveSelection(snapshot.localDriveSelection));
     memcpy(app.menuValues, snapshot.menuValues, sizeof(app.menuValues));
     for(uint8_t menu = 0; menu < 5; ++menu) {
@@ -1895,7 +1907,8 @@ bool restorePersistentSnapshot(LinkTransport* restoredTransport) {
     const size_t read = g_statePrefs.getBytes(kPersistentStateKey, &snapshot, sizeof(snapshot));
     if(read != sizeof(snapshot) ||
        snapshot.magic != kSleepSnapshotMagic ||
-       snapshot.version != kSleepSnapshotVersion) {
+       (snapshot.version != kSleepSnapshotVersion &&
+        snapshot.version != kSleepSnapshotVersionLegacyUiSoundsOff)) {
         return false;
     }
 
@@ -1912,7 +1925,8 @@ void saveSleepSnapshot() {
 
 bool restoreSleepSnapshot(LinkTransport* restoredTransport) {
     if(g_sleepSnapshot.magic != kSleepSnapshotMagic ||
-       g_sleepSnapshot.version != kSleepSnapshotVersion ||
+       (g_sleepSnapshot.version != kSleepSnapshotVersion &&
+        g_sleepSnapshot.version != kSleepSnapshotVersionLegacyUiSoundsOff) ||
        esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_UNDEFINED) {
         return false;
     }
@@ -2364,7 +2378,7 @@ void seedMenuDefaults() {
     app.menuValues[1][DISP_BRIGHTNESS] = default_brightness;
     app.menuValues[1][LED_BRIGHTNESS] = default_led_brightness;
     app.localInvertScroll = 0;
-    app.localUiSounds = 0;
+    app.localUiSounds = 1;
     setLocalDriveSelection(LOCAL_DRIVE_AUTO);
     app.menuValues[1][INVERT_SCROLL] = 0;
     app.menuValues[1][SETMAX] = default_maxRPM;
@@ -4874,6 +4888,27 @@ void requestMenu(uint8_t menuNum) {
     }
 }
 
+void requestAllMenus() {
+    for(uint8_t menuNum = 1; menuNum <= 4; ++menuNum) {
+        requestMenu(menuNum);
+    }
+}
+
+// Rehydrate the remote from the controller whenever a transport comes up so
+// stale locally cached menu values do not survive between sessions.
+void requestFullControllerRefresh() {
+    requestStatus();
+    requestAllMenus();
+}
+
+void requestFullControllerRefreshOnLinkOnline(bool wasOnline) {
+    if(wasOnline) {
+        return;
+    }
+    clearPollSchedule();
+    requestFullControllerRefresh();
+}
+
 void requestVisibleMenuIfNeeded(bool force) {
     auto requestIfDue = [&](uint8_t menuNum) {
         if(menuNum == 0) {
@@ -5373,6 +5408,8 @@ LinkTransport alternateTransport() {
 }
 
 void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
+    clearRecoveredSendFailureToast();
+    const bool wasOnline = isLinkOnline();
     const bool hadStatus = app.hasStatus;
     const sg98_protocol::StatusFrame previous = app.status;
     const bool previousPreferGbw = app.preferGbw;
@@ -5401,6 +5438,7 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
     if(shouldRedrawForStatusFrame(previous, app.status, hadStatus, valuesChanged)) {
         app.redraw = true;
     }
+    requestFullControllerRefreshOnLinkOnline(wasOnline);
 }
 
 void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
@@ -5408,6 +5446,8 @@ void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
         return;
     }
 
+    clearRecoveredSendFailureToast();
+    const bool wasOnline = isLinkOnline();
     const bool valuesChanged = !menuFrameMatchesCache(frame);
     const bool wasSynced = app.menuSynced[frame.menuNum];
     const bool previousRadioModeKnown = app.radioModeKnown;
@@ -5440,6 +5480,7 @@ void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
     if(shouldRedrawForMenuFrame(frame, valuesChanged)) {
         app.redraw = true;
     }
+    requestFullControllerRefreshOnLinkOnline(wasOnline);
 }
 
 void upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
@@ -5483,6 +5524,7 @@ void upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
 }
 
 void consumePeerFrame(const sg98_protocol::PeerFrame& frame) {
+    clearRecoveredSendFailureToast();
     app.lastLinkActivityAt = millis();
     upsertDiscoveredEspNowPeer(frame);
 }
@@ -5509,8 +5551,13 @@ void consumeProtocolFrame(const String& frame) {
 
     sg98_protocol::AckFrame ackFrame;
     if(sg98_protocol::parseAckFrame(frame, &ackFrame)) {
+        const bool wasOnline = isLinkOnline();
         app.lastLinkActivityAt = millis();
         app.lastAckAt = millis();
+        if(ackFrame.ok) {
+            clearRecoveredSendFailureToast();
+        }
+        requestFullControllerRefreshOnLinkOnline(wasOnline);
         if(ackFrame.ok && ackFrame.message == "ok") {
             return;
         }
@@ -5529,10 +5576,7 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
                           static_cast<int>(length),
                           payload != nullptr ? reinterpret_cast<const char*>(payload) : "");
             clearPollSchedule();
-            requestStatus();
-            requestMenu(1);
-            requestMenu(2);
-            requestMenu(3);
+            requestFullControllerRefresh();
             break;
         case WStype_DISCONNECTED:
             app.wsConnected = false;
@@ -5584,7 +5628,7 @@ bool initEspNow() {
     }
 
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
+    WiFi.setSleep(!remote_config::kDisableWifiModemSleepForTesting);
 
     if(esp_wifi_set_channel(remote_config::kEspNowChannel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
         setToast("Channel setup failed");
@@ -5793,10 +5837,7 @@ void lockEspNowPeer(const DiscoveredEspNowPeer& peer) {
         ensureEspNowPeer(peer.mac);
     }
     clearPollSchedule();
-    requestStatus();
-    requestMenu(1);
-    requestMenu(2);
-    requestMenu(3);
+    requestFullControllerRefresh();
     markPersistentStateDirty();
     setToast(String("Locked ") + espNowPeerName(peer), 1200);
 }
@@ -5810,10 +5851,7 @@ void runConfirmAction(const SettingItem& item) {
         remote_wifi_reset_network_settings();
         clearPollSchedule();
         switchTransportNow(initialTransport());
-        requestStatus();
-        requestMenu(1);
-        requestMenu(2);
-        requestMenu(3);
+        requestFullControllerRefresh();
         markPersistentStateDirty();
         setToast("Remote network reset", 1200);
         return;
@@ -6305,8 +6343,7 @@ void prepareForIdleSleep() {
 void resumeAfterIdleLightSleep(LinkTransport resumeTransport) {
     applyCurrentBacklightLevel(true);
     switchTransportNow(resumeTransport);
-    requestStatus();
-    requestVisibleMenuIfNeeded(true);
+    requestFullControllerRefresh();
     app.lastStatusPollAt = millis();
     app.lastBackgroundMenuPollAt = millis();
     refreshBatteryStatus(true);
@@ -7144,7 +7181,9 @@ void appendRemoteStatusJson(String& out) {
     out += ",\"radioModeKnown\":";
     out += app.radioModeKnown ? "true" : "false";
     out += ",\"invertScroll\":";
-    appendJsonQuoted(out, "CLOCKWISE");
+    appendJsonQuoted(out, app.localInvertScroll != 0 ? "COUNTER_CLOCKWISE" : "CLOCKWISE");
+    out += ",\"uiSounds\":";
+    out += app.localUiSounds != 0 ? "true" : "false";
     out += ",\"driveSelection\":";
     appendJsonQuoted(out, localDriveSelectionLabel(currentLocalDriveSelection()));
     out += ",\"manualRPM\":";
@@ -7407,10 +7446,7 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
         remote_wifi_reset_network_settings();
         clearPollSchedule();
         switchTransportNow(initialTransport());
-        requestStatus();
-        requestMenu(1);
-        requestMenu(2);
-        requestMenu(3);
+        requestFullControllerRefresh();
         markPersistentStateDirty();
         if(message != nullptr) {
             *message = "remote network reset";
@@ -7763,10 +7799,7 @@ void remote_app_setup() {
         setToast("UI debug mode", 3000);
     } else {
         switchTransportNow(startupTransport);
-        requestStatus();
-        requestMenu(1);
-        requestMenu(2);
-        requestMenu(3);
+        requestFullControllerRefresh();
     }
 
     printRemoteConsoleHelp();

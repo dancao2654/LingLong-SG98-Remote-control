@@ -1,11 +1,13 @@
 #include "remote_board_driver.h"
 #include "remote_runtime.h"
 
+#include <Adafruit_GFX.h>
 #include <Arduino_GFX_Library.h>
 #include <TouchDrv.hpp>
 #include <Wire.h>
 #include <XPowersLib.h>
 #include <esp_heap_caps.h>
+#include <math.h>
 
 namespace {
 
@@ -251,6 +253,72 @@ class WaveshareCanvas : public RemoteCanvas {
         gfx->getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
         gfx->setCursor(x - static_cast<int16_t>(w / 2), y - static_cast<int16_t>(h / 2));
         gfx->print(text);
+    }
+
+    void drawCenteredTextRotated(const String& text,
+                                 int16_t x,
+                                 int16_t y,
+                                 float angleDegrees,
+                                 RemoteTextStyle style,
+                                 uint16_t textColor,
+                                 uint16_t bgColor) override {
+        Arduino_GFX* gfx = activeDisplay();
+        if(gfx == nullptr || text.length() == 0) {
+            return;
+        }
+
+        configureText(style, textColor, bgColor);
+        int16_t x1 = 0;
+        int16_t y1 = 0;
+        uint16_t w = 0;
+        uint16_t h = 0;
+        gfx->getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
+        const int16_t spriteW = max<int16_t>(1, static_cast<int16_t>(w + 10));
+        const int16_t spriteH = max<int16_t>(1, static_cast<int16_t>(h + 10));
+
+        uint16_t transparent = 0x0001;
+        if(transparent == textColor || transparent == bgColor) {
+            transparent = 0xF81F;
+        }
+
+        GFXcanvas16 glyph(spriteW, spriteH);
+        uint16_t* buffer = glyph.getBuffer();
+        if(buffer == nullptr) {
+            drawCenteredText(text, x, y, style, textColor, bgColor);
+            return;
+        }
+
+        glyph.setFont(nullptr);
+        glyph.setTextSize(sizeForStyle(style));
+        glyph.setTextWrap(false);
+        glyph.fillScreen(transparent);
+        glyph.setTextColor(textColor, transparent);
+        glyph.setCursor(static_cast<int16_t>((spriteW - w) / 2) - x1,
+                        static_cast<int16_t>((spriteH - h) / 2) - y1);
+        glyph.print(text);
+
+        const float radians = angleDegrees * 0.01745329252f;
+        const float c = cosf(radians);
+        const float s = sinf(radians);
+        const float pivotX = (static_cast<float>(spriteW) - 1.0f) * 0.5f;
+        const float pivotY = (static_cast<float>(spriteH) - 1.0f) * 0.5f;
+
+        for(int16_t row = 0; row < spriteH; ++row) {
+            for(int16_t col = 0; col < spriteW; ++col) {
+                const uint16_t color = buffer[(static_cast<size_t>(row) * spriteW) + col];
+                if(color == transparent) {
+                    continue;
+                }
+
+                const float dx = static_cast<float>(col) - pivotX;
+                const float dy = static_cast<float>(row) - pivotY;
+                const int16_t dstX =
+                    static_cast<int16_t>(lroundf(static_cast<float>(x) + (dx * c) - (dy * s)));
+                const int16_t dstY =
+                    static_cast<int16_t>(lroundf(static_cast<float>(y) + (dx * s) + (dy * c)));
+                gfx->drawPixel(dstX, dstY, color);
+            }
+        }
     }
 
     void drawTextTopLeft(const String& text,
@@ -742,7 +810,7 @@ bool pingTouchController() {
     digitalWrite(kBoardPins.touchReset, LOW);
     delay(30);
     digitalWrite(kBoardPins.touchReset, HIGH);
-    delay(50);
+    delay(kTouchResetSettleMs);
     Wire.begin(kBoardPins.touchSda, kBoardPins.touchScl, kI2cClock);
     for(uint8_t attempt = 1; attempt <= kTouchProbeAttempts; ++attempt) {
         Wire.beginTransmission(kTouchAddress);

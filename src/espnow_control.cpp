@@ -221,8 +221,6 @@ bool espnow_control_start() {
     }
 
     WiFi.mode(WIFI_STA);
-    // BLE is active on this firmware for the scale/console task, so keep
-    // WiFi modem sleep enabled instead of tripping the BT coexistence abort.
     WiFi.setSleep(true);
 
     espnowChannelValue = default_espnow_channel;

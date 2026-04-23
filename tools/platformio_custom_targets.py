@@ -11,6 +11,7 @@ PIOENV = env["PIOENV"]
 
 CONTROLLER_ENVS = ("controller-universal-s3",)
 REMOTE_ENVS = ("remote-universal-s3",)
+CACHE_WARM_ENVS = ("controller-universal-s3", "remote-universal-s3", "remote-waveshare-175")
 
 
 def _repo_root() -> Path:
@@ -43,6 +44,13 @@ def update_packages(source=None, target=None, env_=None, **kwargs):
     _run_platformio(PROJECT_DIR, "pkg", "update", "-d", str(PROJECT_DIR))
 
 
+def warm_package_cache(source=None, target=None, env_=None, **kwargs):
+    args = ["pkg", "install", "-d", str(ROOT_PROJECT_DIR)]
+    for env_name in CACHE_WARM_ENVS:
+        args.extend(["-e", env_name])
+    _run_platformio(ROOT_PROJECT_DIR, *args)
+
+
 def update_clean_build(source=None, target=None, env_=None, **kwargs):
     _run_platformio(PROJECT_DIR, "pkg", "update", "-d", str(PROJECT_DIR))
     _run_env(PROJECT_DIR, PIOENV, "clean")
@@ -65,19 +73,27 @@ def build_all_hardware(source=None, target=None, env_=None, **kwargs):
 
 
 env.AddCustomTarget(
+    name="warm_package_cache",
+    dependencies=[],
+    actions=[warm_package_cache],
+    title="Warm Shared Package Cache",
+    description="Install pinned PlatformIO packages once so later builds reuse the cached toolchain",
+)
+
+env.AddCustomTarget(
     name="update_packages",
     dependencies=[],
     actions=[update_packages],
-    title="Update Packages",
-    description="Refresh PlatformIO packages and library dependencies",
+    title="Force Update Packages",
+    description="Refresh PlatformIO packages and library dependencies from upstream",
 )
 
 env.AddCustomTarget(
     name="update_clean_build",
     dependencies=[],
     actions=[update_clean_build],
-    title="Update, Clean, Build",
-    description="Update packages, clean the environment, and rebuild firmware",
+    title="Force Update, Clean, Build",
+    description="Refresh packages from upstream, clean the environment, and rebuild firmware",
 )
 
 env.AddCustomTarget(

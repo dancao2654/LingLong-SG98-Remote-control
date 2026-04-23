@@ -85,7 +85,7 @@ constexpr ControllerBoardInfo kWaveshareBoard = {
     kWavesharePins,
 };
 
-constexpr uint32_t kAdafruitFlashBytes = 4U * 1024U * 1024U;
+constexpr uint32_t kControllerBoxFlashBytes = 8U * 1024U * 1024U;
 
 const ControllerBoardInfo* g_activeBoard = nullptr;
 uint32_t g_detectedFlashSizeBytes = 0;
@@ -93,10 +93,18 @@ bool g_loggedBoardSelection = false;
 
 uint32_t detectFlashSizeBytes() {
     uint32_t size = 0;
+    // Use the chip's physical capacity, not the image-header flash size.
+    if(esp_flash_get_physical_size(nullptr, &size) == ESP_OK && size != 0) {
+        return size;
+    }
+    size = static_cast<uint32_t>(ESP.getFlashChipSize());
+    if(size != 0) {
+        return size;
+    }
     if(esp_flash_get_size(nullptr, &size) == ESP_OK && size != 0) {
         return size;
     }
-    return static_cast<uint32_t>(ESP.getFlashChipSize());
+    return 0;
 }
 
 const ControllerBoardInfo* detectBoard() {
@@ -106,7 +114,7 @@ const ControllerBoardInfo* detectBoard() {
     return &kWaveshareBoard;
 #else
     g_detectedFlashSizeBytes = detectFlashSizeBytes();
-    if(g_detectedFlashSizeBytes > kAdafruitFlashBytes) {
+    if(g_detectedFlashSizeBytes > kControllerBoxFlashBytes) {
         return &kWaveshareBoard;
     }
     return &kAdafruitBoard;
