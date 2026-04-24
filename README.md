@@ -9,6 +9,7 @@ For a full project walkthrough, architecture guide, workflow explanation, and mo
 - `Developer-Guide.md`
 - `Documentation/IO-Reference.md`
 - `Documentation/New-Motor-Backend-Guide.md`
+- `Documentation/New-Motor-Backend-Implementation-Template.md`
 
 #### Firmware targets
 

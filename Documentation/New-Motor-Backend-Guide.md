@@ -4,6 +4,10 @@ This guide explains the current motor architecture in plain language and shows e
 
 It is written for someone who is new to this repo and just wants a safe checklist to follow.
 
+If you want the copy-and-fill version that focuses on "where do I put the motor-specific commands?", read:
+
+- `Documentation/New-Motor-Backend-Implementation-Template.md`
+
 ## What The New Architecture Looks Like
 
 The controller firmware now treats each motor family as a backend.
