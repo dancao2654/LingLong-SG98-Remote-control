@@ -59,6 +59,10 @@ constexpr uint32_t kHomeStatusPollIdleMs = 1800;
 constexpr uint32_t kHomeStatusPollRunningMs = 1200;
 constexpr uint32_t kHomeStatusPollActiveMs = 2400;
 constexpr uint32_t kPersistentStateDebounceMs = 1200;
+constexpr uint32_t kMotionHomeConfirmWindowMs = 1200;
+constexpr uint32_t kMotionHomeMinGapMs = 250;
+constexpr uint32_t kMotionHomeCooldownMs = 2500;
+constexpr uint32_t kMotionHomeIgnoreAfterControlMs = 1200;
 constexpr char kPersistentStateNamespace[] = "remote-app";
 constexpr char kPersistentStateKey[] = "snapshot";
 
@@ -314,6 +318,9 @@ struct AppState {
     Screen dangerScreen = Screen::Home;
     uint8_t dangerSelection = 0;
     uint32_t lastUserActivityAt = 0;
+    uint32_t lastControlActivityAt = 0;
+    uint32_t motionHomeCandidateAt = 0;
+    uint32_t lastMotionHomeAt = 0;
     uint32_t lastTouchTapAt = 0;
     uint32_t lastBatteryPollAt = 0;
     uint32_t lastHomeAdjustAt = 0;
@@ -684,6 +691,7 @@ LinkTransport sanitizeTransport(uint8_t raw) {
 void setToast(const String& text, uint32_t durationMs);
 void setScreen(Screen screen);
 void sanitizeSelections();
+void markPersistentStateDirty(uint32_t debounceMs);
 
 void clearRecoveredSendFailureToast() {
     if(app.toast == "Send failed" && app.toastUntil > millis()) {
@@ -1857,6 +1865,51 @@ void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTrans
     }
     app.redraw = true;
     app.lastUserActivityAt = millis();
+    app.lastControlActivityAt = app.lastUserActivityAt;
+    app.motionHomeCandidateAt = 0;
+    app.lastMotionHomeAt = 0;
+}
+
+bool wakeStatusIncludesGpio(int8_t gpioNum) {
+    if(gpioNum < 0) {
+        return false;
+    }
+
+    const uint64_t wakeBit = uint64_t{1} << static_cast<unsigned>(gpioNum);
+    switch(esp_sleep_get_wakeup_cause()) {
+        case ESP_SLEEP_WAKEUP_EXT1:
+            return (esp_sleep_get_ext1_wakeup_status() & wakeBit) != 0;
+#if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
+        case ESP_SLEEP_WAKEUP_GPIO:
+            return (esp_sleep_get_gpio_wakeup_status() & wakeBit) != 0;
+#endif
+        default:
+            return false;
+    }
+}
+
+bool wokeFromMotionSource() {
+    return remote_board_wake_supported(RemoteWakeSource::Motion) &&
+           wakeStatusIncludesGpio(remote_board_pins().imuInt);
+}
+
+bool returnToHomeOnMotion(bool markPersistentState) {
+    if(app.screen == Screen::Home && !app.editing) {
+        return false;
+    }
+
+    app.screen = Screen::Home;
+    app.menuRollOffset = 0.0f;
+    app.editing = false;
+    app.redraw = true;
+    touchTracker = {};
+    app.motionHomeCandidateAt = 0;
+    app.lastMotionHomeAt = millis();
+    sanitizeSelections();
+    if(markPersistentState) {
+        markPersistentStateDirty(kPersistentStateDebounceMs);
+    }
+    return true;
 }
 
 void markPersistentStateDirty(uint32_t debounceMs = kPersistentStateDebounceMs) {
@@ -1932,6 +1985,9 @@ bool restoreSleepSnapshot(LinkTransport* restoredTransport) {
     }
 
     restoreSnapshot(g_sleepSnapshot, restoredTransport, "Awake");
+    if(wokeFromMotionSource()) {
+        returnToHomeOnMotion(false);
+    }
     return true;
 }
 
@@ -2060,6 +2116,35 @@ uint32_t currentStatusPollIntervalMs() {
 
 void markUserActivity() {
     app.lastUserActivityAt = millis();
+}
+
+bool handleMotionHomeGesture(uint32_t now) {
+    if(app.screen == Screen::Home && !app.editing) {
+        app.motionHomeCandidateAt = 0;
+        return false;
+    }
+
+    if((now - app.lastMotionHomeAt) < kMotionHomeCooldownMs) {
+        return false;
+    }
+
+    if((now - app.lastControlActivityAt) < kMotionHomeIgnoreAfterControlMs) {
+        app.motionHomeCandidateAt = 0;
+        return false;
+    }
+
+    if(app.motionHomeCandidateAt == 0 ||
+       (now - app.motionHomeCandidateAt) > kMotionHomeConfirmWindowMs) {
+        app.motionHomeCandidateAt = now;
+        setToast("Shake again for RUN", 900);
+        return false;
+    }
+
+    if((now - app.motionHomeCandidateAt) < kMotionHomeMinGapMs) {
+        return false;
+    }
+
+    return returnToHomeOnMotion(true);
 }
 
 bool stateAllowsModeToggle() {
@@ -6349,6 +6434,9 @@ void resumeAfterIdleLightSleep(LinkTransport resumeTransport) {
     app.lastBackgroundMenuPollAt = millis();
     refreshBatteryStatus(true);
     markUserActivity();
+    if(wokeFromMotionSource()) {
+        returnToHomeOnMotion(false);
+    }
     setToast("Awake", remote_config::kWakeToastMs);
 }
 
@@ -7798,6 +7886,7 @@ void remote_app_setup() {
     app.preferGbw = false;
     app.redraw = true;
     app.lastUserActivityAt = millis();
+    app.lastControlActivityAt = app.lastUserActivityAt;
     app.currentTransport = LinkTransport::None;
     app.lastTransportSwitchAt = millis();
     LinkTransport startupTransport = initialTransport();
@@ -7828,11 +7917,31 @@ void remote_app_loop() {
     remote_audio_service();
     remoteConsolePoll();
 
+    const bool hasControlInput =
+        input.dialDelta != 0 || input.primaryPressed || input.primaryLongPress || input.primaryShortPress ||
+        input.secondaryPressed || input.secondaryLongPress || input.secondaryShortPress ||
+        input.touch.pressed || input.touch.justPressed || input.touch.justReleased;
+    if(hasControlInput) {
+        app.lastControlActivityAt = now;
+        app.motionHomeCandidateAt = 0;
+    }
+
     if(input.dialDelta != 0 || input.motionDetected || input.primaryPressed ||
        input.primaryLongPress || input.primaryShortPress ||
        input.secondaryPressed || input.secondaryLongPress || input.secondaryShortPress ||
        input.touch.pressed || input.touch.justPressed || input.touch.justReleased) {
         markUserActivity();
+    }
+
+    if(input.motionDetected && handleMotionHomeGesture(now)) {
+        input.dialDelta = 0;
+        input.primaryPressed = false;
+        input.primaryShortPress = false;
+        input.primaryLongPress = false;
+        input.secondaryPressed = false;
+        input.secondaryShortPress = false;
+        input.secondaryLongPress = false;
+        input.touch = {};
     }
 
     if(input.primaryLongPress) {
