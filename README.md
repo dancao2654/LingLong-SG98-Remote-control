@@ -6,8 +6,9 @@ covering both the main SG98 controller board and the standalone ESP32-S3 remote.
 
 For a full project walkthrough, architecture guide, workflow explanation, and motor protocol notes, start with:
 
-- `Documentation/Developer-Guide.md`
+- `Developer-Guide.md`
 - `Documentation/IO-Reference.md`
+- `Documentation/New-Motor-Backend-Guide.md`
 
 #### Firmware targets
 
