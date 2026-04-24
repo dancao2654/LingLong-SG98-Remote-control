@@ -22,7 +22,8 @@ constexpr int kScreenWidth = 280;
 constexpr int kScreenHeight = 240;
 constexpr int kDrawBufferLines = 12;
 constexpr uint32_t kSplashVisibleMs = 1800;
-constexpr uint8_t kVisibleMenuRows = 5;
+constexpr uint8_t kVisibleMenuRows = 3;
+constexpr uint8_t kVisibleMotorSelectRows = 3;
 
 constexpr uint32_t kColorBg = 0x08111C;
 constexpr uint32_t kColorPanel = 0x10233A;
@@ -33,6 +34,11 @@ constexpr uint32_t kColorSoft = 0xC6D8EA;
 constexpr uint32_t kColorMuted = 0xA9BDD1;
 constexpr uint32_t kColorLine = 0x244564;
 constexpr uint32_t kColorAccent = 0x63C7FF;
+constexpr uint32_t kColorMenuItem = 0x0A1726;
+constexpr uint32_t kColorMenuItemActive = 0x020812;
+constexpr uint32_t kColorMenuItemActiveLine = 0x8ADFFF;
+constexpr uint32_t kColorMenuItemActiveText = 0xFFFFFF;
+constexpr uint32_t kColorMenuItemText = 0xE6F2FF;
 constexpr uint32_t kColorGood = 0x57E89A;
 constexpr uint32_t kColorWarn = 0xFFD86A;
 constexpr uint32_t kColorDanger = 0xFF7272;
@@ -90,9 +96,9 @@ struct UiRefs {
     lv_obj_t* selectView = nullptr;
     lv_obj_t* selectTitle = nullptr;
     lv_obj_t* selectBody = nullptr;
-    lv_obj_t* selectRows[NUM_MOTOR_SELECT_ITEMS] = {};
-    lv_obj_t* selectLabels[NUM_MOTOR_SELECT_ITEMS] = {};
-    lv_obj_t* selectHints[NUM_MOTOR_SELECT_ITEMS] = {};
+    lv_obj_t* selectRows[kVisibleMotorSelectRows] = {};
+    lv_obj_t* selectLabels[kVisibleMotorSelectRows] = {};
+    lv_obj_t* selectHints[kVisibleMotorSelectRows] = {};
 
     lv_obj_t* splashView = nullptr;
     lv_obj_t* splashLabel = nullptr;
@@ -147,6 +153,13 @@ String fitText(const String& value, size_t maxChars) {
     if(value.length() <= maxChars) return value;
     if(maxChars <= 3) return value.substring(0, maxChars);
     return value.substring(0, maxChars - 3) + "...";
+}
+
+const lv_font_t* heroMenuFontForText(const String& value) {
+    if((value.indexOf(' ') < 0 && value.length() > 10) || value.length() > 22) {
+        return &lv_font_montserrat_24;
+    }
+    return &lv_font_montserrat_32;
 }
 
 String stripMenuName(const char* raw) {
@@ -370,6 +383,7 @@ lv_color_t headerMotorColor() {
     switch(motor_get_drive_type()) {
         case DRIVE_TYPE_JMC: return lvColor(kColorAccent);
         case DRIVE_TYPE_RT: return lvColor(kColorGood);
+        case DRIVE_TYPE_KRS_130ST_M07725: return lvColor(kColorWarn);
         case DRIVE_TYPE_UNKNOWN:
         default:
             return lvColor(kColorMuted);
@@ -382,6 +396,8 @@ uint32_t headerMotorFillColor() {
             return blendRgb(kColorPanelHi, kColorWarn, 0.52f);
         case DRIVE_TYPE_RT:
             return blendRgb(kColorPanelHi, kColorGood, 0.56f);
+        case DRIVE_TYPE_KRS_130ST_M07725:
+            return blendRgb(kColorPanelHi, kColorWarn, 0.54f);
         case DRIVE_TYPE_UNKNOWN:
         default:
             return blendRgb(kColorPanelHi, kColorAccent, 0.50f);
@@ -399,12 +415,17 @@ const menuEntry* menuByNum(int menuNum) {
 }
 
 String menuTitleForNum(int menuNum) {
+    (void)menuNum;
+    return "Grinder Setup";
+}
+
+String menuPathForNum(int menuNum) {
     switch(menuNum) {
-        case 1: return "Controller";
-        case 2: return "Purge";
-        case 3: return "Grind by Weight";
-        case 4: return "JMC Baud";
-        default: return "Menu";
+        case 1: return "Only grinder setup. Rotate to browse.";
+        case 2: return "Purge Settings. Rotate to browse.";
+        case 3: return "GbW Settings. Rotate to browse.";
+        case 4: return "JMC Baud. Rotate to browse.";
+        default: return "Rotate to browse.";
     }
 }
 
@@ -461,6 +482,9 @@ const MotorCommandDescriptor* motorCommandForMenuItem(int menuNum, int selectedI
 }
 
 String menuItemLabel(const menuEntry& item, int menuNum, int selectedIdx) {
+    if(menuNum == 1 && selectedIdx == Menu1Items::EXITMENU) return "Exit Setup";
+    if(menuNum > 1 && selectedIdx == 0) return "Back to Setup";
+
     const MotorCommandDescriptor* command = motorCommandForMenuItem(menuNum, selectedIdx);
     if(command != nullptr && command->label != nullptr && command->label[0] != '\0') {
         return command->label;
@@ -473,7 +497,13 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
     if(command != nullptr && !command->supported) return "N/A";
 
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) {
-        if(menuNum == 1 && (selectedIdx == PURGESETTINGS || selectedIdx == GBWSETTINGS || selectedIdx == JMCBAUDMENU)) return "Open";
+        if(menuNum == 1 && selectedIdx == Menu1Items::EXITMENU) return "Close";
+        if(menuNum > 1 && selectedIdx == 0) return "Up";
+        if(menuNum == 1 &&
+           (selectedIdx == PURGESETTINGS ||
+            selectedIdx == GBWSETTINGS ||
+            selectedIdx == JMCBAUDMENU ||
+            selectedIdx == DRIVESETTINGS)) return "Open";
         if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return String(baudForJmcMenuItem(selectedIdx));
         if(menuNum == 1 && selectedIdx == CALIBRATE) return "Hold";
         return "Select";
@@ -533,6 +563,7 @@ const char* motorSelectTitle(int idx) {
         case MOTOR_SELECT_AUTO: return "AUTO";
         case MOTOR_SELECT_JMC: return "JMC";
         case MOTOR_SELECT_RT: return "RT";
+        case MOTOR_SELECT_KRS_130ST_M07725: return "KRS";
         default: return "";
     }
 }
@@ -542,6 +573,7 @@ const char* motorSelectHint(int idx) {
         case MOTOR_SELECT_AUTO: return "Re-detect";
         case MOTOR_SELECT_JMC: return "Force JMC";
         case MOTOR_SELECT_RT: return "Force RT";
+        case MOTOR_SELECT_KRS_130ST_M07725: return "Force KRS 130ST";
         default: return "";
     }
 }
@@ -785,6 +817,7 @@ void createMenuUi() {
     lv_obj_set_style_text_font(ui.menuTitle, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(ui.menuTitle, lvColor(kColorInk), 0);
     lv_obj_align(ui.menuTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+    setHidden(ui.menuTitle, true);
 
     ui.menuHelp = lv_label_create(ui.menuView);
     lv_obj_set_width(ui.menuHelp, 240);
@@ -792,29 +825,33 @@ void createMenuUi() {
     lv_obj_set_style_text_color(ui.menuHelp, lvColor(kColorSoft), 0);
     lv_label_set_long_mode(ui.menuHelp, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.menuHelp, LV_ALIGN_TOP_LEFT, 0, 24);
+    setHidden(ui.menuHelp, true);
 
     for(uint8_t i = 0; i < kVisibleMenuRows; ++i) {
         ui.menuRows[i] = lv_obj_create(ui.menuView);
-        stylePanel(ui.menuRows[i], 0x0C1B2C, kColorLine, LV_OPA_90);
-        lv_obj_set_size(ui.menuRows[i], 240, 22);
-        lv_obj_set_pos(ui.menuRows[i], 0, 48 + (i * 25));
-        lv_obj_set_style_pad_hor(ui.menuRows[i], 10, 0);
-        lv_obj_set_style_pad_ver(ui.menuRows[i], 2, 0);
+        stylePanel(ui.menuRows[i], kColorMenuItem, kColorLine, LV_OPA_90);
+        lv_obj_set_size(ui.menuRows[i], i == 1 ? 240 : 1, i == 1 ? 140 : 1);
+        lv_obj_set_pos(ui.menuRows[i], i == 1 ? 0 : 0, i == 1 ? 6 : 0);
+        lv_obj_set_style_pad_hor(ui.menuRows[i], i == 1 ? 16 : 0, 0);
+        lv_obj_set_style_pad_ver(ui.menuRows[i], i == 1 ? 16 : 0, 0);
 
         ui.menuRowLabel[i] = lv_label_create(ui.menuRows[i]);
-        lv_obj_set_width(ui.menuRowLabel[i], 142);
-        lv_obj_set_style_text_font(ui.menuRowLabel[i], &lv_font_montserrat_12, 0);
-        lv_obj_set_style_text_color(ui.menuRowLabel[i], lvColor(kColorInk), 0);
-        lv_label_set_long_mode(ui.menuRowLabel[i], LV_LABEL_LONG_DOT);
-        lv_obj_align(ui.menuRowLabel[i], LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_width(ui.menuRowLabel[i], i == 1 ? 208 : 1);
+        lv_obj_set_style_text_font(ui.menuRowLabel[i], i == 1 ? &lv_font_montserrat_32 : &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(ui.menuRowLabel[i], lvColor(kColorMenuItemText), 0);
+        lv_obj_set_style_text_align(ui.menuRowLabel[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_line_space(ui.menuRowLabel[i], 2, 0);
+        lv_label_set_long_mode(ui.menuRowLabel[i], i == 1 ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
+        lv_obj_center(ui.menuRowLabel[i]);
 
         ui.menuRowValue[i] = lv_label_create(ui.menuRows[i]);
-        lv_obj_set_width(ui.menuRowValue[i], 72);
-        lv_obj_set_style_text_font(ui.menuRowValue[i], &lv_font_montserrat_12, 0);
+        lv_obj_set_width(ui.menuRowValue[i], 1);
+        lv_obj_set_style_text_font(ui.menuRowValue[i], &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(ui.menuRowValue[i], lvColor(kColorSoft), 0);
         lv_obj_set_style_text_align(ui.menuRowValue[i], LV_TEXT_ALIGN_RIGHT, 0);
         lv_label_set_long_mode(ui.menuRowValue[i], LV_LABEL_LONG_DOT);
         lv_obj_align(ui.menuRowValue[i], LV_ALIGN_RIGHT_MID, 0, 0);
+        setHidden(ui.menuRowValue[i], true);
     }
 
     ui.menuFooter = lv_label_create(ui.menuView);
@@ -823,6 +860,7 @@ void createMenuUi() {
     lv_obj_set_style_text_color(ui.menuFooter, lvColor(kColorSoft), 0);
     lv_label_set_long_mode(ui.menuFooter, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.menuFooter, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    setHidden(ui.menuFooter, true);
 }
 
 void createDetailUi() {
@@ -838,19 +876,23 @@ void createDetailUi() {
     lv_obj_set_style_text_color(ui.detailTitle, lvColor(kColorInk), 0);
     lv_label_set_long_mode(ui.detailTitle, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.detailTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+    setHidden(ui.detailTitle, true);
 
     lv_obj_t* card = lv_obj_create(ui.detailView);
-    stylePanel(card, kColorPanelHi, kColorLine);
-    lv_obj_set_size(card, 240, 72);
-    lv_obj_align(card, LV_ALIGN_TOP_LEFT, 0, 38);
-    lv_obj_set_style_pad_all(card, 12, 0);
+    stylePanel(card, kColorMenuItemActive, kColorMenuItemActiveLine);
+    lv_obj_set_style_border_width(card, 3, 0);
+    lv_obj_set_size(card, 240, 140);
+    lv_obj_align(card, LV_ALIGN_TOP_LEFT, 0, 6);
+    lv_obj_set_style_pad_hor(card, 16, 0);
+    lv_obj_set_style_pad_ver(card, 16, 0);
 
     ui.detailValue = lv_label_create(card);
-    lv_obj_set_width(ui.detailValue, 216);
-    lv_obj_set_style_text_font(ui.detailValue, &lv_font_montserrat_24, 0);
-    lv_obj_set_style_text_color(ui.detailValue, lvColor(kColorAccent), 0);
+    lv_obj_set_width(ui.detailValue, 208);
+    lv_obj_set_style_text_font(ui.detailValue, &lv_font_montserrat_32, 0);
+    lv_obj_set_style_text_color(ui.detailValue, lvColor(kColorMenuItemActiveText), 0);
     lv_obj_set_style_text_align(ui.detailValue, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_long_mode(ui.detailValue, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_line_space(ui.detailValue, 2, 0);
+    lv_label_set_long_mode(ui.detailValue, LV_LABEL_LONG_WRAP);
     lv_obj_center(ui.detailValue);
 
     ui.detailMeta = lv_label_create(ui.detailView);
@@ -859,6 +901,7 @@ void createDetailUi() {
     lv_obj_set_style_text_color(ui.detailMeta, lvColor(kColorSoft), 0);
     lv_label_set_long_mode(ui.detailMeta, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.detailMeta, LV_ALIGN_TOP_LEFT, 0, 122);
+    setHidden(ui.detailMeta, true);
 
     ui.detailHint = lv_label_create(ui.detailView);
     lv_obj_set_width(ui.detailHint, 240);
@@ -866,6 +909,7 @@ void createDetailUi() {
     lv_obj_set_style_text_color(ui.detailHint, lvColor(kColorSoft), 0);
     lv_label_set_long_mode(ui.detailHint, LV_LABEL_LONG_WRAP);
     lv_obj_align(ui.detailHint, LV_ALIGN_TOP_LEFT, 0, 146);
+    setHidden(ui.detailHint, true);
 }
 
 void createMotorSelectUi() {
@@ -880,31 +924,37 @@ void createMotorSelectUi() {
     lv_obj_set_style_text_font(ui.selectTitle, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_color(ui.selectTitle, lvColor(kColorInk), 0);
     lv_obj_align(ui.selectTitle, LV_ALIGN_TOP_LEFT, 0, 0);
+    setHidden(ui.selectTitle, true);
 
     ui.selectBody = lv_label_create(ui.selectView);
     lv_obj_set_width(ui.selectBody, 240);
     lv_obj_set_style_text_font(ui.selectBody, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(ui.selectBody, lvColor(kColorSoft), 0);
-    lv_label_set_long_mode(ui.selectBody, LV_LABEL_LONG_WRAP);
+    lv_label_set_long_mode(ui.selectBody, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.selectBody, LV_ALIGN_TOP_LEFT, 0, 24);
+    setHidden(ui.selectBody, true);
 
-    for(uint8_t i = 0; i < NUM_MOTOR_SELECT_ITEMS; ++i) {
+    for(uint8_t i = 0; i < kVisibleMotorSelectRows; ++i) {
         ui.selectRows[i] = lv_obj_create(ui.selectView);
-        stylePanel(ui.selectRows[i], 0x0C1B2C, kColorLine);
-        lv_obj_set_size(ui.selectRows[i], 240, 34);
-        lv_obj_set_pos(ui.selectRows[i], 0, 66 + (i * 38));
-        lv_obj_set_style_pad_hor(ui.selectRows[i], 12, 0);
-        lv_obj_set_style_pad_ver(ui.selectRows[i], 8, 0);
+        stylePanel(ui.selectRows[i], kColorMenuItem, kColorLine);
+        lv_obj_set_size(ui.selectRows[i], i == 1 ? 240 : 1, i == 1 ? 140 : 1);
+        lv_obj_set_pos(ui.selectRows[i], i == 1 ? 0 : 0, i == 1 ? 6 : 0);
+        lv_obj_set_style_pad_hor(ui.selectRows[i], i == 1 ? 16 : 0, 0);
+        lv_obj_set_style_pad_ver(ui.selectRows[i], i == 1 ? 16 : 0, 0);
 
         ui.selectLabels[i] = lv_label_create(ui.selectRows[i]);
-        lv_obj_set_style_text_font(ui.selectLabels[i], &lv_font_montserrat_16, 0);
-        lv_obj_set_style_text_color(ui.selectLabels[i], lvColor(kColorInk), 0);
-        lv_obj_align(ui.selectLabels[i], LV_ALIGN_LEFT_MID, 0, 0);
+        lv_obj_set_width(ui.selectLabels[i], i == 1 ? 208 : 1);
+        lv_obj_set_style_text_font(ui.selectLabels[i], i == 1 ? &lv_font_montserrat_32 : &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(ui.selectLabels[i], lvColor(kColorMenuItemText), 0);
+        lv_obj_set_style_text_align(ui.selectLabels[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_long_mode(ui.selectLabels[i], i == 1 ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
+        lv_obj_center(ui.selectLabels[i]);
 
         ui.selectHints[i] = lv_label_create(ui.selectRows[i]);
         lv_obj_set_style_text_font(ui.selectHints[i], &lv_font_montserrat_12, 0);
         lv_obj_set_style_text_color(ui.selectHints[i], lvColor(kColorSoft), 0);
         lv_obj_align(ui.selectHints[i], LV_ALIGN_RIGHT_MID, 0, 0);
+        setHidden(ui.selectHints[i], true);
     }
 }
 
@@ -1160,26 +1210,32 @@ void syncMenuList() {
     const menuEntry* menu = menuByNum(menuNum);
     if(menu == nullptr || count <= 0) return;
 
-    lv_label_set_text(ui.menuTitle, menuTitleForNum(menuNum).c_str());
-    lv_label_set_text(ui.menuHelp, "Rotate to browse. Encoder opens. Start backs out.");
-    lv_label_set_text(ui.menuFooter, "Only grinder setup stays here. No debug clutter.");
-
-    int start = selected - 2;
-    if(start < 0) start += count;
+    lv_label_set_text(ui.menuTitle, "");
+    setHidden(ui.menuTitle, true);
+    lv_label_set_text(ui.menuHelp, "");
+    setHidden(ui.menuHelp, true);
+    lv_label_set_text(ui.menuFooter, "");
+    setHidden(ui.menuFooter, true);
 
     for(int row = 0; row < kVisibleMenuRows; ++row) {
-        const int idx = (start + row) % count;
-        const bool active = idx == selected;
+        const bool hero = row == 1;
+        setHidden(ui.menuRows[row], !hero);
+        if(!hero) continue;
 
-        lv_label_set_text(ui.menuRowLabel[row], fitText(menuItemLabel(menu[idx], menuNum, idx), 20).c_str());
-        lv_label_set_text(ui.menuRowValue[row], fitText(menuItemSummary(menu[idx], menuNum, idx), 11).c_str());
+        const String label = menuItemLabel(menu[selected], menuNum, selected);
+        lv_obj_set_style_text_font(ui.menuRowLabel[row], heroMenuFontForText(label), 0);
+        lv_label_set_text(ui.menuRowLabel[row], label.c_str());
+        lv_label_set_text(ui.menuRowValue[row], "");
+        setHidden(ui.menuRowValue[row], true);
 
         stylePanel(ui.menuRows[row],
-                   active ? 0x153A56 : 0x0C1B2C,
-                   active ? 0x55C0FF : kColorLine,
-                   active ? LV_OPA_COVER : LV_OPA_90);
-        lv_obj_set_style_text_color(ui.menuRowLabel[row], active ? lvColor(kColorAccent) : lvColor(kColorInk), 0);
-        lv_obj_set_style_text_color(ui.menuRowValue[row], active ? lvColor(kColorInk) : lvColor(kColorMuted), 0);
+                   kColorMenuItemActive,
+                   kColorMenuItemActiveLine,
+                   LV_OPA_COVER);
+        lv_obj_set_style_border_width(ui.menuRows[row], 3, 0);
+        lv_obj_set_style_text_color(ui.menuRowLabel[row],
+                                    lvColor(kColorMenuItemActiveText),
+                                    0);
     }
 }
 
@@ -1190,36 +1246,42 @@ void syncMenuDetail() {
     if(menu == nullptr) return;
 
     const menuEntry& item = menu[selected];
-    lv_label_set_text(ui.detailTitle, fitText(menuItemLabel(item, menuNum, selected), 24).c_str());
-    lv_label_set_text(ui.detailValue, fitText(menuDetailValue(item, menuNum, selected), 18).c_str());
-    lv_label_set_text(ui.detailMeta, fitText(menuDetailMeta(item, menuNum, selected), 30).c_str());
-    lv_label_set_text(ui.detailHint, fitText(menuDetailHint(item, menuNum, selected), 70).c_str());
-
-    const bool warning = menuNum == 1 && (selected == Menu1Items::RESET || selected == Menu1Items::RESETNETWORK);
-    const bool action = item.scalar == 0 && item.maxValue == 0 && item.minValue == 0;
-    const bool unsupportedMotorSetting = motorCommandForMenuItem(menuNum, selected) != nullptr &&
-                                         !motorCommandForMenuItem(menuNum, selected)->supported;
-    lv_obj_set_style_text_color(ui.detailValue,
-                                warning ? lvColor(kColorWarn)
-                                        : (unsupportedMotorSetting ? lvColor(kColorMuted)
-                                                                   : (action ? lvColor(kColorAccent) : lvColor(kColorGood))),
-                                0);
+    lv_label_set_text(ui.detailTitle, "");
+    setHidden(ui.detailTitle, true);
+    const String value = menuDetailValue(item, menuNum, selected);
+    lv_obj_set_style_text_font(ui.detailValue, heroMenuFontForText(value), 0);
+    lv_label_set_text(ui.detailValue, value.c_str());
+    lv_obj_set_style_text_color(ui.detailValue, lvColor(kColorMenuItemActiveText), 0);
+    lv_label_set_text(ui.detailMeta, "");
+    setHidden(ui.detailMeta, true);
+    lv_label_set_text(ui.detailHint, "");
+    setHidden(ui.detailHint, true);
 }
 
 void syncMotorSelect() {
-    lv_label_set_text(ui.selectTitle, "Choose Drive");
-    lv_label_set_text(ui.selectBody,
-                      "Auto probe did not lock. Rotate to choose. Encoder applies. Start goes back.");
+    lv_label_set_text(ui.selectTitle, "");
+    setHidden(ui.selectTitle, true);
+    lv_label_set_text(ui.selectBody, "");
+    setHidden(ui.selectBody, true);
 
-    for(int i = 0; i < NUM_MOTOR_SELECT_ITEMS; ++i) {
-        const bool active = i == motorSelectSelected;
-        lv_label_set_text(ui.selectLabels[i], motorSelectTitle(i));
-        lv_label_set_text(ui.selectHints[i], motorSelectHint(i));
-        stylePanel(ui.selectRows[i],
-                   active ? 0x153A56 : 0x0C1B2C,
-                   active ? 0x55C0FF : kColorLine);
-        lv_obj_set_style_text_color(ui.selectLabels[i], active ? lvColor(kColorAccent) : lvColor(kColorInk), 0);
-        lv_obj_set_style_text_color(ui.selectHints[i], active ? lvColor(kColorInk) : lvColor(kColorSoft), 0);
+    for(int row = 0; row < kVisibleMotorSelectRows; ++row) {
+        const bool hero = row == 1;
+        setHidden(ui.selectRows[row], !hero);
+        if(!hero) continue;
+
+        lv_label_set_text(ui.selectLabels[row], motorSelectTitle(motorSelectSelected));
+        lv_label_set_text(ui.selectHints[row], "");
+        setHidden(ui.selectHints[row], true);
+        stylePanel(ui.selectRows[row],
+                   kColorMenuItemActive,
+                   kColorMenuItemActiveLine);
+        lv_obj_set_style_border_width(ui.selectRows[row], 3, 0);
+        lv_obj_set_style_text_color(ui.selectLabels[row],
+                                    lvColor(kColorMenuItemActiveText),
+                                    0);
+        lv_obj_set_style_text_color(ui.selectHints[row],
+                                    lvColor(kColorMenuItemActiveText),
+                                    0);
     }
 }
 

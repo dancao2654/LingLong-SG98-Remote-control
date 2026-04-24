@@ -1283,6 +1283,20 @@ bool isRunningState() {
            (app.status.state == "GRINDING" || app.status.state == "GRINDING_GBW" || app.status.state == "PURGING");
 }
 
+bool statusStateIsRunning(const String& state) {
+    return state == "GRINDING" || state == "GRINDING_GBW" || state == "PURGING";
+}
+
+bool statusStateIsStopped(const String& state) {
+    return state == "IDLE" || state == "IDLE_GBW";
+}
+
+bool statusMotorUnavailable(const sg98_protocol::StatusFrame& status) {
+    return status.comm == "DISCONNECTED" ||
+           status.motor == "NOT_CONNECTED" ||
+           status.motor == "FAULT";
+}
+
 bool isRunActionAvailable() {
     return isLinkOnline();
 }
@@ -5056,6 +5070,10 @@ bool pendingActionSatisfied(const PendingAction& pending) {
 
     switch(pending.reflection) {
         case PendingActionReflection::State:
+            if(pending.kind == PendingActionKind::Stop) {
+                return statusStateIsStopped(app.controllerStatus.state) ||
+                       app.controllerStatus.state == "PURGING";
+            }
             return app.controllerStatus.state == pending.expectedText;
         case PendingActionReflection::Drive:
             return app.controllerStatus.drive == pending.expectedText;
@@ -5069,6 +5087,31 @@ bool pendingActionSatisfied(const PendingAction& pending) {
 
 bool pendingActionSent(const PendingAction& pending) {
     return pending.attempts > 0;
+}
+
+bool pendingActionRejectedByStatus(const PendingAction& pending,
+                                   const sg98_protocol::StatusFrame& status) {
+    if(pending.kind == PendingActionKind::Start && pendingActionSent(pending)) {
+        if(status.state == "MOTOR_SELECT") {
+            return true;
+        }
+        return !statusStateIsRunning(status.state) && statusMotorUnavailable(status);
+    }
+    return false;
+}
+
+String pendingActionRejectedMessage(const PendingAction& pending,
+                                    const sg98_protocol::StatusFrame& status) {
+    if(pending.kind == PendingActionKind::Start) {
+        if(status.state == "MOTOR_SELECT") {
+            return "Select drive first";
+        }
+        if(status.motor == "FAULT") {
+            return "Start failed: motor fault";
+        }
+        return "Start failed: motor offline";
+    }
+    return "Action rejected";
 }
 
 void clearPendingTargetWrite() {
@@ -5320,6 +5363,7 @@ void applyPendingUiOverridesToStatusFrame(sg98_protocol::StatusFrame* status) {
     if(app.pendingAction.kind != PendingActionKind::None &&
        app.pendingAction.reflection == PendingActionReflection::State &&
        pendingActionSent(app.pendingAction) &&
+       !pendingActionRejectedByStatus(app.pendingAction, *status) &&
        !pendingActionSatisfied(app.pendingAction)) {
         status->state = String(app.pendingAction.expectedText);
     }
@@ -5352,6 +5396,15 @@ void reconcilePendingControllerSync() {
     if(pendingActionSatisfied(app.pendingAction)) {
         clearPendingAction();
     }
+}
+
+void rejectPendingActionFromStatusIfNeeded(const sg98_protocol::StatusFrame& status) {
+    if(!pendingActionRejectedByStatus(app.pendingAction, status)) {
+        return;
+    }
+    const String message = pendingActionRejectedMessage(app.pendingAction, status);
+    clearPendingAction();
+    setToast(message, 1600);
 }
 
 void servicePendingMenuPolls() {
@@ -5503,6 +5556,8 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
     const int32_t previousWeightMg = app.weightMg;
     app.controllerStatus = status;
     app.hasControllerStatus = true;
+    reconcilePendingControllerSync();
+    rejectPendingActionFromStatusIfNeeded(status);
     sg98_protocol::StatusFrame displayStatus = status;
     applyPendingUiOverridesToStatusFrame(&displayStatus);
     const bool valuesChanged = !hadStatus || !statusFrameEqual(app.status, displayStatus);
@@ -5520,7 +5575,6 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
        previousWeightMg != app.weightMg) {
         markPersistentStateDirty();
     }
-    reconcilePendingControllerSync();
     if(shouldRedrawForStatusFrame(previous, app.status, hadStatus, valuesChanged)) {
         app.redraw = true;
     }
@@ -5642,6 +5696,14 @@ void consumeProtocolFrame(const String& frame) {
         app.lastAckAt = millis();
         if(ackFrame.ok) {
             clearRecoveredSendFailureToast();
+        } else if(app.pendingAction.kind != PendingActionKind::None) {
+            clearPendingAction();
+            if(app.hasControllerStatus) {
+                app.status = app.controllerStatus;
+                app.hasStatus = true;
+            }
+            app.lastStatusPollAt = 0;
+            app.redraw = true;
         }
         requestFullControllerRefreshOnLinkOnline(wasOnline);
         if(ackFrame.ok && ackFrame.message == "ok") {
@@ -7377,6 +7439,21 @@ void printRemoteConsoleStatus() {
     Serial.println(out);
 }
 
+void printRemoteConsoleDevice() {
+    String out;
+    out.reserve(384);
+    out += "{\"type\":\"device\",\"protocol\":\"sg98-usb-device-v1\",\"role\":\"remote\",\"target\":\"remote\",\"board\":";
+    appendJsonQuoted(out, remote_board_info().name);
+    out += ",\"mac\":";
+    appendJsonQuoted(out, WiFi.macAddress());
+    out += ",\"transport\":";
+    appendJsonQuoted(out, transportName(app.currentTransport));
+    out += ",\"apSSID\":";
+    appendJsonQuoted(out, remote_wifi_ap_ssid());
+    out += '}';
+    Serial.println(out);
+}
+
 void printRemoteConsoleSnapshot() {
     String out;
     out.reserve(4096);
@@ -7397,7 +7474,7 @@ void printRemoteConsolePeers() {
 
 void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
-    Serial.println("[remote-diag] api: api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
+    Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
@@ -7690,6 +7767,13 @@ void handleRemoteConsoleLine(const char* rawLine) {
         printRemoteConsoleStatus();
         return;
     }
+    if(line.equalsIgnoreCase("device") ||
+       line.equalsIgnoreCase("identity") ||
+       line.equalsIgnoreCase("api device") ||
+       line.equalsIgnoreCase("api identity")) {
+        printRemoteConsoleDevice();
+        return;
+    }
     if(line == "h" || line.equalsIgnoreCase("help")) {
         printRemoteConsoleHelp();
         return;
@@ -7786,6 +7870,10 @@ void handleRemoteConsoleLine(const char* rawLine) {
     if(cmd == "api") {
         String sub = takeToken(&tail);
         sub.toLowerCase();
+        if(sub == "device" || sub == "identity") {
+            printRemoteConsoleDevice();
+            return;
+        }
         if(sub == "set") {
             int32_t menuNum = 0;
             int32_t itemIdx = 0;
@@ -7831,7 +7919,7 @@ void handleRemoteConsoleLine(const char* rawLine) {
             printRemoteConsoleAck(line, ok, message);
             return;
         }
-        printRemoteConsoleAck(line, false, "usage: api status|snapshot|set|setrpm|setweight|action");
+        printRemoteConsoleAck(line, false, "usage: api device|status|snapshot|set|setrpm|setweight|action");
         return;
     }
 

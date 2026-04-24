@@ -6,7 +6,7 @@
 
 enum COMM_STATUS { COMM_DISCONNECTED, COMM_CONNECTED, COMM_INVALID_STATUS };
 enum SYSTEM_STATUS { MOTOR_NOT_CONNECTED, MOTOR_NOT_READY, MOTOR_READY, MOTOR_ENABLED, MOTOR_FAULT, MOTOR_INVALID };
-enum DriveType { DRIVE_TYPE_UNKNOWN, DRIVE_TYPE_JMC, DRIVE_TYPE_RT };
+enum DriveType { DRIVE_TYPE_UNKNOWN, DRIVE_TYPE_JMC, DRIVE_TYPE_RT, DRIVE_TYPE_KRS_130ST_M07725 };
 enum MotorCommandId {
     MOTOR_COMMAND_SET_RPM,
     MOTOR_COMMAND_TORQUE_LIMIT,
@@ -29,6 +29,7 @@ struct MotorProbeReport {
     bool jmc_magic_word;
     bool jmc_control_word;
     bool rt_status_block;
+    bool krs_130st_m07725_motor_code;
     uint32_t jmc_baud;
 };
 

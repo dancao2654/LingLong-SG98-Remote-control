@@ -251,6 +251,8 @@ uint32_t getActiveMotorCommBaud() {
   switch (comm_get_profile()) {
     case COMM_PROFILE_JMC:
       return comm_get_jmc_baud();
+    case COMM_PROFILE_KRS:
+      return COMM_BAUD_RATE_KRS;
     case COMM_PROFILE_RT:
     default:
       return COMM_BAUD_RATE_RT;
@@ -1463,6 +1465,7 @@ static const char* getMotorSelectLabel(int idx) {
         case MOTOR_SELECT_AUTO: return "AUTO";
         case MOTOR_SELECT_JMC: return "JMC";
         case MOTOR_SELECT_RT: return "RT";
+        case MOTOR_SELECT_KRS_130ST_M07725: return "KRS";
         default: return "";
     }
 }
@@ -1472,6 +1475,7 @@ static const char* getMotorSelectHint(int idx) {
         case MOTOR_SELECT_AUTO: return "Retry auto probe";
         case MOTOR_SELECT_JMC: return "Force JMC backend";
         case MOTOR_SELECT_RT: return "Force RT backend";
+        case MOTOR_SELECT_KRS_130ST_M07725: return "Force KRS 130ST backend";
         default: return "";
     }
 }
@@ -1925,7 +1929,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                   if(i == 0) {
                     tft->setFont(&FreeSans9pt7b);
                     const char* msg1 = "Normal keeps stock grind polarity.";
-                    const char* msg2 = "Reversed flips JMC and RT direction.";
+                    const char* msg2 = "Reversed flips JMC, RT, and KRS.";
                     tft->setCursor(10, 184);
                     tft->print(msg1);
                     tft->setCursor(10, 204);

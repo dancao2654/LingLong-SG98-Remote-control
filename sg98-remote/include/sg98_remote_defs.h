@@ -67,6 +67,7 @@ enum Menu1Items {
     CALIBRATE,
     RESETNETWORK,
     RESET,
+    DRIVESETTINGS,
     NUM_MENU1_ITEMS
 };
 

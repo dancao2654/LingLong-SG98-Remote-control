@@ -133,7 +133,9 @@ void processEvent(const EspNowEvent& event) {
     if(menuRefresh != 0) {
         sendFrame(event.mac, remote_link_build_menu_frame(static_cast<uint8_t>(menuRefresh)));
     }
-    disp_updateRequired = true;
+    if(!isGetStatusCommand(event.payload) || !controller_is_menu_state(state)) {
+        disp_updateRequired = true;
+    }
 }
 
 void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, int data_len) {
@@ -266,8 +268,11 @@ void espnow_control_poll() {
     }
 
     EspNowEvent event = {};
-    while(xQueueReceive(espnowQueue, &event, 0) == pdTRUE) {
+    const uint8_t queueBudget = controller_is_menu_state(state) ? 1 : ESPNOW_RX_QUEUE_LEN;
+    uint8_t processed = 0;
+    while(processed < queueBudget && xQueueReceive(espnowQueue, &event, 0) == pdTRUE) {
         processEvent(event);
+        ++processed;
     }
 
     if(takeLatestEvent(&pendingTargetEvent, &event)) {

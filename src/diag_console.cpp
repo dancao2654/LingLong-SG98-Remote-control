@@ -3,6 +3,9 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <WiFi.h>
+
+#include "controller_board.h"
 #include "display.h"
 #include "error_history.h"
 #include "gbw.h"
@@ -144,6 +147,7 @@ const char* profileText(CommProfile profile) {
     switch(profile) {
         case COMM_PROFILE_JMC: return "JMC";
         case COMM_PROFILE_RT: return "RT";
+        case COMM_PROFILE_KRS: return "KRS";
     }
     return "UNK";
 }
@@ -334,6 +338,18 @@ void jsonPrintQuoted(const String& value) {
     jsonPrintQuoted(value.c_str());
 }
 
+void apiPrintDevice() {
+    Serial.print("{\"type\":\"device\",\"protocol\":\"sg98-usb-device-v1\",\"role\":\"controller\",\"target\":");
+    jsonPrintQuoted(controller_board_target_name());
+    Serial.print(",\"board\":");
+    jsonPrintQuoted(controller_board_display_name());
+    Serial.print(",\"mac\":");
+    jsonPrintQuoted(WiFi.macAddress());
+    Serial.print(",\"buildId\":");
+    jsonPrintQuoted(BUILD_ID);
+    Serial.println("}");
+}
+
 const char* apiMenuItemKind(uint8_t menuNum, uint8_t itemIdx) {
     if(menuNum == 1) {
         switch(itemIdx) {
@@ -342,6 +358,7 @@ const char* apiMenuItemKind(uint8_t menuNum, uint8_t itemIdx) {
             case Menu1Items::GBWSETTINGS:
             case Menu1Items::JMCBAUDMENU:
                 return "submenu";
+            case Menu1Items::DRIVESETTINGS:
             case Menu1Items::CALIBRATE:
                 return "action";
             case Menu1Items::RESET:
@@ -373,6 +390,7 @@ const char* apiMenuItemKind(uint8_t menuNum, uint8_t itemIdx) {
 const char* apiMenuItemAction(uint8_t menuNum, uint8_t itemIdx) {
     if(menuNum == 1) {
         switch(itemIdx) {
+            case Menu1Items::DRIVESETTINGS: return "drive_select";
             case Menu1Items::CALIBRATE: return "calibrate";
             case Menu1Items::RESET: return "reset_defaults";
             default: return nullptr;
@@ -725,6 +743,16 @@ bool apiActionStart(const char** message) {
         return false;
     }
 
+    if(commStatus != COMM_CONNECTED || currentStatus == MOTOR_NOT_CONNECTED) {
+        *message = "motor not connected";
+        return false;
+    }
+
+    if(currentStatus == MOTOR_FAULT) {
+        *message = "motor fault";
+        return false;
+    }
+
     if(state == IDLE) {
         purge_prepare_for_grinding();
         state = GRINDING;
@@ -787,6 +815,8 @@ bool apiActionDrive(const char* mode, const char** message) {
         motor_force_drive_type(DRIVE_TYPE_JMC, false);
     } else if(strcmp(mode, "rt") == 0) {
         motor_force_drive_type(DRIVE_TYPE_RT, false);
+    } else if(strcmp(mode, "krs") == 0 || strcmp(mode, "krs130st-m07725") == 0) {
+        motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, false);
     } else {
         *message = "invalid drive mode";
         return false;
@@ -996,12 +1026,12 @@ void appendMenuSnapshotJson(String& out, uint8_t menuNum) {
 }
 
 void printHelp() {
-    Serial.println("[diag] commands: ?=status, h=help, v=toggle stream, g=force IDLE_GBW, i=force IDLE, a=redetect, j=force JMC, r=force RT, p=probe, l=dump log");
+    Serial.println("[diag] commands: ?=status, h=help, v=toggle stream, g=force IDLE_GBW, i=force IDLE, a=redetect, j=force JMC, r=force RT, k=force KRS, p=probe, l=dump log");
     Serial.println("[diag] jmc: jbaud <9600|19200|38400|57600|115200> (write drive profile and store same baud for next boot; reboot required)");
     Serial.println("[diag] config: jb <9600|19200|38400|57600|115200> (set preferred JMC boot baud, takes effect on redetect/reboot)");
     Serial.println("[diag] raw: mr <j|r> <slave> <reg> <count> | mw <j|r> <slave> <reg> <value>");
     Serial.println("[diag] raw-uart: mru <baud> <8N1|8N2|8E1|8E2|8O1|8O2> <slave> <reg> <count> | mwu <baud> <mode> <slave> <reg> <value>");
-    Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
+    Serial.println("[diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_defaults confirm>");
 }
 
@@ -1055,12 +1085,13 @@ void forceIdleMode(States nextState) {
 void printProbeReport() {
     const MotorProbeReport report = motor_run_probe_report();
     Serial.printf(
-        "[diag] probe jmc_6041=%s jmc_1010=%s jmc_6040w=%s jmc_baud=%lu rt_1300=%s active_drive=%s active_uart=%s\n",
+        "[diag] probe jmc_6041=%s jmc_1010=%s jmc_6040w=%s jmc_baud=%lu rt_1300=%s krs_pn001=%s active_drive=%s active_uart=%s\n",
         report.jmc_status_word ? "ok" : "no",
         report.jmc_magic_word ? "ok" : "no",
         report.jmc_control_word ? "ok" : "no",
         static_cast<unsigned long>(report.jmc_baud),
         report.rt_status_block ? "ok" : "no",
+        report.krs_130st_m07725_motor_code ? "ok" : "no",
         motor_get_type_label(),
         comm_get_profile_label()
     );
@@ -1157,9 +1188,10 @@ void dumpErrorHistory(bool toSerial, bool toBle) {
                 const char* detectedLabel = "AUTO";
                 if(detectedType == DRIVE_TYPE_JMC) detectedLabel = "JMC";
                 if(detectedType == DRIVE_TYPE_RT) detectedLabel = "RT";
+                if(detectedType == DRIVE_TYPE_KRS_130ST_M07725) detectedLabel = "KRS";
                 snprintf(line,
                          sizeof(line),
-                         "#%lu t=%lums %s PROBE j6041=%u j1010=%u j6040w=%u jbaud=%s rt1300=%u pick=%s st=%s",
+                         "#%lu t=%lums %s PROBE j6041=%u j1010=%u j6040w=%u jbaud=%s rt1300=%u krs20=%u pick=%s st=%s",
                          static_cast<unsigned long>(entry.sequence),
                          static_cast<unsigned long>(entry.uptime_ms),
                          levelText(entry.level),
@@ -1168,6 +1200,7 @@ void dumpErrorHistory(bool toSerial, bool toBle) {
                          static_cast<unsigned>((entry.value >> 2) & 0x1U),
                          jmcBaudLabel,
                          static_cast<unsigned>((entry.value >> 3) & 0x1U),
+                         static_cast<unsigned>((entry.value >> 4) & 0x1U),
                          detectedLabel,
                          shortStateTextRaw(entry.state));
                 break;
@@ -1349,6 +1382,11 @@ bool parseProfileToken(const char* token, CommProfile* profile) {
         return true;
     }
 
+    if(strcmp(token, "k") == 0 || strcmp(token, "K") == 0 || strcmp(token, "krs") == 0 || strcmp(token, "KRS") == 0) {
+        *profile = COMM_PROFILE_KRS;
+        return true;
+    }
+
     return false;
 }
 
@@ -1465,6 +1503,11 @@ void handleLineCommand(char* line) {
 
         if(strcmp(subcmd, "snapshot") == 0) {
             apiPrintSnapshot();
+            return;
+        }
+
+        if(strcmp(subcmd, "device") == 0 || strcmp(subcmd, "identity") == 0) {
+            apiPrintDevice();
             return;
         }
 
@@ -1838,6 +1881,12 @@ void handleSerialCommand(char cmd) {
         case 'R':
             motor_force_drive_type(DRIVE_TYPE_RT, false);
             Serial.println("[diag] forced drive=RT");
+            printStatus();
+            break;
+        case 'k':
+        case 'K':
+            motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, false);
+            Serial.println("[diag] forced drive=KRS");
             printStatus();
             break;
         case 'p':

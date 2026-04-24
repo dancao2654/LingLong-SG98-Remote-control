@@ -198,6 +198,9 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
 
   // First communication when disconnected
   if(commStatus == COMM_DISCONNECTED) { 
+    const uint16_t reconnectDelay = controller_is_menu_state(state) ? comm_get_menu_delay_ms() : comm_get_send_delay_ms();
+    if(lastCommSend + reconnectDelay > millis()) return false;
+
     if(writeMultipleConfirm(514, 2, 0, 0)) {
       #ifdef DEBUG_MOTORCONTROL
         Serial.println("We're connected!");
@@ -309,7 +312,8 @@ bool motor_rt_do_comm_backend() { // can be called continously and will update a
 
   if (nextCommType == 0) delay = comm_get_send_delay_ms(); 
   if(nextCommType > 0) { 
-    if (state == IDLE || state == IDLE_GBW || state == MENU1 || state == MENU2 || state == MENU3 || state == MENU4) delay = comm_get_idle_delay_ms();
+    if(controller_is_menu_state(state)) delay = comm_get_menu_delay_ms();
+    else if (state == IDLE || state == IDLE_GBW) delay = comm_get_idle_delay_ms();
     else delay = comm_get_active_interval_ms();
   }
 

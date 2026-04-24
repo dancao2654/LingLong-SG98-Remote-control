@@ -20,10 +20,13 @@ void purge_mark_started();
 
 enum States{SLEEPING, IDLE, IDLE_GBW, GRINDING, PURGING, GRINDING_GBW, MENU1, MENU2, MENU3, MENU4, CALIBRATING, MOTOR_SELECT};
 
+bool controller_is_menu_state(States currentState);
+
 enum MotorSelectItems{
     MOTOR_SELECT_AUTO,
     MOTOR_SELECT_JMC,
     MOTOR_SELECT_RT,
+    MOTOR_SELECT_KRS_130ST_M07725,
     NUM_MOTOR_SELECT_ITEMS
 };
 
@@ -45,6 +48,7 @@ enum Menu1Items{
     CALIBRATE,
     RESETNETWORK,
     RESET,
+    DRIVESETTINGS,
     NUM_MENU1_ITEMS
 };
 

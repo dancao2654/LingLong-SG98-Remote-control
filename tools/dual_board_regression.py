@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import glob
 import json
 import sys
 import time
@@ -8,9 +9,13 @@ from collections import deque
 import serial
 
 
-DEFAULT_REMOTE_PORT = "/dev/cu.usbmodem21101"
-DEFAULT_CONTROLLER_PORT = "/dev/cu.usbmodem21201"
-DEFAULT_CONTROLLER_MAC = "FC:01:2C:D6:38:BC"
+# Current Mac bench wiring:
+# remote: /dev/cu.usbmodem21201, USB serial 1C:DB:D4:7B:67:94
+# controller: /dev/cu.usbmodem21101, USB serial FC:01:2C:D6:38:BC
+DEFAULT_REMOTE_PORT = "auto"
+DEFAULT_CONTROLLER_PORT = "auto"
+DEFAULT_CONTROLLER_MAC = "auto"
+FALLBACK_CONTROLLER_MAC = "FC:01:2C:D6:38:BC"
 
 
 class TestFailure(RuntimeError):
@@ -403,6 +408,101 @@ class DualBoardRegression:
             self.restore_original_state()
 
 
+def candidate_serial_ports():
+    patterns = [
+        "/dev/cu.usbmodem*",
+        "/dev/cu.usbserial*",
+        "/dev/cu.wchusbserial*",
+        "/dev/cu.SLAB_USBto*",
+    ]
+    ports = []
+    seen = set()
+    for pattern in patterns:
+        for port in glob.glob(pattern):
+            if port not in seen:
+                seen.add(port)
+                ports.append(port)
+    return sorted(ports)
+
+
+def read_json_response(port, command, expected_type=None, timeout=2.5):
+    try:
+        with serial.Serial(port, 115200, timeout=0.2) as ser:
+            time.sleep(0.2)
+            ser.reset_input_buffer()
+            ser.write((command + "\n").encode("utf-8"))
+            ser.flush()
+            deadline = time.time() + timeout
+            while time.time() < deadline:
+                raw = ser.readline()
+                if not raw:
+                    continue
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("{"):
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if expected_type is None or payload.get("type") == expected_type:
+                    return payload
+    except serial.SerialException:
+        return None
+    return None
+
+
+def role_from_payload(payload):
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("type") == "device":
+        role = payload.get("role")
+        if role in ("remote", "controller"):
+            return role
+    if payload.get("type") == "status":
+        data = payload.get("data")
+        if isinstance(data, dict) and "transport" in data and "board" in data:
+            return "remote"
+        if "state" in payload and "motor" in payload and "drive" in payload:
+            return "controller"
+    return None
+
+
+def probe_serial_port(port):
+    payload = read_json_response(port, "api device", expected_type="device")
+    if payload is None:
+        payload = read_json_response(port, "api status", expected_type="status")
+    role = role_from_payload(payload)
+    return {"port": port, "role": role, "payload": payload}
+
+
+def discover_boards():
+    discovered = {"remote": None, "controller": None}
+    for port in candidate_serial_ports():
+        info = probe_serial_port(port)
+        role = info.get("role")
+        if role in discovered and discovered[role] is None:
+            discovered[role] = info
+    return discovered
+
+
+def controller_mac_from_detection(discovered):
+    controller = discovered.get("controller")
+    if controller and isinstance(controller.get("payload"), dict):
+        mac = controller["payload"].get("mac")
+        if mac:
+            return mac
+
+    remote = discovered.get("remote")
+    payload = remote.get("payload") if remote else None
+    data = payload.get("data") if isinstance(payload, dict) else None
+    peers = data.get("peers") if isinstance(data, dict) else None
+    if isinstance(peers, list):
+        for peer in peers:
+            if isinstance(peer, dict) and peer.get("mac"):
+                return peer["mac"]
+    return FALLBACK_CONTROLLER_MAC
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run SG98 controller/remote serial regression")
     parser.add_argument("--remote-port", default=DEFAULT_REMOTE_PORT)
@@ -410,7 +510,26 @@ def main():
     parser.add_argument("--controller-mac", default=DEFAULT_CONTROLLER_MAC)
     args = parser.parse_args()
 
-    rig = DualBoardRegression(args.remote_port, args.controller_port, args.controller_mac)
+    remote_port = args.remote_port
+    controller_port = args.controller_port
+    controller_mac = args.controller_mac
+    if "auto" in (remote_port, controller_port, controller_mac):
+        discovered = discover_boards()
+        if remote_port == "auto":
+            if discovered["remote"] is None:
+                print("Could not auto-detect remote USB serial port.", file=sys.stderr)
+                return 1
+            remote_port = discovered["remote"]["port"]
+        if controller_port == "auto":
+            if discovered["controller"] is None:
+                print("Could not auto-detect controller USB serial port.", file=sys.stderr)
+                return 1
+            controller_port = discovered["controller"]["port"]
+        if controller_mac == "auto":
+            controller_mac = controller_mac_from_detection(discovered)
+        print(f"Using remote={remote_port} controller={controller_port} controller_mac={controller_mac}")
+
+    rig = DualBoardRegression(remote_port, controller_port, controller_mac)
     try:
         rig.run()
     except TestFailure as exc:

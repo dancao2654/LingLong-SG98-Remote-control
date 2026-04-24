@@ -30,6 +30,7 @@
 #define COMMINTERVAL 60 // comm interval during normal operation
 #define COMM_DELAY_RECEIVE 50 //expect a respond 10ms after request send
 #define COMM_DELAY_IDLE 1000
+#define COMM_DELAY_MENU 1500
 #define COMM_DELAY_SEND 60 //send every 50ms max
 #define DISCONNECTED_AFTER 10000 //after Xms of not receiving comms, disconnected error shows
 #define SEND_RPM_EVERY 5 //send RPM every X frames

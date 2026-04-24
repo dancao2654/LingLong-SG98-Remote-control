@@ -4,6 +4,7 @@
 
 #define COMM_BAUD_RATE_JMC 9600
 #define COMM_BAUD_RATE_RT 9600
+#define COMM_BAUD_RATE_KRS 9600
 
 #define comm_h
 #define SLAVE_ID 0x01
@@ -14,6 +15,7 @@
 enum CommProfile {
   COMM_PROFILE_RT,
   COMM_PROFILE_JMC,
+  COMM_PROFILE_KRS,
 };
 
 enum JmcCommRate {
@@ -47,6 +49,7 @@ const char* comm_get_jmc_rate_label();
 uint16_t comm_get_send_delay_ms();
 uint16_t comm_get_receive_delay_ms();
 uint16_t comm_get_idle_delay_ms();
+uint16_t comm_get_menu_delay_ms();
 uint16_t comm_get_active_interval_ms();
 
 bool writeConfirm(uint16_t reg_addr, uint16_t value);

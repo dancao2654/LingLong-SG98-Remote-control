@@ -3,8 +3,9 @@
 #include "io.h"
 #include "main.h"
 #include <math.h>
-#include <JC_Button.h>
 #include <ESP32Encoder.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include "pdata.h"
 #include "display.h"
 #include "gbw.h"
@@ -16,6 +17,20 @@
 namespace {
 constexpr uint32_t START_BUTTON_DEBOUNCE_MS = 12;
 constexpr uint32_t ENC_BUTTON_DEBOUNCE_MS = 12;
+constexpr uint32_t BUTTON_SERVICE_POLL_MS = 2;
+constexpr uint32_t BUTTON_SERVICE_STACK_WORDS = 2048;
+constexpr UBaseType_t BUTTON_SERVICE_PRIORITY = 4;
+
+portMUX_TYPE buttonMux = portMUX_INITIALIZER_UNLOCKED;
+TaskHandle_t buttonTaskHandle = nullptr;
+
+bool startButtonAvailable = false;
+bool startButtonIdleLevel = true;
+bool startButtonLastRawLevel = true;
+bool startButtonPressed = false;
+bool startButtonPressEvent = false;
+bool startButtonReleaseEvent = false;
+unsigned long startButtonDebounceStartedAt = 0;
 
 bool encButtonIdleLevel = true;
 bool encButtonLastRawLevel = true;
@@ -31,13 +46,16 @@ unsigned long encButtonLastStableChangeAt = 0;
 void pollEncoderButton() {
     const ControllerBoardPins& pins = controller_board_pins();
     if(!controller_board_has_encoder_button() || !controller_board_pin_valid(pins.encoderButton)) {
+        portENTER_CRITICAL(&buttonMux);
         encButtonChanged = false;
+        portEXIT_CRITICAL(&buttonMux);
         return;
     }
 
     const unsigned long now = millis();
     const bool rawLevel = digitalRead(pins.encoderButton);
 
+    portENTER_CRITICAL(&buttonMux);
     encButtonChanged = false;
     if(rawLevel != encButtonLastRawLevel) {
         encButtonLastRawLevel = rawLevel;
@@ -45,6 +63,7 @@ void pollEncoderButton() {
     }
 
     if(now - encButtonDebounceStartedAt < ENC_BUTTON_DEBOUNCE_MS) {
+        portEXIT_CRITICAL(&buttonMux);
         return;
     }
 
@@ -68,6 +87,61 @@ void pollEncoderButton() {
         encButtonLongPressLatched = true;
         encButtonLongPressEvent = true;
     }
+    portEXIT_CRITICAL(&buttonMux);
+}
+
+void pollStartButton() {
+    if(!startButtonAvailable) {
+        return;
+    }
+
+    const ControllerBoardPins& pins = controller_board_pins();
+    const unsigned long now = millis();
+    const bool rawLevel = digitalRead(pins.startButton);
+
+    portENTER_CRITICAL(&buttonMux);
+    if(rawLevel != startButtonLastRawLevel) {
+        startButtonLastRawLevel = rawLevel;
+        startButtonDebounceStartedAt = now;
+    }
+
+    if(now - startButtonDebounceStartedAt < START_BUTTON_DEBOUNCE_MS) {
+        portEXIT_CRITICAL(&buttonMux);
+        return;
+    }
+
+    const bool pressed = (rawLevel != startButtonIdleLevel);
+    if(pressed != startButtonPressed) {
+        startButtonPressed = pressed;
+        if(pressed) {
+            startButtonPressEvent = true;
+        } else {
+            startButtonReleaseEvent = true;
+        }
+    }
+    portEXIT_CRITICAL(&buttonMux);
+}
+
+void buttonServiceTask(void*) {
+    for(;;) {
+        pollEncoderButton();
+        pollStartButton();
+        vTaskDelay(pdMS_TO_TICKS(BUTTON_SERVICE_POLL_MS));
+    }
+}
+
+void startButtonServiceTask() {
+    if(buttonTaskHandle != nullptr) {
+        return;
+    }
+
+    xTaskCreatePinnedToCore(buttonServiceTask,
+                            "ButtonTask",
+                            BUTTON_SERVICE_STACK_WORDS,
+                            nullptr,
+                            BUTTON_SERVICE_PRIORITY,
+                            &buttonTaskHandle,
+                            1);
 }
 
 bool shouldOpenDriveSelector() {
@@ -83,6 +157,9 @@ void openDriveSelector(States returnState) {
             break;
         case DRIVE_TYPE_RT:
             motorSelectSelected = MOTOR_SELECT_RT;
+            break;
+        case DRIVE_TYPE_KRS_130ST_M07725:
+            motorSelectSelected = MOTOR_SELECT_KRS_130ST_M07725;
             break;
         case DRIVE_TYPE_UNKNOWN:
         default:
@@ -102,6 +179,9 @@ void applyDriveSelection() {
             break;
         case MOTOR_SELECT_RT:
             motor_force_drive_type(DRIVE_TYPE_RT, false);
+            break;
+        case MOTOR_SELECT_KRS_130ST_M07725:
+            motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, false);
             break;
         case MOTOR_SELECT_AUTO:
         default:
@@ -132,7 +212,6 @@ uint32_t baudForJmcMenuItem(int selectedIdx) {
     }
 }
 ESP32Encoder encoder;
-Button* start_button = nullptr;
 
 int16_t storedSetRPM = 0;
 uint32_t storedSetWeight = 0;
@@ -140,25 +219,37 @@ uint32_t storedSetWeight = 0;
 void io_init() { 
     const ControllerBoardPins& pins = controller_board_pins();
 
-    if(start_button != nullptr) {
-        delete start_button;
-        start_button = nullptr;
-    }
-
     if(controller_board_has_start_button() && controller_board_pin_valid(pins.startButton)) {
         pinMode(pins.startButton, INPUT_PULLUP);
-        start_button = new Button(pins.startButton, START_BUTTON_DEBOUNCE_MS);
-        start_button->begin();
+        portENTER_CRITICAL(&buttonMux);
+        startButtonAvailable = true;
+        startButtonIdleLevel = digitalRead(pins.startButton);
+        startButtonLastRawLevel = startButtonIdleLevel;
+        startButtonPressed = false;
+        startButtonPressEvent = false;
+        startButtonReleaseEvent = false;
+        startButtonDebounceStartedAt = millis();
+        portEXIT_CRITICAL(&buttonMux);
+    } else {
+        portENTER_CRITICAL(&buttonMux);
+        startButtonAvailable = false;
+        startButtonIdleLevel = true;
+        startButtonLastRawLevel = true;
+        startButtonPressed = false;
+        startButtonPressEvent = false;
+        startButtonReleaseEvent = false;
+        startButtonDebounceStartedAt = millis();
+        portEXIT_CRITICAL(&buttonMux);
     }
 
+    bool encoderIdleLevel = true;
     if(controller_board_has_encoder_button() && controller_board_pin_valid(pins.encoderButton)) {
         pinMode(pins.encoderButton, INPUT);
-        encButtonIdleLevel = digitalRead(pins.encoderButton);
-        encButtonLastRawLevel = encButtonIdleLevel;
-    } else {
-        encButtonIdleLevel = true;
-        encButtonLastRawLevel = true;
+        encoderIdleLevel = digitalRead(pins.encoderButton);
     }
+    portENTER_CRITICAL(&buttonMux);
+    encButtonIdleLevel = encoderIdleLevel;
+    encButtonLastRawLevel = encoderIdleLevel;
     encButtonPressed = false;
     encButtonChanged = false;
     encButtonPressEvent = false;
@@ -167,6 +258,7 @@ void io_init() {
     encButtonLongPressEvent = false;
     encButtonDebounceStartedAt = millis();
     encButtonLastStableChangeAt = encButtonDebounceStartedAt;
+    portEXIT_CRITICAL(&buttonMux);
 
     if(controller_board_has_start_led() && controller_board_pin_valid(pins.startButtonLed)) {
         pinMode(pins.startButtonLed, OUTPUT);
@@ -184,13 +276,14 @@ void io_init() {
         encoder.setFilter(100);
         encoder.setCount(0);
     }
+
+    startButtonServiceTask();
 }
 
 void do_io() { 
     static bool lastIdle = false; //lastIdle true means it was on normal Idle before, false means idle_GBW
     static int16_t OriginalValue = 0;
     static bool notReleasedYet = false;
-    pollEncoderButton();
 
     if(state == IDLE) { 
         controller_idle_sleep_active() ? ledAction(0) : ledAction(3);
@@ -355,8 +448,13 @@ void do_io() {
                 if(menu1Selected == Menu1Items::PURGESETTINGS) state = MENU2;
                 if(menu1Selected == Menu1Items::GBWSETTINGS) state = MENU3;
                 if(menu1Selected == Menu1Items::JMCBAUDMENU) state = MENU4;
+                if(menu1Selected == Menu1Items::DRIVESETTINGS) openDriveSelector(MENU1);
                 if(menu1Selected == Menu1Items::EXITMENU) lastIdle? state = IDLE : state = IDLE_GBW; 
-                if(menu1Selected != Menu1Items::PURGESETTINGS && menu1Selected != Menu1Items::GBWSETTINGS && menu1Selected != Menu1Items::JMCBAUDMENU && menu1Selected != Menu1Items::EXITMENU) enterMenu = true; //entering settings adjustment
+                if(menu1Selected != Menu1Items::PURGESETTINGS &&
+                   menu1Selected != Menu1Items::GBWSETTINGS &&
+                   menu1Selected != Menu1Items::JMCBAUDMENU &&
+                   menu1Selected != Menu1Items::DRIVESETTINGS &&
+                   menu1Selected != Menu1Items::EXITMENU) enterMenu = true; //entering settings adjustment
                 OriginalValue = Menu1[menu1Selected].value;
             } else { 
                 enterMenu = false;
@@ -579,14 +677,16 @@ void do_io() {
 }
 
 bool pressedLong() { 
+    bool event = false;
+    portENTER_CRITICAL(&buttonMux);
     if(encButtonLongPressEvent) {
         encButtonLongPressEvent = false;
         encButtonPressEvent = false;
-        controller_note_activity();
-        return true;
+        event = true;
     }
-
-    return false;
+    portEXIT_CRITICAL(&buttonMux);
+    if(event) controller_note_activity();
+    return event;
 }
 
 int16_t encoder_change() { 
@@ -609,46 +709,54 @@ int16_t encoder_change() {
 }
 
 bool check_io() { //returns true immediately when a button is pressed - normal control uses wasReleased to prevent double feedback.
-    pollEncoderButton();
-    if(encButtonPressed || encButtonPressEvent || encButtonShortReleaseEvent || encButtonLongPressEvent) return true;
-    if(start_button != nullptr) {
-        start_button->read();
-        if(start_button->isPressed() || start_button->wasPressed() || start_button->wasReleased()) return true;
-    }
-    return false;
+    portENTER_CRITICAL(&buttonMux);
+    const bool active = encButtonPressed ||
+                        encButtonPressEvent ||
+                        encButtonShortReleaseEvent ||
+                        encButtonLongPressEvent ||
+                        startButtonPressed ||
+                        startButtonPressEvent;
+    portEXIT_CRITICAL(&buttonMux);
+    return active;
 }
 
 bool ENC_BUTTON_DOWN() {
+    bool event = false;
+    portENTER_CRITICAL(&buttonMux);
     if(encButtonPressEvent) {
         encButtonPressEvent = false;
         encButtonLongPressLatched = true;
-        controller_note_activity();
-        return true;
+        event = true;
     }
-    return false;
+    portEXIT_CRITICAL(&buttonMux);
+    if(event) controller_note_activity();
+    return event;
 }
 
 bool ENC_BUTTON() { 
+    bool event = false;
+    portENTER_CRITICAL(&buttonMux);
     if(encButtonShortReleaseEvent) {
         encButtonShortReleaseEvent = false;
         encButtonPressEvent = false;
-        controller_note_activity();
-        return true;
+        event = true;
     }
-    return false;
+    portEXIT_CRITICAL(&buttonMux);
+    if(event) controller_note_activity();
+    return event;
 }
 
 bool START_BUTTON() {
-    if(start_button == nullptr) {
-        return false;
+    bool event = false;
+    portENTER_CRITICAL(&buttonMux);
+    if(startButtonAvailable && startButtonPressEvent) {
+        startButtonPressEvent = false;
+        startButtonReleaseEvent = false;
+        event = true;
     }
-
-    start_button->read();
-    if(start_button->wasPressed()) {
-        controller_note_activity();
-        return true;
-    }
-    return false;
+    portEXIT_CRITICAL(&buttonMux);
+    if(event) controller_note_activity();
+    return event;
 }
 
 void ledAction(uint8_t type) {  //Type: 0 = off, 1 = on, 2 = flashing, 3 = fading, 4 flashing fast, 5 = flashing fastest, 100-200 = %.

@@ -42,6 +42,7 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 14
     {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 15
     {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 16
+    {"Drive", 0, 0, 0, 0, "DRIVESEL", ""},                // 17
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {
@@ -101,6 +102,7 @@ int loopcount = 0;
 
 namespace {
 constexpr bool kDisableIdleSleepForTesting = false;
+constexpr unsigned long MENU_TRAFFIC_POLL_INTERVAL_MS = 300;
 
 uint8_t purgeFrameCounter = 0;
 int16_t purgeLastSetRPM = 0;
@@ -114,9 +116,25 @@ uint8_t purgePhase = 0;
 uint8_t purgeLastPhase = 0xFF;
 bool purgeSequenceNeedsInit = true;
 bool idleSleepActive = false;
+unsigned long lastMenuTrafficPollAt = 0;
 
 bool controllerCanIdleSleep() {
     return state == IDLE || state == IDLE_GBW;
+}
+
+bool shouldPollTrafficNow(bool menuMode) {
+    if(!menuMode) {
+        lastMenuTrafficPollAt = millis();
+        return true;
+    }
+
+    const unsigned long now = millis();
+    if(lastMenuTrafficPollAt == 0 || now - lastMenuTrafficPollAt >= MENU_TRAFFIC_POLL_INTERVAL_MS) {
+        lastMenuTrafficPollAt = now;
+        return true;
+    }
+
+    return false;
 }
 
 void printWakeSummary() {
@@ -129,6 +147,19 @@ void printWakeSummary() {
         Serial.println("[sleep] source=start button");
     }
 }
+}
+
+bool controller_is_menu_state(States currentState) {
+    switch(currentState) {
+        case MENU1:
+        case MENU2:
+        case MENU3:
+        case MENU4:
+        case MOTOR_SELECT:
+            return true;
+        default:
+            return false;
+    }
 }
 
 void purge_prepare_for_grinding() {
@@ -245,14 +276,22 @@ void setup() {
 void loop() { 
     doVitals();
     do_io();
+    const bool menuMode = controller_is_menu_state(state);
+    if(menuMode) {
+        update_display();
+    }
     do_comm();
     diag_console_poll();
-    radio_mode_poll();
+    if(shouldPollTrafficNow(menuMode)) {
+        radio_mode_poll();
+    }
     sleepTimeCheck();
     if(idleSleepActive && !controllerCanIdleSleep()) {
         controller_exit_idle_sleep();
     }
-    update_display();
+    if(!menuMode) {
+        update_display();
+    }
     
     if(state == IDLE)
     { 

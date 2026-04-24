@@ -45,6 +45,8 @@ uint32_t baudRateForProfile(CommProfile profile) {
   switch (profile) {
     case COMM_PROFILE_JMC:
       return baudRateForJmcRate(activeJmcRate);
+    case COMM_PROFILE_KRS:
+      return COMM_BAUD_RATE_KRS;
     case COMM_PROFILE_RT:
     default:
       return COMM_BAUD_RATE_RT;
@@ -55,6 +57,8 @@ uint32_t serialConfigForProfile(CommProfile profile) {
   switch (profile) {
     case COMM_PROFILE_JMC:
       return SERIAL_8N1;
+    case COMM_PROFILE_KRS:
+      return SERIAL_8O1;
     case COMM_PROFILE_RT:
     default:
       return SERIAL_8N1;
@@ -148,6 +152,11 @@ uint16_t idleDelayForProfile(CommProfile profile) {
     default:
       return 400;
   }
+}
+
+uint16_t menuDelayForProfile(CommProfile profile) {
+  const uint16_t idleDelay = idleDelayForProfile(profile);
+  return idleDelay > COMM_DELAY_MENU ? idleDelay : COMM_DELAY_MENU;
 }
 
 uint16_t activeIntervalForProfile(CommProfile profile) {
@@ -455,6 +464,10 @@ uint16_t comm_get_idle_delay_ms() {
   return idleDelayForProfile(activeCommProfile);
 }
 
+uint16_t comm_get_menu_delay_ms() {
+  return menuDelayForProfile(activeCommProfile);
+}
+
 uint16_t comm_get_active_interval_ms() {
   return activeIntervalForProfile(activeCommProfile);
 }
@@ -479,6 +492,8 @@ const char* comm_get_profile_label() {
         default:
           return "9600-8N1";
       }
+    case COMM_PROFILE_KRS:
+      return "9600-8O1";
     case COMM_PROFILE_RT:
     default:
       return "9600-8N1";
