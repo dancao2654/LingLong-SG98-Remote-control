@@ -10,7 +10,7 @@
 #define rpm_scalar 25
 #define LONGPRESS 750
 
-#define default_sleepTime 120
+#define default_sleepTime 5
 #define default_setRPM 1000
 #define default_brightness 200
 #define default_maxRPM 2000

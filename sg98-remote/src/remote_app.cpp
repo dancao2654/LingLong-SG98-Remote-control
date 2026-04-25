@@ -59,10 +59,10 @@ constexpr uint32_t kHomeStatusPollIdleMs = 1800;
 constexpr uint32_t kHomeStatusPollRunningMs = 1200;
 constexpr uint32_t kHomeStatusPollActiveMs = 2400;
 constexpr uint32_t kPersistentStateDebounceMs = 1200;
-constexpr uint32_t kMotionHomeConfirmWindowMs = 1200;
-constexpr uint32_t kMotionHomeMinGapMs = 250;
-constexpr uint32_t kMotionHomeCooldownMs = 2500;
-constexpr uint32_t kMotionHomeIgnoreAfterControlMs = 1200;
+constexpr uint32_t kMotionHomeConfirmWindowMs = 1500;
+constexpr uint32_t kMotionHomeMinGapMs = 200;
+constexpr uint32_t kMotionHomeCooldownMs = 2200;
+constexpr uint32_t kMotionHomeIgnoreAfterControlMs = 900;
 constexpr const char* kControllerApHost = "192.168.4.1";
 constexpr char kPersistentStateNamespace[] = "remote-app";
 constexpr char kPersistentStateKey[] = "snapshot";
@@ -1330,6 +1330,34 @@ String homePrimaryStatusLine() {
     return app.hasStatus ? app.status.state : "WAITING";
 }
 
+int32_t rpmMagnitude(int32_t rpm) {
+    return rpm < 0 ? -rpm : rpm;
+}
+
+int16_t homeWheelDisplayRpm() {
+    if(!app.hasStatus) {
+        return 0;
+    }
+    if(app.status.currentRpm != 0) {
+        return app.status.currentRpm;
+    }
+    if(isRunningState() && app.status.motorSetRpm != 0) {
+        return app.status.motorSetRpm;
+    }
+    if(isRunningState()) {
+        return app.status.setRpm;
+    }
+    return 0;
+}
+
+bool reverseRpmDisplayActive() {
+    return !isGbwState() && isRunningState() && homeWheelDisplayRpm() < 0;
+}
+
+uint16_t reverseRpmAccentColor() {
+    return blendColor565(kColorDanger, kColorWarn, 0.28f);
+}
+
 float manualRpmWarningLevel() {
     if(isGbwState()) {
         return 0.0f;
@@ -1364,6 +1392,18 @@ HomePalette buildHomePalette() {
         return palette;
     }
 
+    if(reverseRpmDisplayActive()) {
+        const uint16_t reverseAccent = reverseRpmAccentColor();
+        palette.background = blendColor565(kColorBg, reverseAccent, 0.18f);
+        palette.panel = blendColor565(kColorPanel, reverseAccent, 0.32f);
+        palette.panelHi = blendColor565(kColorPanelHi, reverseAccent, 0.30f);
+        palette.accent = reverseAccent;
+        palette.accent2 = blendColor565(kColorWarn, kColorDanger, 0.36f);
+        palette.muted = blendColor565(kColorMuted, reverseAccent, 0.22f);
+        palette.modeFill = blendColor565(kColorDanger, kColorWarn, 0.34f);
+        return palette;
+    }
+
     const float warningLevel = manualRpmWarningLevel();
     const uint16_t heat = rpmWarningHeatColor(warningLevel);
     palette.background = blendColor565(kColorBg, heat, 0.18f + warningLevel * 0.18f);
@@ -1374,26 +1414,6 @@ HomePalette buildHomePalette() {
     palette.muted = blendColor565(kColorMuted, heat, 0.18f + warningLevel * 0.20f);
     palette.modeFill = blendColor565(kColorGood, heat, 0.68f);
     return palette;
-}
-
-int16_t homeWheelDisplayRpm() {
-    if(!app.hasStatus) {
-        return 0;
-    }
-    if(app.status.currentRpm != 0) {
-        return app.status.currentRpm;
-    }
-    if(isRunningState() && app.status.motorSetRpm != 0) {
-        return app.status.motorSetRpm;
-    }
-    if(isRunningState()) {
-        return app.status.setRpm;
-    }
-    return 0;
-}
-
-int32_t rpmMagnitude(int32_t rpm) {
-    return rpm < 0 ? -rpm : rpm;
 }
 
 int8_t homeWheelSpinDirection() {
@@ -2041,6 +2061,15 @@ bool idleDeepSleepSupported() {
            deepSleepWakeMask() != 0;
 }
 
+bool touchWakeNeedsLightSleep() {
+    if(!remote_board_wake_supported(RemoteWakeSource::Touch)) {
+        return false;
+    }
+
+    const int8_t touchInt = remote_board_pins().touchInt;
+    return touchInt >= 0 && !esp_sleep_is_valid_wakeup_gpio(static_cast<gpio_num_t>(touchInt));
+}
+
 void debugRoundInput(const char* tag, int32_t a = 0, int32_t b = 0, int32_t c = 0, int32_t d = 0) {
     if(!kRoundInputDebug || !useRoundNavigation()) {
         return;
@@ -2278,7 +2307,10 @@ void refreshBatteryStatus(bool force) {
     }
 
     const uint32_t now = millis();
-    if(!force && (now - app.lastBatteryPollAt) < remote_config::kBatteryPollMs) {
+    if(!force && (now - app.lastBatteryPollAt) < remote_config::kBatteryStatusPollMs) {
+        return;
+    }
+    if(!force && touchTracker.active) {
         return;
     }
 
@@ -2383,6 +2415,14 @@ int32_t menuValue(const SettingItem& item) {
     return app.menuValues[item.menuNum][item.itemIdx];
 }
 
+bool itemUsesRpmDisplay(const SettingItem& item) {
+    return item.unit != nullptr && strcmp(item.unit, "rpm") == 0;
+}
+
+int32_t displayValueForItem(const SettingItem& item, int32_t value) {
+    return itemUsesRpmDisplay(item) ? rpmMagnitude(value) : value;
+}
+
 String formatValueLabel(const SettingItem& item, int32_t value) {
     if(usesChoiceEditor(item)) {
         return value != 0 ? toggleOnLabel(item) : toggleOffLabel(item);
@@ -2392,7 +2432,7 @@ String formatValueLabel(const SettingItem& item, int32_t value) {
         return weightLabel(value);
     }
 
-    String out = String(value);
+    String out = String(displayValueForItem(item, value));
     if(item.unit != nullptr && item.unit[0] != '\0') {
         out += ' ';
         out += item.unit;
@@ -3058,6 +3098,313 @@ void drawSoftCenteredText(RemoteCanvas& canvas,
     canvas.drawCenteredText(text, x, y, style, textColor, bgColor);
 }
 
+int16_t batteryLevelPercent(const RemoteBatteryStatus& battery) {
+    if(battery.percent >= 0) {
+        return clampI16(static_cast<int16_t>(battery.percent), 0, 100);
+    }
+    if(battery.millivolts > 0) {
+        return clampI16(static_cast<int16_t>(((battery.millivolts - 3300) * 100) / 900), 0, 100);
+    }
+    return 0;
+}
+
+String compactVoltageNumber(int32_t millivolts) {
+    if(millivolts <= 0) {
+        return "";
+    }
+
+    int32_t decivolts = (millivolts + 50) / 100;
+    const int32_t whole = decivolts / 10;
+    const int32_t frac = abs(decivolts % 10);
+    String out;
+    out.reserve(4);
+    out += String(whole);
+    out += '.';
+    out += String(frac);
+    return out;
+}
+
+String batteryIndicatorNumber(const RemoteBatteryStatus& battery) {
+    if(!battery.supported) {
+        return "";
+    }
+    if(battery.batteryPresent && battery.percent >= 0) {
+        return String(static_cast<int>(battery.percent)) + "%";
+    }
+    if(battery.batteryPresent && battery.millivolts > 0) {
+        return compactVoltageNumber(battery.millivolts);
+    }
+    if(battery.usbPresent && battery.vbusMillivolts > 0) {
+        return compactVoltageNumber(battery.vbusMillivolts);
+    }
+    if(battery.systemMillivolts > 0) {
+        return compactVoltageNumber(battery.systemMillivolts);
+    }
+    return "";
+}
+
+uint16_t batteryIndicatorAccent(const RemoteBatteryStatus& battery) {
+    if(!battery.supported) {
+        return kColorMuted;
+    }
+    if(battery.charging) {
+        return kColorGood;
+    }
+    if(battery.usbPresent && !battery.batteryPresent) {
+        return kColorGood;
+    }
+
+    const int16_t level = batteryLevelPercent(battery);
+    if(level < 20) {
+        return kColorDanger;
+    }
+    if(level < 50) {
+        return kColorWarn;
+    }
+    if(battery.usbPresent) {
+        return kColorGood;
+    }
+    return kColorGood;
+}
+
+Rect batteryIndicatorRect(const Layout& layout) {
+    const int16_t height = useRoundNavigation()
+                               ? clampI16(static_cast<int16_t>(layout.height / 5), 84, 96)
+                               : clampI16(static_cast<int16_t>(layout.topPillH + 22), 46, 58);
+    const int16_t width = useRoundNavigation()
+                              ? clampI16(static_cast<int16_t>(layout.width / 18), 24, 28)
+                              : max<int16_t>(layout.topRight.w, 58);
+    if(!useRoundNavigation()) {
+        return {
+            static_cast<int16_t>(layout.topRight.x + layout.topRight.w - width),
+            layout.topRight.y,
+            width,
+            height
+        };
+    }
+
+    const int16_t edgeInset = clampI16(static_cast<int16_t>(layout.pad / 2), 6, 10);
+    const int16_t x = static_cast<int16_t>(layout.width - edgeInset - width);
+    const int16_t y = static_cast<int16_t>((layout.height - height) / 2);
+    return {x, y, width, height};
+}
+
+void drawBoltIcon(RemoteCanvas& canvas, int16_t cx, int16_t cy, int16_t size, uint16_t color) {
+    const int16_t half = static_cast<int16_t>(size / 2);
+    canvas.drawLine(static_cast<int16_t>(cx + half / 2),
+                    static_cast<int16_t>(cy - half),
+                    static_cast<int16_t>(cx - half / 2),
+                    cy,
+                    color);
+    canvas.drawLine(static_cast<int16_t>(cx - half / 2),
+                    cy,
+                    static_cast<int16_t>(cx + half / 3),
+                    cy,
+                    color);
+    canvas.drawLine(static_cast<int16_t>(cx + half / 3),
+                    cy,
+                    static_cast<int16_t>(cx - half / 2),
+                    static_cast<int16_t>(cy + half),
+                    color);
+}
+
+void drawUsbPowerIcon(RemoteCanvas& canvas, const Rect& icon, uint16_t accent, uint16_t face, uint16_t markColor) {
+    const int16_t cx = static_cast<int16_t>(icon.x + icon.w / 2);
+    const int16_t cy = static_cast<int16_t>(icon.y + icon.h / 2);
+    const int16_t radius = clampI16(static_cast<int16_t>(min<int16_t>(icon.w, icon.h) / 3), 5, 8);
+    canvas.drawCircle(cx, cy, radius, accent);
+    canvas.drawCircle(cx, cy, static_cast<int16_t>(radius + 1), blendColor565(accent, markColor, 0.18f));
+    canvas.drawLine(cx, static_cast<int16_t>(cy - radius - 2), cx, cy, markColor);
+    canvas.drawLine(static_cast<int16_t>(cx - radius + 1),
+                    static_cast<int16_t>(cy - radius - 1),
+                    static_cast<int16_t>(cx + radius - 1),
+                    static_cast<int16_t>(cy - radius - 1),
+                    blendColor565(face, markColor, 0.38f));
+}
+
+void drawUsbCIcon(RemoteCanvas& canvas, const Rect& icon, uint16_t accent, uint16_t face, uint16_t markColor) {
+    const int16_t bodyH = clampI16(static_cast<int16_t>(icon.h / 2), 6, 10);
+    const int16_t bodyY = static_cast<int16_t>(icon.y + (icon.h - bodyH) / 2);
+    const int16_t radius = clampI16(static_cast<int16_t>(bodyH / 2), 3, 5);
+    const uint16_t shell = blendColor565(face, accent, 0.28f);
+    canvas.fillRoundRect(icon.x, bodyY, icon.w, bodyH, radius, shell);
+    canvas.drawRoundRect(icon.x, bodyY, icon.w, bodyH, radius, blendColor565(markColor, accent, 0.30f));
+    if(icon.w > 14) {
+        const int16_t slotY = static_cast<int16_t>(bodyY + bodyH / 2);
+        canvas.drawLine(static_cast<int16_t>(icon.x + 5),
+                        slotY,
+                        static_cast<int16_t>(icon.x + icon.w - 5),
+                        slotY,
+                        blendColor565(markColor, face, 0.35f));
+    }
+    canvas.drawLine(static_cast<int16_t>(icon.x + icon.w / 2),
+                    static_cast<int16_t>(bodyY + bodyH),
+                    static_cast<int16_t>(icon.x + icon.w / 2),
+                    static_cast<int16_t>(icon.y + icon.h),
+                    accent);
+}
+
+void drawBatteryGlyph(RemoteCanvas& canvas,
+                      const Rect& icon,
+                      uint16_t accent,
+                      uint16_t fillColor,
+                      uint16_t face,
+                      bool charging,
+                      bool usbPresent,
+                      int16_t level) {
+    (void)charging;
+    (void)usbPresent;
+    const int16_t bodyW = clampI16(static_cast<int16_t>(icon.w - 8), 8, 11);
+    const int16_t bodyH = clampI16(static_cast<int16_t>(icon.h - 4), 44, 62);
+    const int16_t bodyX = static_cast<int16_t>(icon.x + (icon.w - bodyW) / 2);
+    const int16_t bodyY = static_cast<int16_t>(icon.y + icon.h - bodyH);
+    const int16_t capW = clampI16(static_cast<int16_t>(bodyW - 4), 4, 7);
+    const int16_t capH = 3;
+    const uint16_t outline = blendColor565(face, accent, 0.72f);
+    const uint16_t empty = blendColor565(face, kColorBlack, 0.10f);
+
+    canvas.fillRoundRect(bodyX, bodyY, bodyW, bodyH, 4, empty);
+    canvas.drawRoundRect(bodyX, bodyY, bodyW, bodyH, 4, outline);
+    canvas.fillRoundRect(static_cast<int16_t>(bodyX + (bodyW - capW) / 2),
+                         static_cast<int16_t>(bodyY - capH),
+                         capW,
+                         capH,
+                         2,
+                         outline);
+
+    const int16_t fillMax = static_cast<int16_t>(bodyH - 4);
+    const int16_t fillH = clampI16(static_cast<int16_t>((fillMax * clampI16(level, 0, 100)) / 100), 0, fillMax);
+    if(fillH > 0) {
+        canvas.fillRoundRect(static_cast<int16_t>(bodyX + 1),
+                             static_cast<int16_t>(bodyY + bodyH - 2 - fillH),
+                             static_cast<int16_t>(bodyW - 2),
+                             fillH,
+                             2,
+                             fillColor);
+    }
+}
+
+void drawBatteryIndicator(RemoteCanvas& canvas, const Layout& layout, uint16_t backgroundColor) {
+    const RemoteBatteryStatus& battery = app.battery;
+    const Rect rect = batteryIndicatorRect(layout);
+    if(rect.w <= 0 || rect.h <= 0) {
+        return;
+    }
+
+    const uint16_t rawAccent = batteryIndicatorAccent(battery);
+    const uint16_t accent = battery.supported ? blendColor565(rawAccent, kColorText, 0.08f) : kColorMuted;
+    const uint16_t face = blendColor565(backgroundColor, kColorBlack, 0.34f);
+    const uint16_t badgeFace = blendColor565(kColorPanel, backgroundColor, 0.44f);
+    const uint16_t border = battery.supported ? blendColor565(rawAccent, kColorText, 0.18f)
+                                              : blendColor565(kColorPanelHi, kColorText, 0.18f);
+    const uint16_t markColor = battery.supported ? accent : kColorText;
+    const uint16_t numberText = battery.supported ? blendColor565(rawAccent, kColorText, 0.18f) : kColorText;
+    const String number = batteryIndicatorNumber(battery);
+    const int16_t centerX = static_cast<int16_t>(rect.x + rect.w / 2);
+    const Rect statusBadge = {
+        static_cast<int16_t>(centerX - 8),
+        rect.y,
+        16,
+        16
+    };
+    canvas.fillRoundRect(statusBadge.x, statusBadge.y, statusBadge.w, statusBadge.h, 8, badgeFace);
+    canvas.drawRoundRect(statusBadge.x, statusBadge.y, statusBadge.w, statusBadge.h, 8, border);
+    const int16_t statusY = static_cast<int16_t>(statusBadge.y + statusBadge.h / 2);
+    if(battery.charging) {
+        drawBoltIcon(canvas, centerX, statusY, 12, markColor);
+    } else if(battery.usbPresent) {
+        const Rect powerIcon = {
+            static_cast<int16_t>(centerX - 6),
+            static_cast<int16_t>(statusY - 6),
+            12,
+            12
+        };
+        drawUsbPowerIcon(canvas, powerIcon, accent, badgeFace, markColor);
+    } else if(battery.supported) {
+        canvas.fillCircle(centerX, statusY, 2, markColor);
+    }
+
+    const int16_t numberH = useRoundNavigation() ? 20 : 16;
+    const int16_t numberWOuter = useRoundNavigation()
+                                     ? clampI16(static_cast<int16_t>(rect.w + 26), 48, 56)
+                                     : rect.w;
+    const Rect numberBadge = {
+        static_cast<int16_t>(centerX - numberWOuter / 2),
+        static_cast<int16_t>(rect.y + rect.h - numberH),
+        numberWOuter,
+        numberH
+    };
+    const int16_t iconW = clampI16(static_cast<int16_t>(rect.w - 10), 14, 18);
+    const int16_t iconY = static_cast<int16_t>(statusBadge.y + statusBadge.h + 6);
+    const int16_t iconH = clampI16(static_cast<int16_t>(numberBadge.y - iconY - 5), 48, 62);
+    const int16_t iconX = static_cast<int16_t>(centerX - iconW / 2);
+    const Rect icon = {
+        iconX,
+        iconY,
+        iconW,
+        iconH
+    };
+    const Rect iconSticker = {
+        static_cast<int16_t>(centerX - 8),
+        static_cast<int16_t>(icon.y - 3),
+        16,
+        static_cast<int16_t>(icon.h + 6)
+    };
+    canvas.fillRoundRect(iconSticker.x, iconSticker.y, iconSticker.w, iconSticker.h, 8, face);
+    canvas.drawRoundRect(iconSticker.x, iconSticker.y, iconSticker.w, iconSticker.h, 8, border);
+
+    drawBatteryGlyph(canvas,
+                     icon,
+                     accent,
+                     rawAccent,
+                     face,
+                     battery.charging,
+                     battery.usbPresent,
+                     batteryLevelPercent(battery));
+
+    if(battery.usbPresent) {
+        const Rect usbIcon = {
+            static_cast<int16_t>(iconSticker.x - 9),
+            static_cast<int16_t>(icon.y + icon.h / 2 - 7),
+            10,
+            14
+        };
+        drawUsbCIcon(canvas, usbIcon, accent, face, markColor);
+    }
+
+    if(number.length() > 0) {
+        const int16_t numberW = numberBadge.w;
+        const RemoteTextStyle numberStyle =
+            textFitsWidth(number, numberW, RemoteTextStyle::Small, 0) ? RemoteTextStyle::Small : RemoteTextStyle::Tiny;
+        const String numberTextFit = fitTextToWidth(number, numberW, numberStyle, 0);
+        const int16_t numberY = static_cast<int16_t>(numberBadge.y + numberBadge.h / 2);
+        canvas.drawCenteredText(numberTextFit,
+                                centerX,
+                                static_cast<int16_t>(numberY + 1),
+                                numberStyle,
+                                kColorBlack,
+                                backgroundColor);
+        canvas.drawCenteredText(numberTextFit,
+                                static_cast<int16_t>(centerX - 1),
+                                numberY,
+                                numberStyle,
+                                kColorBlack,
+                                backgroundColor);
+        canvas.drawCenteredText(numberTextFit,
+                                static_cast<int16_t>(centerX + 1),
+                                numberY,
+                                numberStyle,
+                                kColorBlack,
+                                backgroundColor);
+        canvas.drawCenteredText(numberTextFit,
+                                centerX,
+                                numberY,
+                                numberStyle,
+                                numberText,
+                                backgroundColor);
+    }
+}
+
 void drawSoftCenteredTextRotated(RemoteCanvas& canvas,
                                  const String& text,
                                  int16_t x,
@@ -3353,7 +3700,7 @@ float normalizedItemLevel(const SettingItem& item, int32_t value) {
     if(usesChoiceEditor(item)) {
         return value != 0 ? 1.0f : 0.0f;
     }
-    return normalizedRangeValue(value, item.minValue, item.maxValue);
+    return normalizedRangeValue(displayValueForItem(item, value), item.minValue, item.maxValue);
 }
 
 uint16_t ringColorForLevel(float level) {
@@ -3858,6 +4205,7 @@ void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, cons
     const SettingItem* items = itemsForScreen(app.screen, &count);
     if(items == nullptr || count == 0) {
         drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+        drawBatteryIndicator(canvas, layout, kColorBg);
         drawFooter(canvas, layout, "No items");
         drawRoundNav(canvas, layout);
         return;
@@ -3874,6 +4222,7 @@ void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, cons
     uint8_t drawnCount = 0;
 
     drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+    drawBatteryIndicator(canvas, layout, kColorBg);
 
     if(count == 1) {
         const SettingItem& item = items[0];
@@ -3933,6 +4282,7 @@ void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, cons
         const int relOrder[] = {-1, 1, 0};
 
         drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+        drawBatteryIndicator(canvas, layout, kColorBg);
 
         for(size_t i = 0; i < (sizeof(relOrder) / sizeof(relOrder[0])); ++i) {
             const int rel = relOrder[i];
@@ -4095,16 +4445,17 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
         const bool showTargetValue = !isRunningState() || app.targetDirty || (now - app.lastHomeAdjustAt) < 1200;
         const bool showLiveValue = !showTargetValue && app.hasStatus;
         const int32_t liveRpm = homeWheelDisplayRpm();
-        const bool reverseLiveRpm = !isGbwState() && showLiveValue && liveRpm < 0;
+        const int32_t displayLiveRpm = rpmMagnitude(liveRpm);
+        const bool reverseLiveRpm = reverseRpmDisplayActive();
         const String targetValue = isGbwState() ? weightValueText(app.weightMg) : String(app.manualRpm);
-        const String liveValue = isGbwState() ? weightValueText(app.status.currentWeightMg) : String(liveRpm);
+        const String liveValue = isGbwState() ? weightValueText(app.status.currentWeightMg) : String(displayLiveRpm);
         const String primaryValue = showLiveValue ? liveValue : targetValue;
         const String unitText = isGbwState() ? "GRAMS" : "RPM";
         const int16_t valueWidth = static_cast<int16_t>((layout.homeDialInnerRadius * 2) + 72);
         const int16_t unitWidth = static_cast<int16_t>((layout.homeDialInnerRadius * 2) + 28);
         const RemoteTextStyle valueStyle = chooseValueTextStyle(primaryValue, valueWidth);
         const RemoteTextStyle unitStyle = chooseLabelTextStyle(unitText, unitWidth);
-        const uint16_t ringAccent = reverseLiveRpm ? blendColor565(kColorDanger, kColorWarn, 0.28f) : palette.accent;
+        const uint16_t ringAccent = reverseLiveRpm ? reverseRpmAccentColor() : palette.accent;
         const uint16_t valueColor = isGbwState()
                                         ? blendColor565(kColorText, palette.accent, 0.24f)
                                         : (reverseLiveRpm ? blendColor565(kColorText, kColorDanger, 0.78f)
@@ -4159,6 +4510,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                                 unitColor,
                                 palette.background);
 
+        drawBatteryIndicator(canvas, layout, palette.background);
         return;
     }
 
@@ -4172,11 +4524,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
              app.hasStatus ? app.status.drive : "?",
              palette.panel,
              kColorText);
-    drawPill(canvas,
-             layout.topRight,
-             batteryPillLabel(app.hasStatus ? app.status.comm : "NO DATA"),
-             batteryPillFill(palette.panel),
-             batteryPillTextColor(kColorText));
+    drawBatteryIndicator(canvas, layout, palette.background);
 
     drawPill(canvas,
              layout.modeBadge,
@@ -4200,11 +4548,14 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
     canvas.fillCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialInnerRadius, palette.background);
     canvas.drawCircle(layout.homeDialCx, layout.homeDialCy, layout.homeDialInnerRadius + 1, palette.panelHi);
 
+    const bool reverseLiveRpm = reverseRpmDisplayActive();
+    const uint16_t liveValueColor = reverseLiveRpm ? blendColor565(kColorText, kColorDanger, 0.72f) : kColorText;
+
     canvas.drawCenteredText(isGbwState() ? weightLabel(app.weightMg) : String(app.manualRpm),
                             layout.homeDialCx,
                             static_cast<int16_t>(layout.homeDialCy - (isLargeCanvas() ? 22 : 12)),
                             heroTextStyle(),
-                            kColorText,
+                            liveValueColor,
                             palette.background);
     canvas.drawCenteredText(isGbwState() ? "Target dose" : "Set RPM",
                             layout.homeDialCx,
@@ -4232,7 +4583,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
 
     const String stateLine = homePrimaryStatusLine();
     const String telemetryLine =
-        String("RPM ") + (app.hasStatus ? String(homeWheelDisplayRpm()) : "-") +
+        String("RPM ") + (app.hasStatus ? String(rpmMagnitude(homeWheelDisplayRpm())) : "-") +
         "  WT " + (app.hasStatus ? weightLabel(app.status.currentWeightMg) : String("-"));
     const String detailLine =
         String("COMM ") + (app.hasStatus ? app.status.comm : String("NO DATA")) +
@@ -4274,6 +4625,7 @@ void drawMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title)
         const SettingItem* items = itemsForScreen(app.screen, &count);
         if(items == nullptr || count == 0) {
             drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+            drawBatteryIndicator(canvas, layout, kColorBg);
             drawFooter(canvas, layout, "No items");
             drawRoundNav(canvas, layout);
             return;
@@ -4323,6 +4675,7 @@ void drawMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title)
                  title,
                  kColorPanel,
                  kColorText);
+        drawBatteryIndicator(canvas, layout, kColorBg);
 
         canvas.fillRoundRect(prevRect.x,
                              prevRect.y,
@@ -4426,11 +4779,7 @@ void drawMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title)
              app.hasStatus ? app.status.state : "SYNCING",
              kColorPanel,
              kColorText);
-    drawPill(canvas,
-             layout.topRight,
-             batteryPillLabel(app.hasStatus ? app.status.drive : remote_board_info().name),
-             batteryPillFill(kColorPanel),
-             batteryPillTextColor(kColorText));
+    drawBatteryIndicator(canvas, layout, kColorBg);
 
     size_t count = 0;
     const SettingItem* items = itemsForScreen(app.screen, &count);
@@ -4508,6 +4857,7 @@ void drawEditor(RemoteCanvas& canvas, const Layout& layout, const char* title) {
         const RemoteTextStyle editorHintStyle = chooseLabelTextStyle(editorHint, editorHintWidth);
 
         drawPill(canvas, layout.modeBadge, title, kColorPanel, kColorText);
+        drawBatteryIndicator(canvas, layout, kColorBg);
 
         if(usesChoiceEditor(item)) {
             Rect offRect = {};
@@ -4616,11 +4966,7 @@ void drawEditor(RemoteCanvas& canvas, const Layout& layout, const char* title) {
 
     drawPill(canvas, layout.topLeft, "EDIT", kColorAccent2, kColorBlack);
     drawPill(canvas, layout.topCenter, title, kColorPanel, kColorText);
-    drawPill(canvas,
-             layout.topRight,
-             batteryPillLabel(app.hasStatus ? app.status.state : "OFFLINE"),
-             batteryPillFill(kColorPanel),
-             batteryPillTextColor(kColorText));
+    drawBatteryIndicator(canvas, layout, kColorBg);
 
     drawDialTicks(canvas,
                   layout.editorCx,
@@ -6615,7 +6961,8 @@ void enterIdleSleepIfNeeded() {
     }
 
     const LinkTransport resumeTransport = app.currentTransport == LinkTransport::None ? initialTransport() : app.currentTransport;
-    const uint64_t wakeMask = idleDeepSleepSupported() ? deepSleepWakeMask() : 0;
+    const uint64_t wakeMask =
+        idleDeepSleepSupported() && !touchWakeNeedsLightSleep() ? deepSleepWakeMask() : 0;
     if(wakeMask != 0 && enterIdleDeepSleep(wakeMask)) {
         return;
     }
@@ -7358,6 +7705,31 @@ void appendDiscoveredPeersJson(String& out) {
     out += ']';
 }
 
+void appendBatteryJson(String& out, const RemoteBatteryStatus& battery) {
+    out += '{';
+    out += "\"supported\":";
+    out += battery.supported ? "true" : "false";
+    out += ",\"batteryPresent\":";
+    out += battery.batteryPresent ? "true" : "false";
+    out += ",\"usbPresent\":";
+    out += battery.usbPresent ? "true" : "false";
+    out += ",\"charging\":";
+    out += battery.charging ? "true" : "false";
+    out += ",\"discharging\":";
+    out += battery.discharging ? "true" : "false";
+    out += ",\"standby\":";
+    out += battery.standby ? "true" : "false";
+    out += ",\"percent\":";
+    out += String(static_cast<int>(battery.percent));
+    out += ",\"millivolts\":";
+    out += String(battery.millivolts);
+    out += ",\"vbusMillivolts\":";
+    out += String(battery.vbusMillivolts);
+    out += ",\"systemMillivolts\":";
+    out += String(battery.systemMillivolts);
+    out += '}';
+}
+
 void appendRemoteStatusJson(String& out) {
     out += '{';
     out += "\"board\":";
@@ -7388,6 +7760,8 @@ void appendRemoteStatusJson(String& out) {
     out += app.localUiSounds != 0 ? "true" : "false";
     out += ",\"driveSelection\":";
     appendJsonQuoted(out, localDriveSelectionLabel(currentLocalDriveSelection()));
+    out += ",\"battery\":";
+    appendBatteryJson(out, app.battery);
     out += ",\"manualRPM\":";
     out += String(app.manualRpm);
     out += ",\"weightMg\":";
@@ -8049,6 +8423,9 @@ void remote_app_loop() {
     if(hasControlInput) {
         app.lastControlActivityAt = now;
         app.motionHomeCandidateAt = 0;
+    }
+    if(input.powerStatusChanged) {
+        refreshBatteryStatus(true);
     }
 
     if(input.dialDelta != 0 || input.motionDetected || input.primaryPressed ||

@@ -67,6 +67,7 @@ struct RemoteTouchState {
 struct RemoteInputState {
     int dialDelta = 0;
     bool motionDetected = false;
+    bool powerStatusChanged = false;
     bool primaryPressed = false;
     bool primaryShortPress = false;
     bool primaryLongPress = false;

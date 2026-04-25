@@ -1,4 +1,5 @@
 #include "remote_board_driver.h"
+#include "remote_config.h"
 #include "remote_runtime.h"
 
 #include <Adafruit_GFX.h>
@@ -23,6 +24,39 @@ constexpr uint8_t kIoExpanderInputReg = 0x00;
 constexpr uint8_t kIoExpanderConfigReg = 0x03;
 constexpr uint8_t kBootButtonPin = 0;
 constexpr uint8_t kPmicIrqBit = 5;
+constexpr uint8_t kPmicAddress = AXP2101_SLAVE_ADDRESS;
+constexpr uint8_t kPmicChipIdReg = XPOWERS_AXP2101_IC_TYPE;
+constexpr uint8_t kPmicChipId = XPOWERS_AXP2101_CHIP_ID;
+constexpr uint8_t kPmicIntEnable2Reg = XPOWERS_AXP2101_INTEN2;
+constexpr uint8_t kPmicIntEnable3Reg = XPOWERS_AXP2101_INTEN3;
+constexpr uint8_t kPmicIntStatus1Reg = XPOWERS_AXP2101_INTSTS1;
+constexpr uint8_t kPmicIntStatus2Reg = XPOWERS_AXP2101_INTSTS2;
+constexpr uint8_t kPmicIntStatus3Reg = XPOWERS_AXP2101_INTSTS3;
+constexpr uint8_t kPmicPkeyLongMask = static_cast<uint8_t>(XPOWERS_AXP2101_PKEY_LONG_IRQ >> 8);
+constexpr uint8_t kPmicPkeyShortMask = static_cast<uint8_t>(XPOWERS_AXP2101_PKEY_SHORT_IRQ >> 8);
+constexpr uint8_t kPmicBatRemoveMask = static_cast<uint8_t>(XPOWERS_AXP2101_BAT_REMOVE_IRQ >> 8);
+constexpr uint8_t kPmicBatInsertMask = static_cast<uint8_t>(XPOWERS_AXP2101_BAT_INSERT_IRQ >> 8);
+constexpr uint8_t kPmicVbusRemoveMask = static_cast<uint8_t>(XPOWERS_AXP2101_VBUS_REMOVE_IRQ >> 8);
+constexpr uint8_t kPmicVbusInsertMask = static_cast<uint8_t>(XPOWERS_AXP2101_VBUS_INSERT_IRQ >> 8);
+constexpr uint8_t kPmicChargeStartMask = static_cast<uint8_t>(XPOWERS_AXP2101_BAT_CHG_START_IRQ >> 16);
+constexpr uint8_t kPmicChargeDoneMask = static_cast<uint8_t>(XPOWERS_AXP2101_BAT_CHG_DONE_IRQ >> 16);
+constexpr uint8_t kPmicPowerStatus2Mask = static_cast<uint8_t>(kPmicBatRemoveMask |
+                                                              kPmicBatInsertMask |
+                                                              kPmicVbusRemoveMask |
+                                                              kPmicVbusInsertMask);
+constexpr uint8_t kPmicPowerStatus3Mask = static_cast<uint8_t>(kPmicChargeStartMask |
+                                                              kPmicChargeDoneMask);
+constexpr uint8_t kPmicStatus1Reg = XPOWERS_AXP2101_STATUS1;
+constexpr uint8_t kPmicStatus2Reg = XPOWERS_AXP2101_STATUS2;
+constexpr uint8_t kPmicAdcCtrlReg = XPOWERS_AXP2101_ADC_CHANNEL_CTRL;
+constexpr uint8_t kPmicBatteryDetectReg = XPOWERS_AXP2101_BAT_DET_CTRL;
+constexpr uint8_t kPmicBatteryPercentReg = XPOWERS_AXP2101_BAT_PERCENT_DATA;
+constexpr uint8_t kPmicBattVoltageHighReg = XPOWERS_AXP2101_ADC_DATA_RELUST0;
+constexpr uint8_t kPmicBattVoltageLowReg = XPOWERS_AXP2101_ADC_DATA_RELUST1;
+constexpr uint8_t kPmicVbusVoltageHighReg = XPOWERS_AXP2101_ADC_DATA_RELUST4;
+constexpr uint8_t kPmicVbusVoltageLowReg = XPOWERS_AXP2101_ADC_DATA_RELUST5;
+constexpr uint8_t kPmicSystemVoltageHighReg = XPOWERS_AXP2101_ADC_DATA_RELUST6;
+constexpr uint8_t kPmicSystemVoltageLowReg = XPOWERS_AXP2101_ADC_DATA_RELUST7;
 constexpr uint32_t kI2cClock = 100000U;
 constexpr uint32_t kButtonDebounceMs = 18;
 constexpr uint8_t kTouchProbeAttempts = 6;
@@ -35,16 +69,15 @@ constexpr uint32_t kDisplayInitRetryMs = 60;
 constexpr uint32_t kTouchDebounceMs = 28;
 constexpr uint32_t kTouchReportHoldMs = 55;
 constexpr uint8_t kTouchMaxPoints = 5;
-constexpr uint32_t kTouchIdleProbeMs = 16;
-constexpr uint32_t kTouchActiveProbeMs = 12;
-constexpr uint32_t kTouchReadFailureBackoffMs = 80;
-constexpr uint8_t kTouchReadFailureTripCount = 2;
+constexpr uint32_t kTouchIdleProbeMs = 8;
+constexpr uint32_t kTouchActiveProbeMs = 8;
+constexpr uint32_t kTouchReadFailureBackoffMs = 30;
+constexpr uint8_t kTouchReadFailureTripCount = 4;
 constexpr uint8_t kTouchPressConfirmSamples = 1;
 constexpr uint32_t kTouchReleaseHoldMs = 90;
 constexpr uint32_t kPmicSensePollMs = 60;
 constexpr uint8_t kImuAddress = QMI8658_H_SLAVE_ADDRESS;
-constexpr uint32_t kImuPollIntervalMs = 50;
-constexpr uint8_t kImuWakeThresholdMg = 150;
+constexpr uint8_t kImuWakeThresholdMg = 80;
 constexpr SensorQMI8658::AccelODR kImuWakeOdr = SensorQMI8658::ACC_ODR_LOWPOWER_11Hz;
 constexpr float kImuWakeOdrLabelHz = 11.0f;
 constexpr uint32_t kBaseWakeSources = static_cast<uint32_t>(RemoteWakeSource::Touch) |
@@ -509,6 +542,7 @@ XPowersAXP2101 g_pmic;
 SensorQMI8658 g_imu;
 RemoteTouchState g_touchState;
 bool g_pmicReady = false;
+bool g_pmicButtonReady = false;
 bool g_ioExpanderReady = false;
 bool g_imuReady = false;
 ButtonTracker g_bootButton;
@@ -528,9 +562,12 @@ int16_t g_touchStableX = 0;
 int16_t g_touchStableY = 0;
 uint32_t g_touchLastGoodSampleAt = 0;
 uint32_t g_pmicLastSenseAt = 0;
+uint32_t g_pmicLastBatteryLevelAt = 0;
 uint32_t g_imuLastPollAt = 0;
+uint8_t g_i2cRecoveryLogCount = 0;
 bool g_pmicIrqLatched = false;
 bool g_motionActivityPending = false;
+RemoteBatteryStatus g_pmicBatteryCache = {};
 
 const RemoteBoardInfo kBoardInfo = {
     RemoteBoardId::WaveshareAmoled175,
@@ -660,18 +697,31 @@ bool beginSharedI2cBus(int8_t sda, int8_t scl) {
     return Wire.begin(sda, scl, kI2cClock);
 }
 
-bool readIoExpanderRegister(uint8_t reg, uint8_t* value) {
+bool recoverSharedI2cBus(const char* reason) {
+    Wire.end();
+    delay(2);
+    const bool ok = Wire.begin(g_boardPins.touchSda, g_boardPins.touchScl, kI2cClock);
+    if(g_i2cRecoveryLogCount < 6) {
+        Serial.printf("[remote] waveshare i2c recover reason=%s ok=%d\n",
+                      reason != nullptr ? reason : "unknown",
+                      ok ? 1 : 0);
+        ++g_i2cRecoveryLogCount;
+    }
+    return ok;
+}
+
+bool readI2cRegisterOnce(uint8_t address, uint8_t reg, uint8_t* value) {
     if(value == nullptr) {
         return false;
     }
 
-    Wire.beginTransmission(kIoExpanderAddress);
+    Wire.beginTransmission(address);
     Wire.write(reg);
     if(Wire.endTransmission(false) != 0) {
         return false;
     }
 
-    if(Wire.requestFrom(static_cast<int>(kIoExpanderAddress), 1) != 1) {
+    if(Wire.requestFrom(static_cast<int>(address), 1) != 1) {
         return false;
     }
 
@@ -679,11 +729,81 @@ bool readIoExpanderRegister(uint8_t reg, uint8_t* value) {
     return true;
 }
 
-bool writeIoExpanderRegister(uint8_t reg, uint8_t value) {
-    Wire.beginTransmission(kIoExpanderAddress);
+bool readI2cRegister(uint8_t address, uint8_t reg, uint8_t* value) {
+    if(readI2cRegisterOnce(address, reg, value)) {
+        return true;
+    }
+    if(!recoverSharedI2cBus("read")) {
+        return false;
+    }
+    return readI2cRegisterOnce(address, reg, value);
+}
+
+bool writeI2cRegisterOnce(uint8_t address, uint8_t reg, uint8_t value) {
+    Wire.beginTransmission(address);
     Wire.write(reg);
     Wire.write(value);
     return Wire.endTransmission() == 0;
+}
+
+bool writeI2cRegister(uint8_t address, uint8_t reg, uint8_t value) {
+    if(writeI2cRegisterOnce(address, reg, value)) {
+        return true;
+    }
+    if(!recoverSharedI2cBus("write")) {
+        return false;
+    }
+    return writeI2cRegisterOnce(address, reg, value);
+}
+
+bool updateI2cRegisterBits(uint8_t address, uint8_t reg, uint8_t mask, uint8_t value) {
+    uint8_t current = 0;
+    if(!readI2cRegister(address, reg, &current)) {
+        return false;
+    }
+
+    const uint8_t next = static_cast<uint8_t>((current & ~mask) | (value & mask));
+    return next == current || writeI2cRegister(address, reg, next);
+}
+
+bool readPmicH6L8(uint8_t highReg, uint8_t lowReg, uint16_t* value) {
+    if(value == nullptr) {
+        return false;
+    }
+
+    uint8_t high = 0;
+    uint8_t low = 0;
+    if(!readI2cRegister(kPmicAddress, highReg, &high) ||
+       !readI2cRegister(kPmicAddress, lowReg, &low)) {
+        return false;
+    }
+
+    *value = static_cast<uint16_t>(((high & 0x3F) << 8) | low);
+    return true;
+}
+
+bool readPmicH5L8(uint8_t highReg, uint8_t lowReg, uint16_t* value) {
+    if(value == nullptr) {
+        return false;
+    }
+
+    uint8_t high = 0;
+    uint8_t low = 0;
+    if(!readI2cRegister(kPmicAddress, highReg, &high) ||
+       !readI2cRegister(kPmicAddress, lowReg, &low)) {
+        return false;
+    }
+
+    *value = static_cast<uint16_t>(((high & 0x1F) << 8) | low);
+    return true;
+}
+
+bool readIoExpanderRegister(uint8_t reg, uint8_t* value) {
+    return readI2cRegister(kIoExpanderAddress, reg, value);
+}
+
+bool writeIoExpanderRegister(uint8_t reg, uint8_t value) {
+    return writeI2cRegister(kIoExpanderAddress, reg, value);
 }
 
 bool initIoExpander() {
@@ -858,21 +978,75 @@ bool initImuMotion() {
     return true;
 }
 
+void clearPmicButtonIrqStatus() {
+    writeI2cRegister(kPmicAddress, kPmicIntStatus1Reg, 0xFF);
+    writeI2cRegister(kPmicAddress, kPmicIntStatus2Reg, 0xFF);
+    writeI2cRegister(kPmicAddress, kPmicIntStatus3Reg, 0xFF);
+}
+
+void initPmicButtonIrq() {
+    g_pmicReady = false;
+    g_pmicButtonReady = false;
+
+    uint8_t chipId = 0;
+    if(!readI2cRegister(kPmicAddress, kPmicChipIdReg, &chipId)) {
+        Serial.println("[remote] waveshare pmic button init failed");
+        return;
+    }
+    if(chipId != kPmicChipId) {
+        Serial.printf("[remote] waveshare pmic unexpected chip=0x%02X\n", chipId);
+        return;
+    }
+
+    g_pmicReady =
+        updateI2cRegisterBits(kPmicAddress, kPmicBatteryDetectReg, 0x01, 0x01) &&
+        updateI2cRegisterBits(kPmicAddress, kPmicAdcCtrlReg, 0x0D, 0x0D);
+    if(!g_pmicReady) {
+        Serial.println("[remote] waveshare pmic telemetry init failed");
+    }
+
+    clearPmicButtonIrqStatus();
+
+    uint8_t irqEnable2 = 0;
+    if(!readI2cRegister(kPmicAddress, kPmicIntEnable2Reg, &irqEnable2)) {
+        Serial.println("[remote] waveshare pmic irq enable read failed");
+        return;
+    }
+    irqEnable2 |= static_cast<uint8_t>(kPmicPkeyShortMask | kPmicPkeyLongMask);
+    irqEnable2 |= kPmicPowerStatus2Mask;
+    if(!writeI2cRegister(kPmicAddress, kPmicIntEnable2Reg, irqEnable2)) {
+        Serial.println("[remote] waveshare pmic irq enable write failed");
+        return;
+    }
+
+    bool powerStatusIrqReady = false;
+    uint8_t irqEnable3 = 0;
+    if(readI2cRegister(kPmicAddress, kPmicIntEnable3Reg, &irqEnable3)) {
+        irqEnable3 |= kPmicPowerStatus3Mask;
+        powerStatusIrqReady = writeI2cRegister(kPmicAddress, kPmicIntEnable3Reg, irqEnable3);
+    }
+    if(!powerStatusIrqReady) {
+        Serial.println("[remote] waveshare pmic charge irq enable failed");
+    }
+
+    g_pmicButtonReady = true;
+    Serial.printf("[remote] waveshare pmic irq ready telemetry=%d power=%d\n",
+                  g_pmicReady ? 1 : 0,
+                  powerStatusIrqReady ? 1 : 0);
+}
+
 void serviceImuMotion(RemoteInputState* input) {
     if(input == nullptr || !g_imuReady) {
         return;
     }
 
-    const uint32_t now = millis();
-    const bool updateDue = g_imuInterruptPending || g_imuLastPollAt == 0 ||
-                           static_cast<uint32_t>(now - g_imuLastPollAt) >= kImuPollIntervalMs;
-    if(updateDue) {
-        g_imuLastPollAt = now;
-        g_imu.update();
+    if(g_imuInterruptPending && !g_touchStablePressed) {
         g_imuInterruptPending = false;
+        g_imuLastPollAt = millis();
+        g_imu.update();
     }
 
-    if(g_motionActivityPending) {
+    if(g_motionActivityPending && !g_touchStablePressed) {
         input->motionDetected = true;
         g_motionActivityPending = false;
     }
@@ -894,7 +1068,7 @@ bool readPmicIrqActive(bool* active) {
 }
 
 void updatePmicButton(RemoteInputState* input, bool deferForTouch) {
-    if(input == nullptr || !g_pmicReady) {
+    if(input == nullptr || !g_pmicButtonReady) {
         return;
     }
 
@@ -915,10 +1089,19 @@ void updatePmicButton(RemoteInputState* input, bool deferForTouch) {
         g_pmicIrqLatched = true;
     }
 
-    g_pmic.getIrqStatus();
-    const bool shortPress = g_pmic.isPekeyShortPressIrq();
-    const bool longPress = g_pmic.isPekeyLongPressIrq();
-    g_pmic.clearIrqStatus();
+    uint8_t irqStatus2 = 0;
+    if(!readI2cRegister(kPmicAddress, kPmicIntStatus2Reg, &irqStatus2)) {
+        g_pmicIrqLatched = false;
+        return;
+    }
+    uint8_t irqStatus3 = 0;
+    const bool hasStatus3 = readI2cRegister(kPmicAddress, kPmicIntStatus3Reg, &irqStatus3);
+    const bool shortPress = (irqStatus2 & kPmicPkeyShortMask) != 0;
+    const bool longPress = (irqStatus2 & kPmicPkeyLongMask) != 0;
+    input->powerStatusChanged =
+        (irqStatus2 & kPmicPowerStatus2Mask) != 0 ||
+        (hasStatus3 && (irqStatus3 & kPmicPowerStatus3Mask) != 0);
+    clearPmicButtonIrqStatus();
     g_pmicIrqLatched = false;
 
     input->secondaryPressed = false;
@@ -1226,21 +1409,9 @@ bool waveshare_init() {
         Serial.println("[remote] waveshare power button sense unavailable");
     }
 
-    g_pmicReady = g_pmic.begin(Wire, AXP2101_SLAVE_ADDRESS, -1, -1);
-    if(g_pmicReady) {
-        g_pmic.enableBattDetection();
-        g_pmic.enableBattVoltageMeasure();
-        g_pmic.enableVbusVoltageMeasure();
-        g_pmic.enableSystemVoltageMeasure();
-        g_pmic.clearIrqStatus();
-        g_pmic.enableIRQ(XPOWERS_AXP2101_PKEY_SHORT_IRQ | XPOWERS_AXP2101_PKEY_LONG_IRQ);
-        Serial.println("[remote] waveshare pmic ready");
-    } else {
-        Serial.println("[remote] waveshare pmic init failed");
-    }
-
     g_imuReady = initImuMotion();
     setImuWakeSupport(g_imuReady);
+    initPmicButtonIrq();
 
     if(!ensureDisplayObjects()) {
         return false;
@@ -1299,6 +1470,8 @@ bool waveshare_init() {
     g_touchStableY = 0;
     g_touchLastGoodSampleAt = 0;
     g_pmicLastSenseAt = 0;
+    g_pmicLastBatteryLevelAt = 0;
+    g_pmicBatteryCache = {};
     g_pmicIrqLatched = false;
     g_imuInterruptPending = false;
     g_imuLastPollAt = 0;
@@ -1320,7 +1493,6 @@ void waveshare_poll_input(RemoteInputState* input) {
     }
 
     *input = {};
-    serviceImuMotion(input);
 
     bool bootPressed = g_bootButton.stablePressed;
     bool bootJustPressed = false;
@@ -1417,6 +1589,7 @@ void waveshare_poll_input(RemoteInputState* input) {
     input->touch.y = g_touchStablePressed ? g_touchStableY : g_touchState.y;
 
     g_touchState = input->touch;
+    serviceImuMotion(input);
 }
 
 bool waveshare_input_pending() {
@@ -1463,20 +1636,62 @@ RemoteBatteryStatus waveshare_battery_status() {
         return status;
     }
 
-    status.batteryPresent = g_pmic.isBatteryConnect();
-    status.usbPresent = g_pmic.isVbusIn();
-    status.charging = g_pmic.isCharging();
-    status.discharging = g_pmic.isDischarge();
-    status.standby = g_pmic.isStandby();
-    status.systemMillivolts = static_cast<int32_t>(g_pmic.getSystemVoltage());
-    status.vbusMillivolts = status.usbPresent ? static_cast<int32_t>(g_pmic.getVbusVoltage()) : -1;
-    status.millivolts = status.batteryPresent ? static_cast<int32_t>(g_pmic.getBattVoltage()) : -1;
-
-    const int percent = g_pmic.getBatteryPercent();
-    if(percent >= 0 && percent <= 100) {
-        status.percent = static_cast<int8_t>(percent);
+    uint8_t status1 = 0;
+    uint8_t status2 = 0;
+    if(!readI2cRegister(kPmicAddress, kPmicStatus1Reg, &status1) ||
+       !readI2cRegister(kPmicAddress, kPmicStatus2Reg, &status2)) {
+        status.supported = false;
+        return status;
     }
 
+    const uint8_t chargeState = static_cast<uint8_t>(status2 >> 5);
+    status.batteryPresent = (status1 & 0x08) != 0;
+    status.usbPresent = (status1 & 0x20) != 0 && (status2 & 0x08) == 0;
+    status.charging = chargeState == 0x01;
+    status.discharging = chargeState == 0x02;
+    status.standby = chargeState == 0x00;
+
+    status.percent = status.batteryPresent ? g_pmicBatteryCache.percent : -1;
+    status.millivolts = status.batteryPresent ? g_pmicBatteryCache.millivolts : -1;
+    status.vbusMillivolts = status.usbPresent ? g_pmicBatteryCache.vbusMillivolts : -1;
+    status.systemMillivolts = g_pmicBatteryCache.systemMillivolts;
+
+    const uint32_t now = millis();
+    const bool powerPathChanged =
+        status.batteryPresent != g_pmicBatteryCache.batteryPresent ||
+        status.usbPresent != g_pmicBatteryCache.usbPresent;
+    const bool levelDue = g_pmicLastBatteryLevelAt == 0 ||
+                          static_cast<uint32_t>(now - g_pmicLastBatteryLevelAt) >= remote_config::kBatteryPollMs ||
+                          powerPathChanged;
+    if(levelDue) {
+        status.percent = -1;
+        status.millivolts = -1;
+        status.vbusMillivolts = -1;
+        status.systemMillivolts = -1;
+
+        uint16_t raw = 0;
+        if(status.batteryPresent &&
+           readPmicH5L8(kPmicBattVoltageHighReg, kPmicBattVoltageLowReg, &raw)) {
+            status.millivolts = static_cast<int32_t>(raw);
+        }
+        if(status.usbPresent &&
+           readPmicH6L8(kPmicVbusVoltageHighReg, kPmicVbusVoltageLowReg, &raw)) {
+            status.vbusMillivolts = static_cast<int32_t>(raw);
+        }
+        if(readPmicH6L8(kPmicSystemVoltageHighReg, kPmicSystemVoltageLowReg, &raw)) {
+            status.systemMillivolts = static_cast<int32_t>(raw);
+        }
+
+        uint8_t percent = 0;
+        if(status.batteryPresent &&
+           readI2cRegister(kPmicAddress, kPmicBatteryPercentReg, &percent) &&
+           percent <= 100) {
+            status.percent = static_cast<int8_t>(percent);
+        }
+        g_pmicLastBatteryLevelAt = now;
+    }
+
+    g_pmicBatteryCache = status;
     return status;
 }
 

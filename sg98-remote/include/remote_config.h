@@ -19,7 +19,8 @@ constexpr uint32_t kStatusPollRoundMenuMs = 900;
 constexpr uint32_t kStatusPollBoostMs = 1800;
 constexpr uint32_t kVisibleMenuPollMs = 1800;
 constexpr uint32_t kBackgroundMenuPollMs = 6000;
-constexpr uint32_t kBatteryPollMs = 5000;
+constexpr uint32_t kBatteryStatusPollMs = 10000;
+constexpr uint32_t kBatteryPollMs = 60000;
 constexpr uint32_t kWifiServiceMs = 75;
 constexpr uint32_t kWebSocketServiceMs = 10;
 constexpr uint32_t kWebSocketServiceIdleMs = 45;
@@ -39,7 +40,7 @@ constexpr uint32_t kLinkTimeoutMs = 5000;
 constexpr uint32_t kTapMaxDurationMs = 420;
 constexpr bool kDisableWifiModemSleepForTesting = false;
 constexpr bool kDisableIdleSleepForTesting = false;
-constexpr uint32_t kIdleSleepAfterMs = 90000;
+constexpr uint32_t kIdleSleepAfterMs = 120000;
 constexpr uint32_t kWakeToastMs = 900;
 
 }  // namespace remote_config
