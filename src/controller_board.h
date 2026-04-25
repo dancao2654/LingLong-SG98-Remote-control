@@ -88,3 +88,14 @@ inline bool controller_board_has_encoder() {
 inline bool controller_board_has_encoder_button() {
     return controller_board_features().hasEncoderButton;
 }
+
+inline bool controller_board_has_local_settings_ui() {
+    return controller_board_has_display() &&
+           controller_board_has_start_button() &&
+           controller_board_has_encoder() &&
+           controller_board_has_encoder_button();
+}
+
+inline bool controller_board_requires_remote_recovery() {
+    return !controller_board_has_local_settings_ui();
+}

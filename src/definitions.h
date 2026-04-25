@@ -34,6 +34,7 @@
 #define COMM_DELAY_SEND 60 //send every 50ms max
 #define DISCONNECTED_AFTER 10000 //after Xms of not receiving comms, disconnected error shows
 #define SEND_RPM_EVERY 5 //send RPM every X frames
+#define HEADLESS_REMOTE_DEADMAN_MS 7500 // stop headless motor states if remote traffic disappears
 
 //Encoder ticks per physical tick
 #define ENC_TOL 1
@@ -53,7 +54,7 @@
 #define default_minRPM 100
 #define default_motor_torque 100
 #define default_led_brightness 100
-#define default_radio_mode 1
+#define default_radio_mode 2 // controller default: radio off until user enables Web UI or ESP-NOW
 #define default_espnow_channel 1
 
 #define default_motor_ramp 1

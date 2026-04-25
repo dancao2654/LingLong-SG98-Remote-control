@@ -13,6 +13,7 @@
 #include "comm.h"
 #include "wifi_ui.h"
 #include "radio_mode.h"
+#include "remote_link.h"
 
 States state = IDLE;
 int8_t menu1Selected = EXITMENU;
@@ -29,7 +30,7 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Purge Settings", 0, 0, 0, 0, "PURGESETT", ""},           // 1
     {"GbW Settings", 0, 0, 0, 0, "GBWSETT", ""},               // 2
     {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 3
-    {"Radio mode", default_radio_mode, 0, 1, 1, "RADIOMODE", ""}, // 4
+    {"Radio mode", default_radio_mode, 0, 2, 1, "RADIOMODE", ""}, // 4
     {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 5
     {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 6
     {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 7
@@ -103,6 +104,7 @@ int loopcount = 0;
 namespace {
 constexpr bool kDisableIdleSleepForTesting = false;
 constexpr unsigned long MENU_TRAFFIC_POLL_INTERVAL_MS = 300;
+constexpr unsigned long RADIO_OFF_DEEP_SLEEP_DELAY_MS = 15000;
 
 uint8_t purgeFrameCounter = 0;
 int16_t purgeLastSetRPM = 0;
@@ -120,6 +122,23 @@ unsigned long lastMenuTrafficPollAt = 0;
 
 bool controllerCanIdleSleep() {
     return state == IDLE || state == IDLE_GBW;
+}
+
+bool controllerHasLocalDeepSleepWake() {
+    const ControllerBoardPins& pins = controller_board_pins();
+    return controller_board_has_start_button() &&
+           controller_board_pin_valid(pins.startButton) &&
+           controller_board_gpio_valid(pins.wakeButton);
+}
+
+bool controllerRadioOffDeepSleepDue() {
+    if(!radio_mode_is_off() || !controllerCanIdleSleep() || !controllerHasLocalDeepSleepWake()) {
+        return false;
+    }
+
+    const unsigned long now = millis();
+    return lastActivity + RADIO_OFF_DEEP_SLEEP_DELAY_MS < now &&
+           now > RADIO_OFF_DEEP_SLEEP_DELAY_MS;
 }
 
 bool shouldPollTrafficNow(bool menuMode) {
@@ -280,6 +299,7 @@ void loop() {
     if(menuMode) {
         update_display();
     }
+    remote_link_safety_poll();
     do_comm();
     diag_console_poll();
     if(shouldPollTrafficNow(menuMode)) {
@@ -552,9 +572,7 @@ void controller_note_activity() {
 
 void sleep_init() { 
     const ControllerBoardPins& pins = controller_board_pins();
-    if(!controller_board_has_start_button() ||
-       !controller_board_pin_valid(pins.startButton) ||
-       !controller_board_gpio_valid(pins.wakeButton)) {
+    if(!controllerHasLocalDeepSleepWake()) {
     #ifdef DEBUG
     Serial.println("[sleep] no local wake button on this target; restarting instead");
     #endif
@@ -654,6 +672,20 @@ void sleepTimeCheck() {
     if(kDisableIdleSleepForTesting) {
         if(idleSleepActive) {
             controller_exit_idle_sleep();
+        }
+        return;
+    }
+    if(radio_mode_is_off()) {
+        if(idleSleepActive) {
+            controller_exit_idle_sleep();
+        }
+        if(controllerRadioOffDeepSleepDue()) {
+            rtc_state = state;
+            motor_setRPM = 0;
+            motorOff();
+            motorSleep();
+            Serial.println("[sleep] radio off; entering deep sleep");
+            sleep_init();
         }
         return;
     }

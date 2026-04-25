@@ -63,6 +63,7 @@ constexpr uint32_t kMotionHomeConfirmWindowMs = 1200;
 constexpr uint32_t kMotionHomeMinGapMs = 250;
 constexpr uint32_t kMotionHomeCooldownMs = 2500;
 constexpr uint32_t kMotionHomeIgnoreAfterControlMs = 1200;
+constexpr const char* kControllerApHost = "192.168.4.1";
 constexpr char kPersistentStateNamespace[] = "remote-app";
 constexpr char kPersistentStateKey[] = "snapshot";
 
@@ -302,6 +303,7 @@ struct AppState {
     uint32_t lastAckAt = 0;
     uint32_t lastStatusAt = 0;
     uint32_t lastStatusPollAt = 0;
+    uint32_t lastSafetyHeartbeatAt = 0;
     uint32_t lastBackgroundMenuPollAt = 0;
     uint32_t lastMdnsQueryAt = 0;
     uint32_t lastWifiServiceAt = 0;
@@ -716,6 +718,11 @@ bool controllerLinkUsesWebSocketScan() {
 
 bool webSocketCandidateAvailable() {
     return remote_wifi_has_saved_network() || prefersWebSocket();
+}
+
+bool connectedToControllerAp() {
+    const String ssid = remote_wifi_sta_ssid();
+    return ssid.startsWith("SG98-") && !ssid.startsWith("SG98-REMOTE-");
 }
 
 LinkTransport initialTransport() {
@@ -4810,6 +4817,10 @@ bool discoverControllerService(bool force) {
     app.lastMdnsQueryAt = millis();
     const int serviceCount = MDNS.queryService("sg98", "tcp");
     if(serviceCount <= 0) {
+        if(connectedToControllerAp()) {
+            connectWebSocketHost(kControllerApHost, remote_config::kWebSocketPort);
+            return true;
+        }
         return false;
     }
 
@@ -4980,6 +4991,20 @@ bool sendRaw(const String& command) {
 
 void requestStatus() {
     sendRaw(sg98_protocol::kCmdGetStatus);
+}
+
+void serviceSafetyHeartbeat() {
+    if(!isRunningState()) {
+        return;
+    }
+
+    const uint32_t now = millis();
+    if((now - app.lastSafetyHeartbeatAt) < remote_config::kSafetyHeartbeatMs) {
+        return;
+    }
+
+    (void)sendRaw(sg98_protocol::kCmdHeartbeat);
+    app.lastSafetyHeartbeatAt = now;
 }
 
 void requestMenu(uint8_t menuNum) {
@@ -5519,6 +5544,12 @@ LinkTransport alternateTransport() {
     if(app.radioModeKnown) {
         const LinkTransport expected = transportFromRadioMode(app.menuValues[1][RADIOMODE]);
         if(expected == LinkTransport::EspNow) {
+            if(app.currentTransport == LinkTransport::WebSocket && app.wsConnected) {
+                return LinkTransport::WebSocket;
+            }
+            if(webSocketCandidateAvailable()) {
+                return LinkTransport::WebSocket;
+            }
             return hasActiveEspNowPeer() ? LinkTransport::EspNow : app.currentTransport;
         }
         if(expected == LinkTransport::WebSocket) {
@@ -5609,7 +5640,13 @@ void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
         app.transportOverrideActive = false;
         const LinkTransport expected = transportFromRadioMode(app.menuValues[1][RADIOMODE]);
         if(expected != app.currentTransport) {
-            scheduleTransportSwitch(expected);
+            const bool connectedWebSocketRecovery =
+                app.currentTransport == LinkTransport::WebSocket &&
+                app.wsConnected &&
+                expected == LinkTransport::EspNow;
+            if(!connectedWebSocketRecovery) {
+                scheduleTransportSwitch(expected);
+            }
         }
     }
 
@@ -8049,6 +8086,7 @@ void remote_app_loop() {
     handleDialDelta(applyDialDirection(input.dialDelta));
     commitTargetIfDue();
     servicePersistentSnapshotSave();
+    serviceSafetyHeartbeat();
     const bool yieldTransport = shouldYieldTransportToUi();
     if(!kDisableTransportPerfTest && !yieldTransport) {
         const uint32_t transportServiceInterval = currentTransportServiceIntervalMs();

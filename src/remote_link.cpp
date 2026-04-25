@@ -2,8 +2,10 @@
 
 #include <cstring>
 
+#include "controller_board.h"
 #include "comm.h"
 #include "diag_console.h"
+#include "display.h"
 #include "gbw.h"
 #include "main.h"
 #include "motor_hal.h"
@@ -11,6 +13,11 @@
 #include <sg98_remote_protocol.h>
 
 namespace {
+
+unsigned long g_remoteLinkLastActivityAt = 0;
+unsigned long g_remoteLinkRunningObservedAt = 0;
+States g_remoteLinkLastObservedState = IDLE;
+bool g_remoteLinkDeadmanLatched = false;
 
 void setMessage(String* message, const String& value) {
     if(message != nullptr) {
@@ -34,6 +41,43 @@ const char* stateTextCompact(States value) {
         case MOTOR_SELECT: return "MOTOR_SELECT";
         default: return "UNKNOWN";
     }
+}
+
+bool remoteSafetyState(States value) {
+    switch(value) {
+        case GRINDING:
+        case PURGING:
+        case GRINDING_GBW:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void stopForRemoteDeadman() {
+    const States expiredState = state;
+    const unsigned long age = g_remoteLinkLastActivityAt == 0
+                                  ? 0
+                                  : millis() - g_remoteLinkLastActivityAt;
+    motor_setRPM = 0;
+    if(expiredState == GRINDING_GBW) {
+        state = IDLE_GBW;
+    } else {
+        purge_cancel_pending();
+        state = IDLE;
+    }
+    disp_updateRequired = true;
+    g_remoteLinkDeadmanLatched = true;
+    Serial.printf("[remote_link] headless remote deadman expired state=%s age=%lu ms\n",
+                  stateTextCompact(expiredState),
+                  static_cast<unsigned long>(age));
+}
+
+bool finishCommand(bool ok) {
+    if(ok) {
+        remote_link_note_activity();
+    }
+    return ok;
 }
 
 const char* commTextCompact(COMM_STATUS value) {
@@ -243,6 +287,13 @@ bool remote_link_handle_command(const String& rawPayload, String* message, bool*
     if(cmdUpper == sg98_protocol::kCmdGetStatus) {
         *sendStatus = true;
         setMessage(message, "ok");
+        remote_link_note_activity();
+        return true;
+    }
+
+    if(cmdUpper == sg98_protocol::kCmdHeartbeat) {
+        setMessage(message, "ok");
+        remote_link_note_activity();
         return true;
     }
 
@@ -254,6 +305,7 @@ bool remote_link_handle_command(const String& rawPayload, String* message, bool*
         }
         *menuRefresh = static_cast<int8_t>(menuNum);
         setMessage(message, "ok");
+        remote_link_note_activity();
         return true;
     }
 
@@ -266,49 +318,83 @@ bool remote_link_handle_command(const String& rawPayload, String* message, bool*
         if(ok) {
             *menuRefresh = static_cast<int8_t>(menuNum);
         }
-        return ok;
+        return finishCommand(ok);
     }
 
     if(cmdUpper.startsWith("ACTION=")) {
         const bool ok = handleActionCommand(cmd.substring(strlen("ACTION=")), message);
         *sendStatus = true;
-        return ok;
+        return finishCommand(ok);
     }
 
     if(cmdUpper == "START" || cmdUpper == "BUTTON_START") {
         *sendStatus = true;
-        return runAction("start", nullptr, message);
+        return finishCommand(runAction("start", nullptr, message));
     }
     if(cmdUpper == "STOP" || cmdUpper == "BUTTON_STOP") {
         *sendStatus = true;
-        return runAction("stop", nullptr, message);
+        return finishCommand(runAction("stop", nullptr, message));
     }
     if(cmdUpper == "IDLE" || cmdUpper == "MODE_IDLE" || cmdUpper == "MODE_NORMAL") {
         *sendStatus = true;
-        return runAction("idle", nullptr, message);
+        return finishCommand(runAction("idle", nullptr, message));
     }
     if(cmdUpper == "IDLE_GBW" || cmdUpper == "MODE_GBW") {
         *sendStatus = true;
-        return runAction("idle_gbw", nullptr, message);
+        return finishCommand(runAction("idle_gbw", nullptr, message));
     }
 
     if(parseIntArgument(cmdUpper, "SET_RPM", &value) || parseIntArgument(cmdUpper, "RPM", &value)) {
         *sendStatus = true;
-        return diag_api_set_rpm(value, message);
+        return finishCommand(diag_api_set_rpm(value, message));
     }
     if(parseIntArgument(cmdUpper, "STEP_RPM", &value)) {
         *sendStatus = true;
-        return diag_api_set_rpm(static_cast<int32_t>(setRPM) + value, message);
+        return finishCommand(diag_api_set_rpm(static_cast<int32_t>(setRPM) + value, message));
     }
     if(parseIntArgument(cmdUpper, "SET_WEIGHT", &value) || parseIntArgument(cmdUpper, "WEIGHT", &value)) {
         *sendStatus = true;
-        return diag_api_set_weight(value, message);
+        return finishCommand(diag_api_set_weight(value, message));
     }
     if(parseIntArgument(cmdUpper, "STEP_WEIGHT", &value)) {
         *sendStatus = true;
-        return diag_api_set_weight(static_cast<int32_t>(setWeight) + value, message);
+        return finishCommand(diag_api_set_weight(static_cast<int32_t>(setWeight) + value, message));
     }
 
     setMessage(message, "unknown remote command");
     return false;
+}
+
+void remote_link_note_activity() {
+    g_remoteLinkLastActivityAt = millis();
+    g_remoteLinkDeadmanLatched = false;
+}
+
+unsigned long remote_link_last_activity_at() {
+    return g_remoteLinkLastActivityAt;
+}
+
+void remote_link_safety_poll() {
+    const unsigned long now = millis();
+    const bool safetyState = remoteSafetyState(state);
+    if(state != g_remoteLinkLastObservedState) {
+        g_remoteLinkLastObservedState = state;
+        g_remoteLinkRunningObservedAt = safetyState ? now : 0;
+        if(!safetyState) {
+            g_remoteLinkDeadmanLatched = false;
+        }
+    }
+
+    if(!safetyState || g_remoteLinkDeadmanLatched || !controller_board_requires_remote_recovery()) {
+        return;
+    }
+
+    const unsigned long basis = g_remoteLinkLastActivityAt > g_remoteLinkRunningObservedAt
+                                    ? g_remoteLinkLastActivityAt
+                                    : g_remoteLinkRunningObservedAt;
+    if(basis == 0 || now - basis <= HEADLESS_REMOTE_DEADMAN_MS) {
+        return;
+    }
+
+    stopForRemoteDeadman();
 }

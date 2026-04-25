@@ -1837,8 +1837,40 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
       if(prevValue != item.value) {
         tft->fillRect(0, 60, SCREEN_WIDTH, SCREEN_HEIGHT-60, ST77XX_BLACK);
         prevValue = item.value;
+        if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
+            const int selected = item.value < 0 ? 0 : (item.value > 2 ? 2 : item.value);
+            for(int i = 0; i < 3; ++i) {
+                const bool active = i == selected;
+                const GFXfont* font = active ? &FreeSans18pt7b : &FreeSans12pt7b;
+                const char* label = radio_mode_value_label(i);
+                tft->setFont(font);
+                tft->setTextColor(active ? COLOR_GREEN : ST77XX_WHITE);
+
+                int16_t x1, y1;
+                uint16_t w, h;
+                tft->getTextBounds(label, 0, 0, &x1, &y1, &w, &h);
+                const int y = 92 + i * 42;
+                tft->setCursor((SCREEN_WIDTH - w) / 2, y);
+                tft->print(label);
+                if(active) {
+                    tft->drawRoundRect((SCREEN_WIDTH - w) / 2 - 8, y - h - 6, w + 22, h + 16, 6, COLOR_GREEN);
+                }
+            }
+
+            tft->setFont(&FreeSans9pt7b);
+            tft->setTextColor(ST77XX_WHITE);
+            const char* msg1 = "OFF sleeps from idle.";
+            const char* msg2 = "Wake with local button.";
+            int16_t x1, y1;
+            uint16_t w, h;
+            tft->getTextBounds(msg1, 0, 0, &x1, &y1, &w, &h);
+            tft->setCursor((SCREEN_WIDTH - w) / 2, 220);
+            tft->print(msg1);
+            tft->getTextBounds(msg2, 0, 0, &x1, &y1, &w, &h);
+            tft->setCursor((SCREEN_WIDTH - w) / 2, 240);
+            tft->print(msg2);
         // If min/max are 0/1, show "Disabled"/"Enabled" with box around selected
-        if (item.minValue == 0 && item.maxValue == 1 && item.scalar == 1) {
+        } else if (item.minValue == 0 && item.maxValue == 1 && item.scalar == 1) {
             const char* labels[2] = {"Disabled", "Enabled"};
             const char* alt_labels[2] = {"Don't save", "Save"};
             const char* alt_label2[2] = {"Back", "RESET"};

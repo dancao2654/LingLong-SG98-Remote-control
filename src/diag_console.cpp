@@ -463,6 +463,18 @@ void apiPrintStatus() {
     jsonPrintQuoted(motorText(currentStatus));
     Serial.print(",\"scale\":");
     jsonPrintQuoted(scaleText(scaleStatus));
+    Serial.print(",\"radioMode\":");
+    jsonPrintQuoted(radio_mode_label(radio_mode_current()));
+    Serial.print(",\"radioDesiredMode\":");
+    jsonPrintQuoted(radio_mode_label(radio_mode_desired()));
+    Serial.print(",\"radioStatus\":");
+    jsonPrintQuoted(radio_mode_status_text());
+    Serial.print(",\"radioRecovery\":");
+    Serial.print(radio_mode_web_recovery_active() ? "true" : "false");
+    Serial.print(",\"radioRecoveryMs\":");
+    Serial.print(static_cast<unsigned long>(radio_mode_recovery_remaining_ms()));
+    Serial.print(",\"remoteRecoveryRequired\":");
+    Serial.print(controller_board_requires_remote_recovery() ? "true" : "false");
     Serial.print(",\"error\":");
     Serial.print(static_cast<unsigned>(error));
     Serial.print(",\"errorText\":");
@@ -665,6 +677,12 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
         if(itemIdx == Menu1Items::SETMOTORDIRECTION &&
            !(state == IDLE || state == IDLE_GBW || state == MENU1)) {
             *message = "motor direction can only change while idle";
+            return false;
+        }
+        if(itemIdx == Menu1Items::RADIOMODE &&
+           controller_board_requires_remote_recovery() &&
+           radio_mode_from_value(requestedValue) == RADIO_MODE_OFF) {
+            *message = "radio off is unavailable on headless controller";
             return false;
         }
         Menu1[itemIdx].value = clampMenuValue(Menu1[itemIdx], requestedValue);
@@ -914,8 +932,16 @@ void appendStatusJson(String& out) {
     appendJsonQuoted(out, scaleText(scaleStatus));
     out += ",\"radioMode\":";
     appendJsonQuoted(out, radio_mode_label(radio_mode_current()));
+    out += ",\"radioDesiredMode\":";
+    appendJsonQuoted(out, radio_mode_label(radio_mode_desired()));
     out += ",\"radioStatus\":";
     appendJsonQuoted(out, radio_mode_status_text());
+    out += ",\"radioRecovery\":";
+    out += radio_mode_web_recovery_active() ? "true" : "false";
+    out += ",\"radioRecoveryMs\":";
+    out += String(static_cast<unsigned long>(radio_mode_recovery_remaining_ms()));
+    out += ",\"remoteRecoveryRequired\":";
+    out += controller_board_requires_remote_recovery() ? "true" : "false";
     out += ",\"error\":";
     out += String(static_cast<unsigned>(error));
     out += ",\"errorText\":";

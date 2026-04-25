@@ -18,6 +18,7 @@ constexpr const char* kCmdIdle = "IDLE";
 constexpr const char* kCmdIdleGbw = "IDLE_GBW";
 constexpr const char* kCmdGetStatus = "GET_STATUS";
 constexpr const char* kCmdDiscover = "DISCOVER";
+constexpr const char* kCmdHeartbeat = "HEARTBEAT";
 
 constexpr size_t kMaxMenuValues = 24;
 

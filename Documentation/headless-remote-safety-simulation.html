@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>SG98 Headless Controller Remote Safety Simulation</title>
+  <style>
+    @page {
+      size: Letter landscape;
+      margin: 0.44in;
+    }
+
+    :root {
+      color-scheme: light;
+      --ink: #17212b;
+      --muted: #5d6a75;
+      --line: #cfd8df;
+      --header: #0f3d5e;
+      --accent: #007c89;
+      --ok-bg: #e9f7ef;
+      --ok-fg: #17643a;
+      --warn-bg: #fff4df;
+      --warn-fg: #81500a;
+      --band: #f4f8fa;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 10px;
+      line-height: 1.38;
+      background: #ffffff;
+      -webkit-print-color-adjust: exact;
+      print-color-adjust: exact;
+    }
+
+    header {
+      border-bottom: 3px solid var(--header);
+      padding-bottom: 10px;
+      margin-bottom: 12px;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 20px;
+      align-items: end;
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: 24px;
+      line-height: 1.05;
+      color: var(--header);
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 11px;
+      max-width: 700px;
+    }
+
+    .stamp {
+      text-align: right;
+      color: var(--muted);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .summary {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 8px;
+      margin: 0 0 12px;
+    }
+
+    .metric {
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--accent);
+      padding: 8px 9px;
+      min-height: 54px;
+      background: #fbfdfe;
+    }
+
+    .metric .label {
+      color: var(--muted);
+      font-size: 8px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 3px;
+    }
+
+    .metric .value {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--header);
+    }
+
+    .metric .note {
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .legend {
+      border: 1px solid var(--line);
+      background: var(--band);
+      padding: 8px 10px;
+      margin-bottom: 11px;
+      display: grid;
+      grid-template-columns: 1.1fr 1fr 1.25fr;
+      gap: 12px;
+    }
+
+    .legend strong {
+      color: var(--header);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      border: 1px solid var(--line);
+    }
+
+    thead th {
+      background: var(--header);
+      color: #ffffff;
+      font-size: 8px;
+      line-height: 1.15;
+      text-align: left;
+      padding: 7px 6px;
+      border-right: 1px solid rgba(255, 255, 255, 0.25);
+      vertical-align: bottom;
+    }
+
+    tbody td {
+      padding: 6px 6px;
+      border-top: 1px solid var(--line);
+      border-right: 1px solid #e4eaee;
+      vertical-align: top;
+    }
+
+    tbody tr:nth-child(even) td {
+      background: #f9fbfc;
+    }
+
+    .num {
+      text-align: center;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .case {
+      font-weight: 700;
+      color: #1c2b36;
+    }
+
+    .direction {
+      color: #21313d;
+    }
+
+    .state {
+      font-weight: 700;
+      color: var(--header);
+    }
+
+    .small {
+      color: var(--muted);
+      font-size: 9px;
+    }
+
+    .badge {
+      display: inline-block;
+      min-width: 34px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: 8px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+    }
+
+    .ok {
+      background: var(--ok-bg);
+      color: var(--ok-fg);
+      border: 1px solid #b9e3ca;
+    }
+
+    .warn {
+      background: var(--warn-bg);
+      color: var(--warn-fg);
+      border: 1px solid #f0d097;
+    }
+
+    .conclusion {
+      margin-top: 11px;
+      padding: 9px 11px;
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--header);
+      background: #fbfdfe;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 18px;
+    }
+
+    .conclusion h2 {
+      margin: 0 0 4px;
+      font-size: 11px;
+      color: var(--header);
+    }
+
+    .conclusion p {
+      margin: 0;
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 0.95em;
+      color: #11384f;
+    }
+
+    .col-num { width: 3.2%; }
+    .col-case { width: 15.5%; }
+    .col-transport { width: 9%; }
+    .col-direction { width: 19%; }
+    .col-final { width: 14.5%; }
+    .col-off { width: 7%; }
+    .col-recovery { width: 7%; }
+    .col-result { width: 6%; }
+    .col-notes { width: 18.8%; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>SG98 Headless Controller Remote Safety Simulation</h1>
+      <div class="subtitle">
+        Communication corner-case review for the headless controller after adding low-rate remote heartbeat,
+        controller-side deadman stop, and valid-command ESP-NOW boot recovery.
+      </div>
+    </div>
+    <div class="stamp">
+      Headless only<br>
+      Source: host-side workflow simulation
+    </div>
+  </header>
+
+  <section class="summary" aria-label="Simulation assumptions">
+    <div class="metric">
+      <div class="label">Heartbeat</div>
+      <div class="value">1 second</div>
+      <div class="note">Remote sends while controller is in a running state.</div>
+    </div>
+    <div class="metric">
+      <div class="label">Deadman</div>
+      <div class="value">7.5 seconds</div>
+      <div class="note">Headless controller stops running states with no valid activity.</div>
+    </div>
+    <div class="metric">
+      <div class="label">Boot Recovery</div>
+      <div class="value">60 seconds</div>
+      <div class="note">Saved ESP-NOW falls back to Web recovery if no valid command arrives.</div>
+    </div>
+    <div class="metric">
+      <div class="label">Scope</div>
+      <div class="value">Headless only</div>
+      <div class="note">Full-size controllers are excluded by local UI capability checks.</div>
+    </div>
+  </section>
+
+  <section class="legend" aria-label="Legend">
+    <div><strong><code>R-&gt;C</code></strong> means remote, ESP-NOW peer, or remote-control sender to controller.</div>
+    <div><strong><code>C-&gt;R</code></strong> means controller response, status, ack, or discovery reply to remote.</div>
+    <div><strong>Motor-safe result:</strong> no simulated case leaves a headless running motor uncontrolled after remote traffic disappears.</div>
+  </section>
+
+  <table>
+    <thead>
+      <tr>
+        <th class="col-num">#</th>
+        <th class="col-case">Case</th>
+        <th class="col-transport">Transport</th>
+        <th class="col-direction">Comm / Disconnection Direction</th>
+        <th class="col-final">Final Controller State</th>
+        <th class="col-off">Motor Off</th>
+        <th class="col-recovery">Recovery</th>
+        <th class="col-result">Result</th>
+        <th class="col-notes">Notes</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td class="num">1</td>
+        <td class="case">ESP-NOW boot, no remote</td>
+        <td>ESP-NOW saved</td>
+        <td class="direction">No <code>R-&gt;C</code> traffic</td>
+        <td><span class="state">IDLE</span><br><span class="small">Web recovery</span></td>
+        <td>n/a</td>
+        <td>60s</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>No valid command seen; opens Web recovery at 60s.</td>
+      </tr>
+      <tr>
+        <td class="num">2</td>
+        <td class="case">ESP-NOW boot, stray <code>DISCOVER</code> only</td>
+        <td>ESP-NOW saved</td>
+        <td class="direction"><code>R-&gt;C DISCOVER</code>; <code>C-&gt;R</code> discovery response</td>
+        <td><span class="state">IDLE</span><br><span class="small">Web recovery</span></td>
+        <td>n/a</td>
+        <td>60s</td>
+        <td><span class="badge ok">OK</span></td>
+        <td><code>DISCOVER</code> does not satisfy recovery anymore.</td>
+      </tr>
+      <tr>
+        <td class="num">3</td>
+        <td class="case">ESP-NOW boot, valid remote command</td>
+        <td>ESP-NOW saved</td>
+        <td class="direction"><code>R-&gt;C</code> OK; <code>C-&gt;R</code> OK</td>
+        <td><span class="state">IDLE</span><br><span class="small">ESP-NOW stays</span></td>
+        <td>8.0s</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Valid command satisfies boot recovery.</td>
+      </tr>
+      <tr>
+        <td class="num">4</td>
+        <td class="case"><code>START</code> delivered, remote power loss</td>
+        <td>ESP-NOW / Web</td>
+        <td class="direction">Both directions down after <code>START</code></td>
+        <td><span class="state">IDLE</span><br><span class="small">Stopped, link down</span></td>
+        <td>8.6s</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Deadman stops at about last activity plus timeout.</td>
+      </tr>
+      <tr>
+        <td class="num">5</td>
+        <td class="case"><code>START</code> delivered, remote transmit lost</td>
+        <td>ESP-NOW / Web</td>
+        <td class="direction"><code>R-&gt;C</code> down; <code>C-&gt;R</code> may still transmit</td>
+        <td><span class="state">IDLE</span><br><span class="small">Stopped</span></td>
+        <td>8.6s</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Heartbeats cannot reach controller, so deadman stops.</td>
+      </tr>
+      <tr>
+        <td class="num">6</td>
+        <td class="case"><code>START</code> delivered, controller response lost</td>
+        <td>ESP-NOW / Web</td>
+        <td class="direction"><code>C-&gt;R</code> down; <code>R-&gt;C</code> alive</td>
+        <td><span class="state">GRINDING</span><br><span class="small">Controller still controlled</span></td>
+        <td>n/a</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>No timeout because remote heartbeat still arrives. Remote UI may look stale.</td>
+      </tr>
+      <tr>
+        <td class="num">7</td>
+        <td class="case"><code>START</code> command lost</td>
+        <td>ESP-NOW / Web</td>
+        <td class="direction"><code>R-&gt;C</code> down during <code>START</code></td>
+        <td><span class="state">IDLE</span><br><span class="small">Idle</span></td>
+        <td>n/a</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Nothing starts.</td>
+      </tr>
+      <tr>
+        <td class="num">8</td>
+        <td class="case"><code>STOP</code> command lost after running</td>
+        <td>ESP-NOW / Web</td>
+        <td class="direction"><code>R-&gt;C</code> down before <code>STOP</code></td>
+        <td><span class="state">IDLE</span><br><span class="small">Stopped</span></td>
+        <td>10.6s</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Deadman is the backstop for a lost <code>STOP</code>.</td>
+      </tr>
+      <tr>
+        <td class="num">9</td>
+        <td class="case"><code>STOP</code> delivered, response lost</td>
+        <td>ESP-NOW / Web</td>
+        <td class="direction"><code>R-&gt;C</code> OK; <code>C-&gt;R</code> down</td>
+        <td><span class="state">IDLE</span><br><span class="small">Idle</span></td>
+        <td>4.0s</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Controller stops immediately; remote can retry/status-recover later.</td>
+      </tr>
+      <tr>
+        <td class="num">10</td>
+        <td class="case"><code>STOP</code> delivered with button-purge enabled</td>
+        <td>ESP-NOW / Web</td>
+        <td class="direction"><code>R-&gt;C</code> OK; <code>C-&gt;R</code> may be down</td>
+        <td><span class="state">IDLE</span><br><span class="small">Idle after purge</span></td>
+        <td>7.0s</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Expected purge tail before idle.</td>
+      </tr>
+      <tr>
+        <td class="num">11</td>
+        <td class="case">Running state entered without remote traffic</td>
+        <td>Web / ESP-NOW</td>
+        <td class="direction">No traffic after state entry</td>
+        <td><span class="state">IDLE</span><br><span class="small">Stopped</span></td>
+        <td>8.6s</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Running-observed timestamp still trips the deadman.</td>
+      </tr>
+      <tr>
+        <td class="num">12</td>
+        <td class="case">Web UI active while remote path lost</td>
+        <td>Web</td>
+        <td class="direction">Remote <code>R-&gt;C</code> down; Web API to controller alive</td>
+        <td><span class="state">GRINDING</span><br><span class="small">Still running by Web control</span></td>
+        <td>n/a</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Web UI traffic intentionally keeps headless control alive.</td>
+      </tr>
+      <tr>
+        <td class="num">13</td>
+        <td class="case">GbW run, remote loss</td>
+        <td>ESP-NOW / Web</td>
+        <td class="direction">Both directions down after <code>START</code></td>
+        <td><span class="state">IDLE_GBW</span><br><span class="small">Stopped in GbW idle</span></td>
+        <td>8.6s</td>
+        <td>-</td>
+        <td><span class="badge ok">OK</span></td>
+        <td>Deadman returns to <code>IDLE_GBW</code>.</td>
+      </tr>
+      <tr>
+        <td class="num">14</td>
+        <td class="case">Remote seen once, then lost while idle</td>
+        <td>ESP-NOW saved</td>
+        <td class="direction">One valid <code>R-&gt;C</code>, then none</td>
+        <td><span class="state">IDLE</span><br><span class="small">ESP-NOW only</span></td>
+        <td>n/a</td>
+        <td>-</td>
+        <td><span class="badge warn">WARN</span></td>
+        <td>Motor-safe. If reachability is needed, power-cycle returns to boot recovery.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <section class="conclusion">
+    <div>
+      <h2>Safety Conclusion</h2>
+      <p>
+        For headless operation, the low-rate heartbeat plus controller-side deadman closes the uncontrolled
+        running cases. If remote traffic disappears while grinding, purging, or GbW grinding, the controller
+        transitions back to an idle state and sets motor command to zero.
+      </p>
+    </div>
+    <div>
+      <h2>Reachability Note</h2>
+      <p>
+        The remaining warning is idle-only: after one valid ESP-NOW command, a later idle remote loss can leave
+        the controller ESP-NOW-only. That is motor-safe, and power-cycling the headless controller re-enters
+        the 60s Web recovery path if no valid remote command arrives.
+      </p>
+    </div>
+  </section>
+</body>
+</html>

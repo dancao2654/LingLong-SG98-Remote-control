@@ -5,6 +5,7 @@
 #include "gbw.h"
 #include "io.h"
 #include "motor_hal.h"
+#include "radio_mode.h"
 
 Preferences preferences; 
 
@@ -114,6 +115,12 @@ void pdata_normalize(bool persist) {
     if(Menu1[SETMIN].value > Menu1[SETMAX].value) {
         Menu1[SETMIN].value = Menu1[SETMAX].value;
         menu1Changed[SETMIN] = true;
+    }
+
+    const int16_t sanitizedRadioMode = static_cast<int16_t>(radio_mode_sanitize_value(Menu1[RADIOMODE].value));
+    if(Menu1[RADIOMODE].value != sanitizedRadioMode) {
+        Menu1[RADIOMODE].value = sanitizedRadioMode;
+        menu1Changed[RADIOMODE] = true;
     }
 
     if(Menu3[GBW_SLOW_RPM].value > Menu3[GBW_RPM_SET].value) {

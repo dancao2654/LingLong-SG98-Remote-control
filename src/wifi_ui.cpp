@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 #include "diag_console.h"
+#include "remote_link.h"
 #include "remote_ws.h"
 
 namespace {
@@ -1027,11 +1028,18 @@ void serveCaptiveAwarePage() {
     servePortalPage();
 }
 
+void handleStatus() {
+    remote_link_note_activity();
+    sendJson(diag_api_status_json());
+}
+
 void handleSnapshot() {
+    remote_link_note_activity();
     sendJson(snapshotJson());
 }
 
 void handleSet() {
+    remote_link_note_activity();
     String message;
     const bool ok = diag_api_set_menu_value(static_cast<uint8_t>(server.arg("menu").toInt()),
                                             static_cast<uint8_t>(server.arg("item").toInt()),
@@ -1041,18 +1049,21 @@ void handleSet() {
 }
 
 void handleSetRpm() {
+    remote_link_note_activity();
     String message;
     const bool ok = diag_api_set_rpm(server.arg("value").toInt(), &message);
     sendAck(ok, message);
 }
 
 void handleSetWeight() {
+    remote_link_note_activity();
     String message;
     const bool ok = diag_api_set_weight(server.arg("value").toInt(), &message);
     sendAck(ok, message);
 }
 
 void handleAction() {
+    remote_link_note_activity();
     String message;
     const bool ok = diag_api_run_action(server.arg("action").c_str(),
                                         server.arg("arg0").c_str(),
@@ -1128,7 +1139,7 @@ void configureRoutes() {
     server.on("/canonical.html", HTTP_GET, serveCaptiveAwarePage);
     server.on("/ncsi.txt", HTTP_GET, []() { if(setupDone) serveNcsiSuccess(); else servePortalPage(); });
     server.on("/success.txt", HTTP_GET, []() { if(setupDone) serveCaptiveSuccess(); else servePortalPage(); });
-    server.on("/api/status", HTTP_GET, []() { sendJson(diag_api_status_json()); });
+    server.on("/api/status", HTTP_GET, handleStatus);
     server.on("/api/snapshot", HTTP_GET, handleSnapshot);
     server.on("/api/set", HTTP_POST, handleSet);
     server.on("/api/setrpm", HTTP_POST, handleSetRpm);

@@ -28,6 +28,7 @@ constexpr uint32_t kPollingServiceMs = 90;
 constexpr uint32_t kTargetCommitDelayMs = 220;
 constexpr uint32_t kPendingSyncRetryMs = 320;
 constexpr uint32_t kPendingMenuPollMs = 320;
+constexpr uint32_t kSafetyHeartbeatMs = 1000;
 constexpr uint32_t kTransportSwitchDelayMs = 350;
 constexpr uint32_t kTransportSearchWindowMs = 4500;
 constexpr uint32_t kMdnsQueryMs = 3500;

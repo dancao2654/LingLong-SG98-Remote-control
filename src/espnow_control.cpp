@@ -35,6 +35,7 @@ QueueHandle_t espnowQueue = nullptr;
 bool espnowActive = false;
 uint8_t espnowChannelValue = default_espnow_channel;
 unsigned long lastRxAt = 0;
+unsigned long lastCommandRxAt = 0;
 uint32_t rxCount = 0;
 uint32_t dropCount = 0;
 char lastCommand[ESPNOW_COMMAND_LEN] = "";
@@ -120,6 +121,9 @@ void processEvent(const EspNowEvent& event) {
     bool sendStatus = false;
     int8_t menuRefresh = 0;
     const bool ok = remote_link_handle_command(String(event.payload), &message, &sendStatus, &menuRefresh);
+    if(ok) {
+        lastCommandRxAt = lastRxAt;
+    }
     Serial.printf("[espnow] cmd=\"%s\" ok=%s msg=%s\n",
                   event.payload,
                   ok ? "true" : "false",
@@ -240,6 +244,7 @@ bool espnow_control_start() {
     }
 
     lastRxAt = 0;
+    lastCommandRxAt = 0;
     rxCount = 0;
     lastCommand[0] = '\0';
     espnowActive = true;
@@ -290,6 +295,14 @@ bool espnow_control_is_active() {
 
 uint8_t espnow_control_channel() {
     return espnowChannelValue;
+}
+
+unsigned long espnow_control_last_rx_at() {
+    return lastRxAt;
+}
+
+unsigned long espnow_control_last_command_rx_at() {
+    return lastCommandRxAt;
 }
 
 String espnow_control_status_text() {
