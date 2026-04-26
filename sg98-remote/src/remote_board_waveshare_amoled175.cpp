@@ -59,6 +59,7 @@ constexpr uint8_t kPmicSystemVoltageHighReg = XPOWERS_AXP2101_ADC_DATA_RELUST6;
 constexpr uint8_t kPmicSystemVoltageLowReg = XPOWERS_AXP2101_ADC_DATA_RELUST7;
 constexpr uint32_t kI2cClock = 100000U;
 constexpr uint32_t kButtonDebounceMs = 18;
+constexpr uint32_t kLongPressMs = 750;
 constexpr uint8_t kTouchProbeAttempts = 6;
 constexpr uint32_t kTouchProbeRetryMs = 40;
 constexpr uint8_t kTouchInitAttempts = 8;
@@ -75,11 +76,26 @@ constexpr uint32_t kTouchReadFailureBackoffMs = 30;
 constexpr uint8_t kTouchReadFailureTripCount = 4;
 constexpr uint8_t kTouchPressConfirmSamples = 1;
 constexpr uint32_t kTouchReleaseHoldMs = 90;
+constexpr uint32_t kTouchSharedI2cQuietMs = 900;
 constexpr uint32_t kPmicSensePollMs = 60;
+constexpr uint16_t kI2cTransactionTimeoutMs = 20;
+constexpr uint32_t kI2cStreamTimeoutMs = 20;
+constexpr bool kWaveInputLatencyDebug = false;
+constexpr uint32_t kWaveInputSectionWarnUs = 8000;
+constexpr uint32_t kWaveInputTotalWarnUs = 14000;
 constexpr uint8_t kImuAddress = QMI8658_H_SLAVE_ADDRESS;
 constexpr uint8_t kImuWakeThresholdMg = 80;
 constexpr SensorQMI8658::AccelODR kImuWakeOdr = SensorQMI8658::ACC_ODR_LOWPOWER_11Hz;
+constexpr SensorQMI8658::AccelRange kImuAccelRange = SensorQMI8658::ACC_RANGE_8G;
 constexpr float kImuWakeOdrLabelHz = 11.0f;
+constexpr float kImuAccelScaleG = 8.0f / 32768.0f;
+constexpr float kDisplayAutoRotateDominantG = 0.62f;
+constexpr float kDisplayAutoRotateAxisMarginG = 0.22f;
+constexpr float kDisplayAutoRotateFlatRejectMarginG = 0.12f;
+constexpr uint8_t kDisplayAutoRotateConfirmSamples = 2;
+constexpr uint8_t kDisplayAutoRotateCorrection = 1;
+constexpr bool kDisplayAutoRotateDebug = false;
+constexpr uint32_t kDisplayAutoRotateDebugMs = 1000;
 constexpr uint32_t kBaseWakeSources = static_cast<uint32_t>(RemoteWakeSource::Touch) |
                                       static_cast<uint32_t>(RemoteWakeSource::PrimaryButton);
 
@@ -110,6 +126,9 @@ RemoteBoardPins makeStockPins() {
     pins.audioMclk = 42;
     pins.audioEnable = 46;
     pins.primaryButton = kBootButtonPin;
+    pins.expansionGpio0 = 17;
+    pins.expansionGpio1 = 18;
+    pins.expansionGpio2 = 16;
     return pins;
 }
 
@@ -128,6 +147,9 @@ RemoteBoardPins makeAltPins4145() {
     pins.touchReset = 46;
     pins.imuInt = 38;
     pins.primaryButton = kBootButtonPin;
+    pins.expansionGpio0 = 17;
+    pins.expansionGpio1 = 18;
+    pins.expansionGpio2 = 16;
     return pins;
 }
 
@@ -196,6 +218,8 @@ struct ButtonTracker {
     bool stablePressed = false;
     bool lastSamplePressed = false;
     uint32_t debounceStartedAt = 0;
+    uint32_t stableChangedAt = 0;
+    bool longLatched = false;
 };
 
 struct TouchDebounceTracker {
@@ -255,7 +279,10 @@ class BufferedWaveshareDisplay : public Arduino_GFX {
         if(framebuffer_ == nullptr) {
             return;
         }
-        framebuffer_[static_cast<size_t>(y) * kDisplayWidth + x] = color;
+        int16_t px = x;
+        int16_t py = y;
+        mapLogicalToFramebuffer(&px, &py);
+        framebuffer_[static_cast<size_t>(py) * kDisplayWidth + px] = color;
     }
 
     void writeFillRectPreclipped(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
@@ -263,12 +290,32 @@ class BufferedWaveshareDisplay : public Arduino_GFX {
             return;
         }
 
-        for(int16_t row = 0; row < h; ++row) {
-            uint16_t* line = framebuffer_ + (static_cast<size_t>(y + row) * kDisplayWidth) + x;
-            for(int16_t col = 0; col < w; ++col) {
-                line[col] = color;
-            }
+        int16_t px = x;
+        int16_t py = y;
+        int16_t pw = w;
+        int16_t ph = h;
+        switch(getRotation() & 0x03) {
+            case 1:
+                px = static_cast<int16_t>(kDisplayWidth - y - h);
+                py = x;
+                pw = h;
+                ph = w;
+                break;
+            case 2:
+                px = static_cast<int16_t>(kDisplayWidth - x - w);
+                py = static_cast<int16_t>(kDisplayHeight - y - h);
+                break;
+            case 3:
+                px = y;
+                py = static_cast<int16_t>(kDisplayHeight - x - w);
+                pw = h;
+                ph = w;
+                break;
+            default:
+                break;
         }
+
+        fillFramebufferRect(px, py, pw, ph, color);
     }
 
     void flush(bool force_flush = false) override {
@@ -284,6 +331,50 @@ class BufferedWaveshareDisplay : public Arduino_GFX {
     }
 
   private:
+    void mapLogicalToFramebuffer(int16_t* x, int16_t* y) const {
+        const int16_t ox = *x;
+        const int16_t oy = *y;
+        switch(getRotation() & 0x03) {
+            case 1:
+                *x = static_cast<int16_t>(kDisplayWidth - 1 - oy);
+                *y = ox;
+                break;
+            case 2:
+                *x = static_cast<int16_t>(kDisplayWidth - 1 - ox);
+                *y = static_cast<int16_t>(kDisplayHeight - 1 - oy);
+                break;
+            case 3:
+                *x = oy;
+                *y = static_cast<int16_t>(kDisplayHeight - 1 - ox);
+                break;
+            default:
+                break;
+        }
+    }
+
+    void fillFramebufferRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) {
+        if(x < 0 || y < 0 || w <= 0 || h <= 0 ||
+           x + w > kDisplayWidth || y + h > kDisplayHeight) {
+            for(int16_t row = 0; row < h; ++row) {
+                for(int16_t col = 0; col < w; ++col) {
+                    const int16_t px = static_cast<int16_t>(x + col);
+                    const int16_t py = static_cast<int16_t>(y + row);
+                    if(px >= 0 && px < kDisplayWidth && py >= 0 && py < kDisplayHeight) {
+                        framebuffer_[static_cast<size_t>(py) * kDisplayWidth + px] = color;
+                    }
+                }
+            }
+            return;
+        }
+
+        for(int16_t row = 0; row < h; ++row) {
+            uint16_t* line = framebuffer_ + (static_cast<size_t>(y + row) * kDisplayWidth) + x;
+            for(int16_t col = 0; col < w; ++col) {
+                line[col] = color;
+            }
+        }
+    }
+
     Arduino_GFX* output_ = nullptr;
     uint16_t* framebuffer_ = nullptr;
     bool usingPsram_ = false;
@@ -564,7 +655,12 @@ uint32_t g_touchLastGoodSampleAt = 0;
 uint32_t g_pmicLastSenseAt = 0;
 uint32_t g_pmicLastBatteryLevelAt = 0;
 uint32_t g_imuLastPollAt = 0;
+uint32_t g_displayAutoRotateLastSampleAt = 0;
+uint32_t g_displayAutoRotateLastDebugAt = 0;
 uint8_t g_i2cRecoveryLogCount = 0;
+uint8_t g_displayRotation = 0;
+uint8_t g_displayRotationCandidate = 0;
+uint8_t g_displayRotationCandidateCount = 0;
 bool g_pmicIrqLatched = false;
 bool g_motionActivityPending = false;
 RemoteBatteryStatus g_pmicBatteryCache = {};
@@ -691,16 +787,24 @@ bool ensureDisplayObjects() {
     return true;
 }
 
+void configureSharedI2cTimeouts() {
+    Wire.setTimeOut(kI2cTransactionTimeoutMs);
+    Wire.setTimeout(kI2cStreamTimeoutMs);
+}
+
 bool beginSharedI2cBus(int8_t sda, int8_t scl) {
     Wire.end();
     delay(2);
-    return Wire.begin(sda, scl, kI2cClock);
+    const bool ok = Wire.begin(sda, scl, kI2cClock);
+    configureSharedI2cTimeouts();
+    return ok;
 }
 
 bool recoverSharedI2cBus(const char* reason) {
     Wire.end();
     delay(2);
     const bool ok = Wire.begin(g_boardPins.touchSda, g_boardPins.touchScl, kI2cClock);
+    configureSharedI2cTimeouts();
     if(g_i2cRecoveryLogCount < 6) {
         Serial.printf("[remote] waveshare i2c recover reason=%s ok=%d\n",
                       reason != nullptr ? reason : "unknown",
@@ -833,14 +937,23 @@ void initButtonTracker(ButtonTracker* tracker, bool pressed) {
     tracker->stablePressed = pressed;
     tracker->lastSamplePressed = pressed;
     tracker->debounceStartedAt = millis();
+    tracker->stableChangedAt = tracker->debounceStartedAt;
+    tracker->longLatched = false;
 }
 
-void updateButtonTracker(ButtonTracker* tracker, bool pressed, bool* justPressed, bool* justReleased) {
+void updateButtonTracker(ButtonTracker* tracker,
+                         bool pressed,
+                         bool* justPressed,
+                         bool* justReleased,
+                         bool* longPress) {
     if(justPressed != nullptr) {
         *justPressed = false;
     }
     if(justReleased != nullptr) {
         *justReleased = false;
+    }
+    if(longPress != nullptr) {
+        *longPress = false;
     }
     if(tracker == nullptr) {
         return;
@@ -862,18 +975,28 @@ void updateButtonTracker(ButtonTracker* tracker, bool pressed, bool* justPressed
     }
 
     if(pressed == tracker->stablePressed) {
+        if(tracker->stablePressed && !tracker->longLatched &&
+           now - tracker->stableChangedAt >= kLongPressMs) {
+            tracker->longLatched = true;
+            if(longPress != nullptr) {
+                *longPress = true;
+            }
+        }
         return;
     }
 
     tracker->stablePressed = pressed;
+    tracker->stableChangedAt = now;
     if(pressed) {
+        tracker->longLatched = false;
         if(justPressed != nullptr) {
             *justPressed = true;
         }
     } else {
-        if(justReleased != nullptr) {
+        if(!tracker->longLatched && justReleased != nullptr) {
             *justReleased = true;
         }
+        tracker->longLatched = false;
     }
 }
 
@@ -884,6 +1007,197 @@ bool readBootButtonPressed(bool* pressed) {
 
     *pressed = digitalRead(kBootButtonPin) == LOW;
     return true;
+}
+
+void resetTouchTrackingForDisplayRotation() {
+    g_touchState = {};
+    g_touchStablePressed = false;
+    g_touchPressSampleCount = 0;
+    g_touchReleaseSampleCount = 0;
+    g_touchStableX = 0;
+    g_touchStableY = 0;
+    g_touchLastGoodSampleAt = 0;
+    g_touchInterruptPending = true;
+}
+
+bool applyDisplayRotation(uint8_t rotation) {
+    rotation &= 0x03;
+    if(rotation == g_displayRotation) {
+        return false;
+    }
+
+    g_displayRotation = rotation;
+    g_displayRotationCandidate = rotation;
+    g_displayRotationCandidateCount = 0;
+    if(g_drawDisplay == &g_bufferedDisplay) {
+        if(g_display != nullptr) {
+            g_display->setRotation(0);
+        }
+        g_bufferedDisplay.setRotation(rotation);
+    } else if(g_display != nullptr) {
+        g_display->setRotation(rotation);
+    } else if(g_drawDisplay != nullptr) {
+        g_drawDisplay->setRotation(rotation);
+    }
+
+    if(g_drawDisplay != nullptr) {
+        g_drawDisplay->fillScreen(0x0000);
+        g_drawDisplay->flush(true);
+    }
+    resetTouchTrackingForDisplayRotation();
+    return true;
+}
+
+void mapTouchForDisplayRotation(int16_t* x, int16_t* y) {
+    if(x == nullptr || y == nullptr) {
+        return;
+    }
+
+    const int16_t ox = *x;
+    const int16_t oy = *y;
+    switch(g_displayRotation & 0x03) {
+        case 1:
+            *x = oy;
+            *y = static_cast<int16_t>(kDisplayWidth - 1 - ox);
+            break;
+        case 2:
+            *x = static_cast<int16_t>(kDisplayWidth - 1 - ox);
+            *y = static_cast<int16_t>(kDisplayHeight - 1 - oy);
+            break;
+        case 3:
+            *x = static_cast<int16_t>(kDisplayHeight - 1 - oy);
+            *y = ox;
+            break;
+        default:
+            break;
+    }
+}
+
+uint8_t correctedDisplayRotation(uint8_t rotation) {
+    return static_cast<uint8_t>((rotation + kDisplayAutoRotateCorrection) & 0x03);
+}
+
+uint8_t displayRotationFromGravity(float ax, float ay, float az) {
+    const float absX = fabsf(ax);
+    const float absY = fabsf(ay);
+    const float absZ = fabsf(az);
+    const float dominant = absX > absY ? absX : absY;
+    if(dominant < kDisplayAutoRotateDominantG) {
+        return g_displayRotation;
+    }
+    if(absZ >= dominant - kDisplayAutoRotateFlatRejectMarginG) {
+        return g_displayRotation;
+    }
+    if(absY >= absX + kDisplayAutoRotateAxisMarginG) {
+        return correctedDisplayRotation(ay > 0.0f ? 0 : 2);
+    }
+    if(absX >= absY + kDisplayAutoRotateAxisMarginG) {
+        return correctedDisplayRotation(ax > 0.0f ? 3 : 1);
+    }
+    return g_displayRotation;
+}
+
+void debugDisplayAutoRotate(uint32_t now,
+                            const char* status,
+                            float ax = 0.0f,
+                            float ay = 0.0f,
+                            float az = 0.0f,
+                            uint8_t rotation = 0xFF) {
+    if(!kDisplayAutoRotateDebug ||
+       static_cast<uint32_t>(now - g_displayAutoRotateLastDebugAt) <
+           kDisplayAutoRotateDebugMs) {
+        return;
+    }
+    g_displayAutoRotateLastDebugAt = now;
+    Serial.printf("[rot] %s ax=%d ay=%d az=%d cur=%u next=%u touchStable=%u touchIrq=%u touchPressed=%u lastTouch=%lu imuIrq=%u motion=%u t=%lu\n",
+                  status != nullptr ? status : "?",
+                  static_cast<int>(ax * 1000.0f),
+                  static_cast<int>(ay * 1000.0f),
+                  static_cast<int>(az * 1000.0f),
+                  static_cast<unsigned>(g_displayRotation),
+                  rotation == 0xFF ? 9u : static_cast<unsigned>(rotation),
+                  g_touchStablePressed ? 1u : 0u,
+                  g_touchInterruptPending ? 1u : 0u,
+                  g_touchState.pressed ? 1u : 0u,
+                  static_cast<unsigned long>(g_touchLastGoodSampleAt),
+                  g_imuInterruptPending ? 1u : 0u,
+                  g_motionActivityPending ? 1u : 0u,
+                  static_cast<unsigned long>(now));
+}
+
+bool readImuAccelerometerG(float* ax, float* ay, float* az) {
+    if(ax == nullptr || ay == nullptr || az == nullptr) {
+        return false;
+    }
+
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+    if(g_imu.getAccelerometer(x, y, z) &&
+       (fabsf(x) + fabsf(y) + fabsf(z)) > 0.05f) {
+        *ax = x;
+        *ay = y;
+        *az = z;
+        return true;
+    }
+
+    int16_t raw[3] = {};
+    if(!g_imu.getAccelRaw(raw)) {
+        return false;
+    }
+
+    *ax = static_cast<float>(raw[0]) * kImuAccelScaleG;
+    *ay = static_cast<float>(raw[1]) * kImuAccelScaleG;
+    *az = static_cast<float>(raw[2]) * kImuAccelScaleG;
+    return (fabsf(*ax) + fabsf(*ay) + fabsf(*az)) > 0.05f;
+}
+
+void serviceDisplayAutoRotate(RemoteInputState* input, uint32_t now) {
+    if(input == nullptr || !remote_config::kDisplayAutoRotate || !g_imuReady) {
+        return;
+    }
+    if(static_cast<uint32_t>(now - g_displayAutoRotateLastSampleAt) <
+       remote_config::kDisplayAutoRotateSampleMs) {
+        return;
+    }
+
+    float ax = 0.0f;
+    float ay = 0.0f;
+    float az = 0.0f;
+    g_displayAutoRotateLastSampleAt = now;
+    if(!readImuAccelerometerG(&ax, &ay, &az)) {
+        debugDisplayAutoRotate(now, "read_fail");
+        return;
+    }
+
+    const uint8_t rotation = displayRotationFromGravity(ax, ay, az);
+    if(rotation == g_displayRotation) {
+        g_displayRotationCandidate = rotation;
+        g_displayRotationCandidateCount = 0;
+        debugDisplayAutoRotate(now, "hold", ax, ay, az, rotation);
+        return;
+    }
+
+    if(rotation != g_displayRotationCandidate) {
+        g_displayRotationCandidate = rotation;
+        g_displayRotationCandidateCount = 1;
+        debugDisplayAutoRotate(now, "candidate", ax, ay, az, rotation);
+        return;
+    }
+    if(g_displayRotationCandidateCount < kDisplayAutoRotateConfirmSamples) {
+        ++g_displayRotationCandidateCount;
+    }
+    if(g_displayRotationCandidateCount < kDisplayAutoRotateConfirmSamples) {
+        debugDisplayAutoRotate(now, "candidate", ax, ay, az, rotation);
+        return;
+    }
+
+    debugDisplayAutoRotate(now, rotation == g_displayRotation ? "hold" : "apply", ax, ay, az, rotation);
+    if(applyDisplayRotation(rotation)) {
+        g_displayRotationCandidateCount = 0;
+        input->displayRotationChanged = true;
+        input->displayRotation = rotation;
+    }
 }
 
 bool readTouchPointSample(int16_t* x, int16_t* y) {
@@ -903,6 +1217,7 @@ bool readTouchPointSample(int16_t* x, int16_t* y) {
 
     *x = static_cast<int16_t>(point.x);
     *y = static_cast<int16_t>(point.y);
+    mapTouchForDisplayRotation(x, y);
     return true;
 }
 
@@ -965,15 +1280,17 @@ bool initImuMotion() {
 
     g_imu.setPins(g_boardPins.imuInt);
     g_imu.setWakeupMotionEventCallBack(waveshareImuWakeOnMotion);
-    if(!g_imu.configWakeOnMotion(
-           kImuWakeThresholdMg, kImuWakeOdr, SensorQMI8658::INTERRUPT_PIN_2)) {
-        Serial.println("[remote] waveshare imu wake-on-motion config failed");
+    if(!g_imu.configAccelerometer(kImuAccelRange, kImuWakeOdr, SensorQMI8658::LPF_MODE_0)) {
+        Serial.println("[remote] waveshare imu accel config failed");
+        return false;
+    }
+    if(!g_imu.enableAccelerometer()) {
+        Serial.println("[remote] waveshare imu accel enable failed");
         return false;
     }
 
-    Serial.printf("[remote] waveshare imu ready irq=%d thr=%u odr=%.1fHz\n",
+    Serial.printf("[remote] waveshare imu ready irq=%d accel=%.1fHz range=8g\n",
                   g_boardPins.imuInt,
-                  kImuWakeThresholdMg,
                   kImuWakeOdrLabelHz);
     return true;
 }
@@ -1035,21 +1352,38 @@ void initPmicButtonIrq() {
                   powerStatusIrqReady ? 1 : 0);
 }
 
+bool touchSharedI2cGuardActive(uint32_t now) {
+    if(g_touchStablePressed || g_touchInterruptPending || g_touchState.pressed) {
+        return true;
+    }
+    return g_touchLastGoodSampleAt != 0 &&
+           static_cast<uint32_t>(now - g_touchLastGoodSampleAt) < kTouchSharedI2cQuietMs;
+}
+
 void serviceImuMotion(RemoteInputState* input) {
     if(input == nullptr || !g_imuReady) {
         return;
     }
 
-    if(g_imuInterruptPending && !g_touchStablePressed) {
+    const uint32_t now = millis();
+    const bool touchGuardActive = touchSharedI2cGuardActive(now);
+    if(touchGuardActive) {
+        debugDisplayAutoRotate(now, "touch_guard");
+        return;
+    }
+
+    if(g_imuInterruptPending) {
         g_imuInterruptPending = false;
-        g_imuLastPollAt = millis();
+        g_imuLastPollAt = now;
         g_imu.update();
     }
 
-    if(g_motionActivityPending && !g_touchStablePressed) {
+    if(g_motionActivityPending) {
         input->motionDetected = true;
         g_motionActivityPending = false;
     }
+
+    serviceDisplayAutoRotate(input, now);
 }
 
 bool readPmicIrqActive(bool* active) {
@@ -1378,6 +1712,7 @@ bool waveshare_init() {
     bool touchReady = false;
     for(uint8_t attempt = 1; attempt <= kTouchInitAttempts; ++attempt) {
         if(g_touch.begin(Wire, kTouchAddress, -1, -1)) {
+            configureSharedI2cTimeouts();
             touchReady = true;
             if(attempt > 1) {
                 Serial.printf("[remote] waveshare touch init succeeded on attempt %u\n", attempt);
@@ -1410,7 +1745,8 @@ bool waveshare_init() {
     }
 
     g_imuReady = initImuMotion();
-    setImuWakeSupport(g_imuReady);
+    configureSharedI2cTimeouts();
+    setImuWakeSupport(false);
     initPmicButtonIrq();
 
     if(!ensureDisplayObjects()) {
@@ -1438,6 +1774,10 @@ bool waveshare_init() {
 
     g_drawDisplay = g_display;
     g_display->setRotation(0);
+    g_displayRotation = 0;
+    g_displayRotationCandidate = 0;
+    g_displayRotationCandidateCount = 0;
+    g_displayAutoRotateLastSampleAt = millis();
     g_display->setBrightness(200);
     if(g_bufferedDisplay.begin()) {
         g_bufferedDisplay.setRotation(0);
@@ -1475,6 +1815,7 @@ bool waveshare_init() {
     g_pmicIrqLatched = false;
     g_imuInterruptPending = false;
     g_imuLastPollAt = 0;
+    g_displayAutoRotateLastSampleAt = millis();
     g_motionActivityPending = false;
     attachInterrupt(kBootButtonPin, waveshareBootButtonIsr, CHANGE);
     attachInterrupt(g_boardPins.touchInt, waveshareTouchIsr, FALLING);
@@ -1487,20 +1828,88 @@ bool waveshare_init() {
     return true;
 }
 
+uint32_t traceWaveInputStep(const char* tag,
+                            uint32_t sectionStartUs,
+                            uint32_t pollStartUs,
+                            bool touchNeedsSample) {
+    if(!kWaveInputLatencyDebug) {
+        return sectionStartUs;
+    }
+
+    const uint32_t nowUs = micros();
+    const uint32_t elapsedUs = nowUs - sectionStartUs;
+    if(elapsedUs >= kWaveInputSectionWarnUs) {
+        Serial.printf("[lag] board.%s step=%luus poll=%luus touchNeed=%u stable=%u irq=%u pmicLatched=%u imuIrq=%u t=%lu\n",
+                      tag,
+                      static_cast<unsigned long>(elapsedUs),
+                      static_cast<unsigned long>(nowUs - pollStartUs),
+                      touchNeedsSample ? 1u : 0u,
+                      g_touchStablePressed ? 1u : 0u,
+                      g_touchInterruptPending ? 1u : 0u,
+                      g_pmicIrqLatched ? 1u : 0u,
+                      g_imuInterruptPending ? 1u : 0u,
+                      static_cast<unsigned long>(millis()));
+    }
+    return nowUs;
+}
+
+void traceWaveInputTotal(uint32_t pollStartUs, bool touchNeedsSample) {
+    if(!kWaveInputLatencyDebug) {
+        return;
+    }
+
+    const uint32_t elapsedUs = micros() - pollStartUs;
+    if(elapsedUs < kWaveInputTotalWarnUs) {
+        return;
+    }
+    Serial.printf("[lag] board.poll total=%luus touchNeed=%u stable=%u irq=%u pmicLatched=%u imuIrq=%u motion=%u t=%lu\n",
+                  static_cast<unsigned long>(elapsedUs),
+                  touchNeedsSample ? 1u : 0u,
+                  g_touchStablePressed ? 1u : 0u,
+                  g_touchInterruptPending ? 1u : 0u,
+                  g_pmicIrqLatched ? 1u : 0u,
+                  g_imuInterruptPending ? 1u : 0u,
+                  g_motionActivityPending ? 1u : 0u,
+                  static_cast<unsigned long>(millis()));
+}
+
+void traceWaveBatteryStatus(uint32_t startUs, bool levelDue) {
+    if(!kWaveInputLatencyDebug) {
+        return;
+    }
+
+    const uint32_t elapsedUs = micros() - startUs;
+    if(elapsedUs < kWaveInputSectionWarnUs) {
+        return;
+    }
+    Serial.printf("[lag] board.battery step=%luus levelDue=%u t=%lu\n",
+                  static_cast<unsigned long>(elapsedUs),
+                  levelDue ? 1u : 0u,
+                  static_cast<unsigned long>(millis()));
+}
+
 void waveshare_poll_input(RemoteInputState* input) {
     if(input == nullptr) {
         return;
     }
 
     *input = {};
+    const uint32_t pollStartUs = micros();
+    uint32_t sectionStartUs = pollStartUs;
 
     bool bootPressed = g_bootButton.stablePressed;
     bool bootJustPressed = false;
     bool bootJustReleased = false;
+    bool bootLongPress = false;
     if(g_bootButtonInterruptPending || !g_bootButton.initialized ||
-       g_bootButton.lastSamplePressed != g_bootButton.stablePressed) {
+       g_bootButton.lastSamplePressed != g_bootButton.stablePressed ||
+       g_bootButton.stablePressed) {
         if(readBootButtonPressed(&bootPressed)) {
-            updateButtonTracker(&g_bootButton, bootPressed, &bootJustPressed, &bootJustReleased);
+            updateButtonTracker(&g_bootButton,
+                                bootPressed,
+                                &bootJustPressed,
+                                &bootJustReleased,
+                                &bootLongPress);
         }
     } else {
         bootPressed = g_bootButton.stablePressed;
@@ -1514,7 +1923,8 @@ void waveshare_poll_input(RemoteInputState* input) {
 
     input->primaryPressed = g_bootButton.stablePressed;
     input->primaryShortPress = bootJustReleased;
-    input->primaryLongPress = false;
+    input->primaryLongPress = bootLongPress;
+    sectionStartUs = traceWaveInputStep("boot_button", sectionStartUs, pollStartUs, false);
 
     const uint32_t now = millis();
     bool rawTouched = false;
@@ -1523,12 +1933,14 @@ void waveshare_poll_input(RemoteInputState* input) {
     int16_t touchY = g_touchStablePressed ? g_touchStableY : g_touchState.y;
     const bool touchIrqActive = digitalRead(g_boardPins.touchInt) == LOW;
     const bool touchNeedsSample = g_touchInterruptPending || touchIrqActive || g_touchStablePressed;
-    updatePmicButton(input, touchNeedsSample);
+    const bool touchI2cGuardActive = touchNeedsSample || touchSharedI2cGuardActive(now);
+    updatePmicButton(input, touchI2cGuardActive);
+    sectionStartUs = traceWaveInputStep("pmic", sectionStartUs, pollStartUs, touchNeedsSample);
     if(touchNeedsSample) {
         const uint32_t probeIntervalMs = g_touchStablePressed ? kTouchActiveProbeMs : kTouchIdleProbeMs;
         const bool probeDue = g_touchLastProbeAt == 0 ||
                               static_cast<uint32_t>(now - g_touchLastProbeAt) >= probeIntervalMs;
-        const bool inBackoff = !g_touchStablePressed && now < g_touchBackoffUntil;
+        const bool inBackoff = now < g_touchBackoffUntil;
         if(probeDue && !inBackoff) {
             g_touchLastProbeAt = now;
             sampledTouch = true;
@@ -1540,9 +1952,9 @@ void waveshare_poll_input(RemoteInputState* input) {
             } else if(!touchIrqActive) {
                 g_touchReadFailureCount = 0;
                 g_touchBackoffUntil = 0;
-            } else if(!g_touchStablePressed && g_touchReadFailureCount < 0xFF) {
+            } else if(g_touchReadFailureCount < 0xFF) {
                 ++g_touchReadFailureCount;
-                if(g_touchReadFailureCount >= kTouchReadFailureTripCount) {
+                if(g_touchStablePressed || g_touchReadFailureCount >= kTouchReadFailureTripCount) {
                     g_touchBackoffUntil = now + kTouchReadFailureBackoffMs;
                 }
             }
@@ -1552,6 +1964,7 @@ void waveshare_poll_input(RemoteInputState* input) {
             }
         }
     }
+    sectionStartUs = traceWaveInputStep("touch_sample", sectionStartUs, pollStartUs, touchNeedsSample);
 
     bool touchJustPressed = false;
     bool touchJustReleased = false;
@@ -1589,7 +2002,10 @@ void waveshare_poll_input(RemoteInputState* input) {
     input->touch.y = g_touchStablePressed ? g_touchStableY : g_touchState.y;
 
     g_touchState = input->touch;
+    sectionStartUs = traceWaveInputStep("touch_state", sectionStartUs, pollStartUs, touchNeedsSample);
     serviceImuMotion(input);
+    traceWaveInputStep("imu", sectionStartUs, pollStartUs, touchNeedsSample);
+    traceWaveInputTotal(pollStartUs, touchNeedsSample);
 }
 
 bool waveshare_input_pending() {
@@ -1636,11 +2052,13 @@ RemoteBatteryStatus waveshare_battery_status() {
         return status;
     }
 
+    const uint32_t startUs = micros();
     uint8_t status1 = 0;
     uint8_t status2 = 0;
     if(!readI2cRegister(kPmicAddress, kPmicStatus1Reg, &status1) ||
        !readI2cRegister(kPmicAddress, kPmicStatus2Reg, &status2)) {
         status.supported = false;
+        traceWaveBatteryStatus(startUs, false);
         return status;
     }
 
@@ -1692,6 +2110,7 @@ RemoteBatteryStatus waveshare_battery_status() {
     }
 
     g_pmicBatteryCache = status;
+    traceWaveBatteryStatus(startUs, levelDue);
     return status;
 }
 

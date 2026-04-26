@@ -42,5 +42,20 @@ constexpr bool kDisableWifiModemSleepForTesting = false;
 constexpr bool kDisableIdleSleepForTesting = false;
 constexpr uint32_t kIdleSleepAfterMs = 120000;
 constexpr uint32_t kWakeToastMs = 900;
+constexpr bool kDisplayAutoRotate = true;
+constexpr uint32_t kDisplayAutoRotateSampleMs = 1000;
+
+// Waveshare 1.75 header H2 exposes GPIO17/18/16; use GPIO17 as ADC2_CH6.
+constexpr int8_t kPressureSensorAdcPin = 17;
+constexpr uint16_t kPressureSensorZeroMillivolts = 400;
+constexpr uint16_t kPressureSensorFullScaleMillivolts = 2400;
+constexpr uint16_t kPressureSensorFullScaleCentiBar = 2000;
+constexpr uint16_t kPressureProfilerGraphMaxCentiBar = 1600;
+constexpr uint16_t kPressureProfilerSenseCentiBar = 50;
+constexpr uint32_t kPressureProfilerWindowMs = 60000;
+constexpr uint32_t kPressureProfilerVisibleWindowMs = 30000;
+constexpr uint32_t kPressureProfilerSampleMs = 100;
+constexpr uint32_t kPressureProfilerRedrawMs = 120;
+constexpr uint32_t kPressureProfilerBleNotifyMs = 100;
 
 }  // namespace remote_config

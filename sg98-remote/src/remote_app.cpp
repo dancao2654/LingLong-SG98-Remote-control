@@ -15,6 +15,7 @@
 #include "remote_board.h"
 #include "remote_audio.h"
 #include "remote_config.h"
+#include "remote_pressure_ble.h"
 #include "remote_runtime.h"
 #include "remote_wifi.h"
 #include "sg98_remote_defs.h"
@@ -51,14 +52,19 @@ constexpr int16_t kRoundMenuTabSwipeThreshold = 28;
 constexpr int16_t kRoundMenuTabSwipeAxisSlack = 8;
 constexpr bool kRoundInputDebug = false;
 constexpr bool kDisableTransportPerfTest = false;
+constexpr bool kLoopLatencyDebug = false;
+constexpr uint32_t kLoopSectionWarnUs = 12000;
+constexpr uint32_t kLoopTotalWarnUs = 30000;
 constexpr uint32_t kTransportUiYieldMs = 280;
 constexpr uint32_t kHomeTransportQuietMs = 1000;
+constexpr uint32_t kPersistentStateUiQuietMs = 8000;
 constexpr uint32_t kHomeTransportServiceMs = 450;
 constexpr uint32_t kHomePollingServiceMs = 650;
 constexpr uint32_t kHomeStatusPollIdleMs = 1800;
 constexpr uint32_t kHomeStatusPollRunningMs = 1200;
 constexpr uint32_t kHomeStatusPollActiveMs = 2400;
 constexpr uint32_t kPersistentStateDebounceMs = 1200;
+constexpr bool kMotionHomeEnabled = false;
 constexpr uint32_t kMotionHomeConfirmWindowMs = 1500;
 constexpr uint32_t kMotionHomeMinGapMs = 200;
 constexpr uint32_t kMotionHomeCooldownMs = 2200;
@@ -76,6 +82,7 @@ enum class Screen : uint8_t {
     Drive = 5,
     EspNowPeers = 6,
     Network = 7,
+    Profiler = 8,
 };
 
 enum class ItemKind : uint8_t {
@@ -91,9 +98,13 @@ enum class LinkTransport : uint8_t {
     WebSocket = 2,
 };
 
-constexpr uint8_t kScreenCount = 8;
+constexpr uint8_t kScreenCount = 9;
 constexpr uint8_t kEspNowPeerSlots = 6;
 constexpr uint8_t kPendingMenuWriteSlots = 8;
+constexpr uint16_t kPressureProfileSampleCount =
+    static_cast<uint16_t>(remote_config::kPressureProfilerWindowMs /
+                          remote_config::kPressureProfilerSampleMs) +
+    1;
 constexpr uint32_t kEspNowDiscoveryIntervalMs = 1200;
 constexpr uint32_t kEspNowDiscoveryExpireMs = 5000;
 constexpr uint32_t kEspNowSendConfirmTimeoutMs = 450;
@@ -260,6 +271,25 @@ struct PendingAction {
     uint16_t attempts = 0;
     char arg0[16] = {};
     char expectedText[24] = {};
+};
+
+struct PressureProfilerState {
+    bool adcReady = false;
+    bool armed = false;
+    bool running = false;
+    bool hasSample = false;
+    int8_t adcPin = -1;
+    uint32_t armedAt = 0;
+    uint32_t startedAt = 0;
+    uint32_t lastSampleAt = 0;
+    uint32_t lastRedrawAt = 0;
+    uint32_t lastAboveSenseAt = 0;
+    uint16_t currentCentiBar = 0;
+    uint16_t peakCentiBar = 0;
+    uint16_t samples[kPressureProfileSampleCount] = {};
+    uint32_t sampleTimes[kPressureProfileSampleCount] = {};
+    uint16_t sampleHead = 0;
+    uint16_t sampleCount = 0;
 };
 
 struct AppState {
@@ -506,6 +536,7 @@ constexpr Screen kRoundMenuTabScreens[] = {
 };
 
 AppState app;
+PressureProfilerState g_pressureProfiler;
 TouchTracker touchTracker;
 WebSocketsClient wsClient;
 RTC_DATA_ATTR SleepSnapshot g_sleepSnapshot;
@@ -524,7 +555,7 @@ char g_consoleLineBuffer[160] = {};
 size_t g_consoleLineLen = 0;
 
 constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
-constexpr uint16_t kSleepSnapshotVersion = 7;
+constexpr uint16_t kSleepSnapshotVersion = 8;
 constexpr uint16_t kSleepSnapshotVersionLegacyUiSoundsOff = 6;
 constexpr uint32_t kInteractiveLoopWaitMs = 4;
 constexpr uint32_t kAnimatingLoopWaitMs = 16;
@@ -538,7 +569,12 @@ enum LocalDriveSelection : int32_t {
 
 bool useRoundNavigation();
 bool roundUiInteractionActive();
+bool roundUiRecentActivity(uint32_t quietMs);
 bool isRunningState();
+void servicePressureProfiler(uint32_t now);
+void shortenWaitForPressureProfiler(uint32_t now, uint32_t* waitMs);
+void armPressureProfiler();
+void leavePressureProfiler();
 
 uint32_t currentWebSocketLoopIntervalMs() {
     return app.wsConnected ? remote_config::kWebSocketServiceMs
@@ -636,6 +672,8 @@ uint32_t computeLoopWaitMs(uint32_t now, bool yieldTransport) {
     if(app.toastUntil > now) {
         shortenWaitForDeadline(now, app.toastUntil, &waitMs);
     }
+
+    shortenWaitForPressureProfiler(now, &waitMs);
 
     if(g_consoleStreamEnabled) {
         shortenWaitForDeadline(now, g_consoleLastStreamAt + 1000, &waitMs);
@@ -1110,6 +1148,7 @@ const char* screenTitle(Screen screen) {
         case Screen::Drive: return "DRIVE";
         case Screen::EspNowPeers: return "ESP-NOW";
         case Screen::Network: return "NETWORK";
+        case Screen::Profiler: return "PROFILE";
         default: return "?";
     }
 }
@@ -1268,6 +1307,217 @@ String voltageLabel(int32_t millivolts) {
     out += String(frac);
     out += 'V';
     return out;
+}
+
+String pressureBarLabel(uint16_t centiBar) {
+    const uint16_t roundedDeciBar = static_cast<uint16_t>((centiBar + 5) / 10);
+    String out;
+    out.reserve(8);
+    out += String(static_cast<int>(roundedDeciBar / 10));
+    out += '.';
+    out += String(static_cast<int>(roundedDeciBar % 10));
+    return out;
+}
+
+String pressureElapsedLabel(uint32_t elapsedMs) {
+    const uint32_t seconds = (elapsedMs + 500) / 1000;
+    String out;
+    out.reserve(8);
+    out += String(static_cast<unsigned long>(seconds));
+    out += 's';
+    return out;
+}
+
+int8_t pressureProfilerAdcPin() {
+    if(remote_config::kPressureSensorAdcPin >= 0) {
+        return remote_config::kPressureSensorAdcPin;
+    }
+
+    const RemoteBoardPins& pins = remote_board_pins();
+    if(pins.expansionGpio0 >= 0) {
+        return pins.expansionGpio0;
+    }
+    if(pins.batterySense >= 0) {
+        return pins.batterySense;
+    }
+    return -1;
+}
+
+void configurePressureProfilerAdc() {
+    if(g_pressureProfiler.adcReady) {
+        return;
+    }
+
+    g_pressureProfiler.adcPin = pressureProfilerAdcPin();
+    if(g_pressureProfiler.adcPin < 0) {
+        return;
+    }
+
+    pinMode(g_pressureProfiler.adcPin, INPUT);
+#if defined(ARDUINO_ARCH_ESP32)
+    analogReadResolution(12);
+    analogSetPinAttenuation(g_pressureProfiler.adcPin, ADC_11db);
+#endif
+    g_pressureProfiler.adcReady = true;
+}
+
+uint16_t pressureCentiBarFromMillivolts(uint32_t millivolts) {
+    const uint16_t zeroMv = remote_config::kPressureSensorZeroMillivolts;
+    const uint16_t fullMv = remote_config::kPressureSensorFullScaleMillivolts;
+    if(millivolts <= zeroMv || fullMv <= zeroMv) {
+        return 0;
+    }
+
+    const uint32_t spanMv = fullMv - zeroMv;
+    const uint32_t scaled =
+        ((millivolts - zeroMv) * remote_config::kPressureSensorFullScaleCentiBar + (spanMv / 2)) / spanMv;
+    return static_cast<uint16_t>(min<uint32_t>(scaled, remote_config::kPressureSensorFullScaleCentiBar));
+}
+
+uint16_t readPressureCentiBar() {
+    configurePressureProfilerAdc();
+    if(!g_pressureProfiler.adcReady || g_pressureProfiler.adcPin < 0) {
+        return 0;
+    }
+
+    uint32_t totalMv = 0;
+    constexpr uint8_t kReadCount = 4;
+    for(uint8_t i = 0; i < kReadCount; ++i) {
+        totalMv += static_cast<uint32_t>(analogReadMilliVolts(g_pressureProfiler.adcPin));
+    }
+    return pressureCentiBarFromMillivolts((totalMv + (kReadCount / 2)) / kReadCount);
+}
+
+void clearPressureProfilerSamples() {
+    g_pressureProfiler.sampleHead = 0;
+    g_pressureProfiler.sampleCount = 0;
+    g_pressureProfiler.peakCentiBar = 0;
+    g_pressureProfiler.hasSample = false;
+}
+
+void appendPressureProfilerSample(uint16_t centiBar, uint32_t elapsedMs) {
+    g_pressureProfiler.samples[g_pressureProfiler.sampleHead] = centiBar;
+    g_pressureProfiler.sampleTimes[g_pressureProfiler.sampleHead] = elapsedMs;
+    g_pressureProfiler.sampleHead =
+        static_cast<uint16_t>((g_pressureProfiler.sampleHead + 1) % kPressureProfileSampleCount);
+    if(g_pressureProfiler.sampleCount < kPressureProfileSampleCount) {
+        ++g_pressureProfiler.sampleCount;
+    }
+    g_pressureProfiler.peakCentiBar = max<uint16_t>(g_pressureProfiler.peakCentiBar, centiBar);
+    g_pressureProfiler.hasSample = true;
+}
+
+bool pressureProfilerSampleAt(uint16_t ageIndex, uint16_t* centiBar, uint32_t* elapsedMs) {
+    if(ageIndex >= g_pressureProfiler.sampleCount) {
+        return false;
+    }
+
+    const uint16_t head = g_pressureProfiler.sampleHead;
+    const uint16_t index =
+        static_cast<uint16_t>((head + kPressureProfileSampleCount - 1u - ageIndex) %
+                              kPressureProfileSampleCount);
+    if(centiBar != nullptr) {
+        *centiBar = g_pressureProfiler.samples[index];
+    }
+    if(elapsedMs != nullptr) {
+        *elapsedMs = g_pressureProfiler.sampleTimes[index];
+    }
+    return true;
+}
+
+void armPressureProfiler() {
+    configurePressureProfilerAdc();
+    remote_pressure_ble_begin();
+    g_pressureProfiler.armed = true;
+    g_pressureProfiler.running = false;
+    g_pressureProfiler.armedAt = millis();
+    g_pressureProfiler.startedAt = 0;
+    g_pressureProfiler.lastSampleAt = 0;
+    g_pressureProfiler.lastRedrawAt = 0;
+    g_pressureProfiler.lastAboveSenseAt = 0;
+    g_pressureProfiler.currentCentiBar = readPressureCentiBar();
+    clearPressureProfilerSamples();
+    setToast(g_pressureProfiler.adcReady ? "Profiler armed" : "Pressure ADC?", 1200);
+}
+
+void leavePressureProfiler() {
+    g_pressureProfiler.armed = false;
+    g_pressureProfiler.running = false;
+}
+
+void resetPressureProfilerRun(uint32_t now) {
+    g_pressureProfiler.running = false;
+    g_pressureProfiler.startedAt = 0;
+    g_pressureProfiler.lastSampleAt = now;
+    g_pressureProfiler.lastAboveSenseAt = 0;
+    clearPressureProfilerSamples();
+}
+
+void startPressureProfilerRun(uint32_t now, uint16_t centiBar) {
+    g_pressureProfiler.running = true;
+    g_pressureProfiler.startedAt = now;
+    g_pressureProfiler.lastAboveSenseAt = now;
+    clearPressureProfilerSamples();
+    appendPressureProfilerSample(centiBar, 0);
+    setToast("Profile started", 900);
+}
+
+void servicePressureProfiler(uint32_t now) {
+    if(app.screen != Screen::Profiler && !remote_pressure_ble_connected()) {
+        return;
+    }
+
+    remote_pressure_ble_begin();
+    if((now - g_pressureProfiler.lastSampleAt) < remote_config::kPressureProfilerSampleMs) {
+        remote_pressure_ble_service(g_pressureProfiler.currentCentiBar, app.battery.percent, now);
+        return;
+    }
+
+    const uint16_t centiBar = readPressureCentiBar();
+    g_pressureProfiler.currentCentiBar = centiBar;
+    g_pressureProfiler.lastSampleAt = now;
+    remote_pressure_ble_service(centiBar, app.battery.percent, now);
+
+    if(app.screen != Screen::Profiler) {
+        return;
+    }
+
+    if(!g_pressureProfiler.armed) {
+        armPressureProfiler();
+    }
+
+    if(!g_pressureProfiler.running) {
+        if(centiBar >= remote_config::kPressureProfilerSenseCentiBar) {
+            startPressureProfilerRun(now, centiBar);
+        } else if((now - g_pressureProfiler.lastRedrawAt) >= remote_config::kPressureProfilerRedrawMs) {
+            g_pressureProfiler.lastRedrawAt = now;
+            app.redraw = true;
+        }
+        return;
+    }
+
+    const uint32_t elapsed = now - g_pressureProfiler.startedAt;
+    appendPressureProfilerSample(centiBar, elapsed);
+    if(centiBar >= remote_config::kPressureProfilerSenseCentiBar) {
+        g_pressureProfiler.lastAboveSenseAt = now;
+    }
+    if((now - g_pressureProfiler.lastRedrawAt) >= remote_config::kPressureProfilerRedrawMs) {
+        g_pressureProfiler.lastRedrawAt = now;
+        app.redraw = true;
+    }
+}
+
+void shortenWaitForPressureProfiler(uint32_t now, uint32_t* waitMs) {
+    if(waitMs == nullptr) {
+        return;
+    }
+    if(app.screen != Screen::Profiler && !remote_pressure_ble_connected()) {
+        return;
+    }
+    shortenWaitForDeadline(now, g_pressureProfiler.lastSampleAt + remote_config::kPressureProfilerSampleMs, waitMs);
+    if(app.screen == Screen::Profiler) {
+        shortenWaitForDeadline(now, g_pressureProfiler.lastRedrawAt + remote_config::kPressureProfilerRedrawMs, waitMs);
+    }
 }
 
 bool isLinkOnline() {
@@ -1844,6 +2094,9 @@ void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
     snapshot->version = kSleepSnapshotVersion;
     snapshot->screen = static_cast<uint8_t>(app.screen);
     memcpy(snapshot->selection, app.selection, sizeof(snapshot->selection));
+    if(app.screen == Screen::Profiler) {
+        snapshot->screen = static_cast<uint8_t>(Screen::Home);
+    }
     snapshot->manualRpm = app.manualRpm;
     snapshot->weightMg = app.weightMg;
     snapshot->localInvertScroll = app.localInvertScroll;
@@ -1872,7 +2125,7 @@ void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
 
 void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTransport, const char* toastText = nullptr) {
     const uint8_t screenIndex = snapshot.screen;
-    if(screenIndex <= static_cast<uint8_t>(Screen::Network)) {
+    if(screenIndex <= static_cast<uint8_t>(Screen::Profiler)) {
         app.screen = static_cast<Screen>(screenIndex);
     }
     memcpy(app.selection, snapshot.selection, sizeof(app.selection));
@@ -1939,10 +2192,14 @@ bool returnToHomeOnMotion(bool markPersistentState) {
         return false;
     }
 
+    const bool leavingProfiler = app.screen == Screen::Profiler;
     app.screen = Screen::Home;
     app.menuRollOffset = 0.0f;
     app.editing = false;
     app.redraw = true;
+    if(leavingProfiler) {
+        leavePressureProfiler();
+    }
     touchTracker = {};
     app.motionHomeCandidateAt = 0;
     app.lastMotionHomeAt = millis();
@@ -1986,7 +2243,12 @@ void servicePersistentSnapshotSave() {
     if(!g_persistentStateDirty) {
         return;
     }
-    if(static_cast<int32_t>(millis() - g_persistentStateDueAt) < 0) {
+    const uint32_t now = millis();
+    if(static_cast<int32_t>(now - g_persistentStateDueAt) < 0) {
+        return;
+    }
+    if(roundUiRecentActivity(kPersistentStateUiQuietMs)) {
+        g_persistentStateDueAt = now + kPersistentStateDebounceMs;
         return;
     }
     savePersistentSnapshotNow();
@@ -2101,17 +2363,33 @@ bool roundUiInteractionActive() {
            (now - app.lastUserActivityAt) < kRoundInputQuietMs;
 }
 
+bool roundUiRecentActivity(uint32_t quietMs) {
+    if(!useRoundNavigation()) {
+        return false;
+    }
+
+    const uint32_t now = millis();
+    return touchTracker.active || app.targetDirty || app.editing ||
+           fabsf(app.menuRollOffset) >= 0.5f ||
+           (now - app.lastUserActivityAt) < quietMs;
+}
+
 bool shouldYieldTransportToUi() {
     if(kDisableTransportPerfTest || !useRoundNavigation()) {
         return false;
     }
 
-    if(touchTracker.active || app.targetDirty) {
+    if(touchTracker.active || app.targetDirty || app.editing ||
+       fabsf(app.menuRollOffset) >= 0.5f) {
         return true;
     }
 
     if(pendingControllerSyncActive()) {
         return false;
+    }
+
+    if((millis() - app.lastUserActivityAt) < kTransportUiYieldMs) {
+        return true;
     }
 
     if(app.currentTransport == LinkTransport::WebSocket ||
@@ -2169,6 +2447,16 @@ void markUserActivity() {
 }
 
 bool handleMotionHomeGesture(uint32_t now) {
+    if(!kMotionHomeEnabled) {
+        app.motionHomeCandidateAt = 0;
+        return false;
+    }
+
+    if(app.screen == Screen::Profiler) {
+        app.motionHomeCandidateAt = 0;
+        return false;
+    }
+
     if(app.screen == Screen::Home && !app.editing) {
         app.motionHomeCandidateAt = 0;
         return false;
@@ -2313,7 +2601,6 @@ void refreshBatteryStatus(bool force) {
     if(!force && touchTracker.active) {
         return;
     }
-
     app.lastBatteryPollAt = now;
     const RemoteBatteryStatus latest = remote_board_battery_status();
     if(force || !batteryStatusEqual(latest, app.battery)) {
@@ -2360,6 +2647,7 @@ const SettingItem* itemsForScreen(Screen screen, size_t* count) {
             return peerItems;
         }
         case Screen::Home:
+        case Screen::Profiler:
         default:
             if(count != nullptr) *count = 0;
             return nullptr;
@@ -2372,6 +2660,7 @@ uint8_t& selectionFor(Screen screen) {
 
 void sanitizeSelections() {
     app.selection[static_cast<uint8_t>(Screen::Home)] = 0;
+    app.selection[static_cast<uint8_t>(Screen::Profiler)] = 0;
     for(const Screen screen : kMenuScreens) {
         size_t count = 0;
         itemsForScreen(screen, &count);
@@ -4612,6 +4901,163 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
     drawTabs(canvas, layout);
 }
 
+int16_t pressureGraphY(const Rect& graph, uint16_t centiBar) {
+    const uint16_t displayValue = min<uint16_t>(centiBar, remote_config::kPressureProfilerGraphMaxCentiBar);
+    const int32_t offset =
+        (static_cast<int32_t>(displayValue) * static_cast<int32_t>(graph.h)) /
+        static_cast<int32_t>(remote_config::kPressureProfilerGraphMaxCentiBar);
+    return static_cast<int16_t>(graph.y + graph.h - offset);
+}
+
+int16_t pressureGraphX(const Rect& graph, uint32_t elapsedMs, uint32_t visibleStartMs, uint32_t visibleMs) {
+    if(visibleMs == 0 || elapsedMs <= visibleStartMs) {
+        return graph.x;
+    }
+    const uint32_t relative = min<uint32_t>(elapsedMs - visibleStartMs, visibleMs);
+    return static_cast<int16_t>(graph.x +
+                                (static_cast<uint64_t>(relative) * graph.w) / visibleMs);
+}
+
+void drawPressureProfilerGraph(RemoteCanvas& canvas,
+                               const Rect& graph,
+                               uint32_t visibleStartMs,
+                               uint32_t visibleEndMs,
+                               uint16_t lineColor,
+                               uint16_t panelColor,
+                               uint16_t gridColor) {
+    canvas.fillRoundRect(graph.x, graph.y, graph.w, graph.h, 10, panelColor);
+    canvas.drawRoundRect(graph.x, graph.y, graph.w, graph.h, 10, blendColor565(gridColor, kColorText, 0.12f));
+
+    constexpr uint8_t kYSteps[] = {0, 4, 8, 12, 16};
+    for(uint8_t i = 0; i < sizeof(kYSteps); ++i) {
+        const uint16_t centiBar = static_cast<uint16_t>(kYSteps[i]) * 100;
+        const int16_t y = pressureGraphY(graph, centiBar);
+        canvas.drawLine(graph.x, y, static_cast<int16_t>(graph.x + graph.w), y, gridColor);
+        canvas.drawTextTopRight(String(static_cast<int>(kYSteps[i])),
+                                static_cast<int16_t>(graph.x - 7),
+                                static_cast<int16_t>(y - 6),
+                                RemoteTextStyle::Tiny,
+                                blendColor565(kColorMuted, kColorText, 0.10f),
+                                kColorBg);
+    }
+
+    const uint32_t visibleMs = max<uint32_t>(visibleEndMs - visibleStartMs, 1);
+    for(uint8_t i = 0; i <= 2; ++i) {
+        const uint32_t tickElapsed = visibleStartMs + (visibleMs * i) / 2;
+        const int16_t x = pressureGraphX(graph, tickElapsed, visibleStartMs, visibleMs);
+        canvas.drawLine(x, graph.y, x, static_cast<int16_t>(graph.y + graph.h), gridColor);
+        canvas.drawCenteredText(pressureElapsedLabel(tickElapsed),
+                                x,
+                                static_cast<int16_t>(graph.y + graph.h + 14),
+                                RemoteTextStyle::Tiny,
+                                blendColor565(kColorMuted, kColorText, 0.08f),
+                                kColorBg);
+    }
+
+    const int16_t senseY = pressureGraphY(graph, remote_config::kPressureProfilerSenseCentiBar);
+    canvas.drawLine(graph.x,
+                    senseY,
+                    static_cast<int16_t>(graph.x + graph.w),
+                    senseY,
+                    blendColor565(kColorAccent2, panelColor, 0.36f));
+
+    bool hasPrev = false;
+    int16_t prevX = 0;
+    int16_t prevY = 0;
+    for(int age = static_cast<int>(g_pressureProfiler.sampleCount) - 1; age >= 0; --age) {
+        uint16_t centiBar = 0;
+        uint32_t elapsed = 0;
+        if(!pressureProfilerSampleAt(static_cast<uint16_t>(age), &centiBar, &elapsed)) {
+            continue;
+        }
+        if(elapsed < visibleStartMs || elapsed > visibleEndMs) {
+            continue;
+        }
+
+        const int16_t x = pressureGraphX(graph, elapsed, visibleStartMs, visibleMs);
+        const int16_t y = pressureGraphY(graph, centiBar);
+        if(hasPrev) {
+            canvas.drawLine(prevX, prevY, x, y, blendColor565(lineColor, kColorText, 0.18f));
+            canvas.drawLine(prevX, static_cast<int16_t>(prevY + 1), x, static_cast<int16_t>(y + 1), lineColor);
+        } else {
+            canvas.fillCircle(x, y, 2, lineColor);
+        }
+        prevX = x;
+        prevY = y;
+        hasPrev = true;
+    }
+}
+
+void drawPressureProfiler(RemoteCanvas& canvas, const Layout& layout) {
+    const uint16_t bg = blendColor565(kColorBg, packColor565(22, 45, 40), 0.42f);
+    const uint16_t panel = blendColor565(kColorPanel, packColor565(20, 98, 75), 0.26f);
+    const uint16_t graphPanel = blendColor565(kColorBg, packColor565(8, 20, 22), 0.40f);
+    const uint16_t accent = blendColor565(kColorGood, kColorAccent, 0.18f);
+    const uint16_t grid = blendColor565(kColorPanelHi, bg, 0.38f);
+    canvas.fillScreen(bg);
+
+    drawPill(canvas, layout.topLeft, "PROFILE", kColorPanel, kColorText);
+    const String state = !g_pressureProfiler.adcReady
+                             ? "ADC?"
+                             : (g_pressureProfiler.running ? pressureElapsedLabel(millis() - g_pressureProfiler.startedAt)
+                                                           : "ARM");
+    drawPill(canvas, layout.topCenter, state, g_pressureProfiler.running ? accent : kColorPanel, kColorText);
+    drawBatteryIndicator(canvas, layout, bg);
+
+    const uint16_t current = g_pressureProfiler.currentCentiBar;
+    const String value = pressureBarLabel(current);
+    const int16_t valueY = useRoundNavigation() ? static_cast<int16_t>(layout.topLeft.y + layout.topLeft.h + 48)
+                                                : static_cast<int16_t>(layout.topLeft.y + layout.topLeft.h + 30);
+    canvas.drawCenteredText(fitTextToWidth(value, static_cast<int16_t>(layout.width - 128), heroTextStyle(), 8),
+                            static_cast<int16_t>(layout.width / 2),
+                            valueY,
+                            heroTextStyle(),
+                            blendColor565(kColorText, accent, 0.24f),
+                            bg);
+    canvas.drawCenteredText("BAR",
+                            static_cast<int16_t>(layout.width / 2),
+                            static_cast<int16_t>(valueY + (isLargeCanvas() ? 42 : 28)),
+                            tinyTextStyle(),
+                            blendColor565(kColorMuted, accent, 0.16f),
+                            bg);
+
+    const int16_t graphX = useRoundNavigation() ? 72 : 38;
+    const int16_t graphY = useRoundNavigation() ? 158 : 78;
+    const int16_t graphW = useRoundNavigation() ? static_cast<int16_t>(layout.width - 148)
+                                                : static_cast<int16_t>(layout.width - 76);
+    const int16_t graphH = useRoundNavigation() ? 190 : 112;
+    const Rect graph = {graphX, graphY, graphW, graphH};
+
+    uint32_t visibleEndMs = remote_config::kPressureProfilerVisibleWindowMs;
+    if(g_pressureProfiler.running) {
+        visibleEndMs = max<uint32_t>(millis() - g_pressureProfiler.startedAt,
+                                     remote_config::kPressureProfilerVisibleWindowMs);
+    }
+    uint32_t visibleStartMs = 0;
+    if(visibleEndMs > remote_config::kPressureProfilerVisibleWindowMs) {
+        visibleStartMs = visibleEndMs - remote_config::kPressureProfilerVisibleWindowMs;
+    }
+    drawPressureProfilerGraph(canvas,
+                              graph,
+                              visibleStartMs,
+                              visibleEndMs,
+                              accent,
+                              graphPanel,
+                              grid);
+
+    const String peak = pressureBarLabel(g_pressureProfiler.peakCentiBar);
+    const String footer = String("PK ") + peak +
+                          "  " + (remote_pressure_ble_connected()
+                                      ? (remote_pressure_ble_streaming() ? "BLE*" : "BLE")
+                                      : "BLE-");
+    drawFooter(canvas,
+               layout,
+               g_pressureProfiler.running ? footer
+                                          : (app.toastUntil > millis() ? upperText(app.toast)
+                                                                      : String("SENSE ") +
+                                                                            pressureBarLabel(remote_config::kPressureProfilerSenseCentiBar)));
+}
+
 void drawMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title) {
     canvas.fillScreen(kColorBg);
 
@@ -5014,6 +5460,8 @@ void redrawUi() {
 
     if(app.screen == Screen::Home) {
         drawHome(canvas, layout);
+    } else if(app.screen == Screen::Profiler) {
+        drawPressureProfiler(canvas, layout);
     } else if(app.editing) {
         if(app.screen == Screen::Main) {
             drawEditor(canvas, layout, "SYSTEM");
@@ -6615,12 +7063,18 @@ void setScreen(Screen screen) {
         return;
     }
 
+    const Screen previousScreen = app.screen;
     app.screen = screen;
     app.menuRollOffset = 0.0f;
     app.editing = false;
     app.redraw = true;
     requestVisibleMenuIfNeeded(true);
     sanitizeSelections();
+    if(previousScreen != Screen::Profiler && screen == Screen::Profiler) {
+        armPressureProfiler();
+    } else if(previousScreen == Screen::Profiler && screen != Screen::Profiler) {
+        leavePressureProfiler();
+    }
     if(screen == Screen::EspNowPeers && app.currentTransport == LinkTransport::EspNow) {
         requestEspNowDiscovery(true);
     }
@@ -6777,6 +7231,11 @@ void triggerRunAction() {
 }
 
 void handlePrimaryShortPress() {
+    if(app.screen == Screen::Profiler && !app.editing) {
+        armPressureProfiler();
+        return;
+    }
+
     if(useRoundNavigation()) {
         if(app.screen == Screen::Home && !app.editing) {
             triggerRunAction();
@@ -6851,7 +7310,8 @@ bool idleSleepAllowed() {
     if(kDisableTransportPerfTest) {
         return false;
     }
-    if(app.editing || app.targetDirty || isRunningState()) {
+    if(app.editing || app.targetDirty || isRunningState() ||
+       app.screen == Screen::Profiler || remote_pressure_ble_connected()) {
         return false;
     }
     if(!remote_board_support_present(remote_board_feature_map().power.deepSleep)) {
@@ -6972,7 +7432,7 @@ void enterIdleSleepIfNeeded() {
 
 void handlePrimaryLongPress() {
     if(useRoundNavigation() && app.screen == Screen::Home && !app.editing) {
-        setScreen(Screen::Main);
+        setScreen(Screen::Profiler);
         return;
     }
 
@@ -6986,7 +7446,7 @@ void handlePrimaryLongPress() {
     }
 
     if(app.screen == Screen::Home) {
-        return;
+        setScreen(Screen::Profiler);
     }
 }
 
@@ -6994,6 +7454,8 @@ void handleSecondaryShortPress() {
     if(useRoundNavigation()) {
         if(app.editing) {
             cancelEditing();
+        } else if(app.screen == Screen::Profiler) {
+            return;
         } else if(app.screen == Screen::Home) {
             if(isRunningState()) {
                 return;
@@ -7028,6 +7490,11 @@ void beginTouchTracking(int16_t x, int16_t y) {
     touchTracker.lastY = y;
     touchTracker.startedAt = millis();
     debugRoundInput("touch_down", x, y);
+
+    if(app.screen == Screen::Profiler) {
+        touchTracker.mode = TouchMode::Tap;
+        return;
+    }
 
     const Layout layout = buildLayout();
     if(useRoundNavigation() && app.editing) {
@@ -8167,6 +8634,57 @@ void remoteConsoleMaybeStream() {
     printRemoteConsoleStatus();
 }
 
+uint32_t traceLoopStep(const char* tag,
+                       uint32_t sectionStartUs,
+                       uint32_t loopStartUs,
+                       const RemoteInputState& input) {
+    if(!kLoopLatencyDebug) {
+        return sectionStartUs;
+    }
+
+    const uint32_t nowUs = micros();
+    const uint32_t elapsedUs = nowUs - sectionStartUs;
+    if(elapsedUs >= kLoopSectionWarnUs) {
+        const bool touchActive = input.touch.pressed || input.touch.justPressed ||
+                                 input.touch.justReleased || touchTracker.active;
+        Serial.printf("[lag] app.%s step=%luus loop=%luus touch=%u screen=%u edit=%u redraw=%u target=%u transport=%u t=%lu\n",
+                      tag,
+                      static_cast<unsigned long>(elapsedUs),
+                      static_cast<unsigned long>(nowUs - loopStartUs),
+                      touchActive ? 1u : 0u,
+                      static_cast<unsigned>(app.screen),
+                      app.editing ? 1u : 0u,
+                      app.redraw ? 1u : 0u,
+                      app.targetDirty ? 1u : 0u,
+                      static_cast<unsigned>(app.currentTransport),
+                      static_cast<unsigned long>(millis()));
+    }
+    return nowUs;
+}
+
+void traceLoopTotal(uint32_t loopStartUs, const RemoteInputState& input, bool yieldTransport) {
+    if(!kLoopLatencyDebug) {
+        return;
+    }
+
+    const uint32_t elapsedUs = micros() - loopStartUs;
+    if(elapsedUs < kLoopTotalWarnUs) {
+        return;
+    }
+    const bool touchActive = input.touch.pressed || input.touch.justPressed ||
+                             input.touch.justReleased || touchTracker.active;
+    Serial.printf("[lag] app.loop total=%luus touch=%u screen=%u edit=%u redraw=%u target=%u transport=%u yield=%u t=%lu\n",
+                  static_cast<unsigned long>(elapsedUs),
+                  touchActive ? 1u : 0u,
+                  static_cast<unsigned>(app.screen),
+                  app.editing ? 1u : 0u,
+                  app.redraw ? 1u : 0u,
+                  app.targetDirty ? 1u : 0u,
+                  static_cast<unsigned>(app.currentTransport),
+                  yieldTransport ? 1u : 0u,
+                  static_cast<unsigned long>(millis()));
+}
+
 void handleRemoteConsoleLine(const char* rawLine) {
     String line = rawLine != nullptr ? String(rawLine) : String("");
     line.trim();
@@ -8412,9 +8930,18 @@ void remote_app_setup() {
 void remote_app_loop() {
     RemoteInputState input = {};
     const uint32_t now = millis();
+    const uint32_t loopStartUs = micros();
+    uint32_t sectionStartUs = loopStartUs;
     remote_board_poll_input(&input);
+    sectionStartUs = traceLoopStep("board_poll", sectionStartUs, loopStartUs, input);
+    if(input.displayRotationChanged) {
+        touchTracker = {};
+        app.redraw = true;
+    }
     remote_audio_service();
+    sectionStartUs = traceLoopStep("audio", sectionStartUs, loopStartUs, input);
     remoteConsolePoll();
+    sectionStartUs = traceLoopStep("console_poll", sectionStartUs, loopStartUs, input);
 
     const bool hasControlInput =
         input.dialDelta != 0 || input.primaryPressed || input.primaryLongPress || input.primaryShortPress ||
@@ -8426,9 +8953,10 @@ void remote_app_loop() {
     }
     if(input.powerStatusChanged) {
         refreshBatteryStatus(true);
+        sectionStartUs = traceLoopStep("battery_irq", sectionStartUs, loopStartUs, input);
     }
 
-    if(input.dialDelta != 0 || input.motionDetected || input.primaryPressed ||
+    if(input.dialDelta != 0 || input.primaryPressed ||
        input.primaryLongPress || input.primaryShortPress ||
        input.secondaryPressed || input.secondaryLongPress || input.secondaryShortPress ||
        input.touch.pressed || input.touch.justPressed || input.touch.justReleased) {
@@ -8436,6 +8964,7 @@ void remote_app_loop() {
     }
 
     if(input.motionDetected && handleMotionHomeGesture(now)) {
+        markUserActivity();
         input.dialDelta = 0;
         input.primaryPressed = false;
         input.primaryShortPress = false;
@@ -8448,22 +8977,33 @@ void remote_app_loop() {
 
     if(input.primaryLongPress) {
         handlePrimaryLongPress();
+        sectionStartUs = traceLoopStep("primary_long", sectionStartUs, loopStartUs, input);
     }
     if(input.primaryShortPress) {
         handlePrimaryShortPress();
+        sectionStartUs = traceLoopStep("primary_short", sectionStartUs, loopStartUs, input);
     }
     if(input.secondaryLongPress) {
         handleSecondaryLongPress();
+        sectionStartUs = traceLoopStep("secondary_long", sectionStartUs, loopStartUs, input);
     }
     if(input.secondaryShortPress) {
         handleSecondaryShortPress();
+        sectionStartUs = traceLoopStep("secondary_short", sectionStartUs, loopStartUs, input);
     }
 
     handleTouchInput(input.touch);
+    sectionStartUs = traceLoopStep("touch", sectionStartUs, loopStartUs, input);
     handleDialDelta(applyDialDirection(input.dialDelta));
+    sectionStartUs = traceLoopStep("dial", sectionStartUs, loopStartUs, input);
     commitTargetIfDue();
+    sectionStartUs = traceLoopStep("target_commit", sectionStartUs, loopStartUs, input);
     servicePersistentSnapshotSave();
+    sectionStartUs = traceLoopStep("persist", sectionStartUs, loopStartUs, input);
     serviceSafetyHeartbeat();
+    sectionStartUs = traceLoopStep("heartbeat", sectionStartUs, loopStartUs, input);
+    servicePressureProfiler(now);
+    sectionStartUs = traceLoopStep("pressure", sectionStartUs, loopStartUs, input);
     const bool yieldTransport = shouldYieldTransportToUi();
     if(!kDisableTransportPerfTest && !yieldTransport) {
         const uint32_t transportServiceInterval = currentTransportServiceIntervalMs();
@@ -8475,14 +9015,20 @@ void remote_app_loop() {
         }
         if((now - app.lastTransportServiceAt) >= transportServiceInterval) {
             manageTransport();
+            sectionStartUs = traceLoopStep("manage_transport", sectionStartUs, loopStartUs, input);
             servicePendingControllerSync();
+            sectionStartUs = traceLoopStep("pending_sync", sectionStartUs, loopStartUs, input);
             handleSendCompletion();
+            sectionStartUs = traceLoopStep("send_completion", sectionStartUs, loopStartUs, input);
             updateSyncFromStatusFallback();
+            sectionStartUs = traceLoopStep("sync_fallback", sectionStartUs, loopStartUs, input);
             app.lastTransportServiceAt = now;
         }
         if((now - app.lastPollingServiceAt) >= pollingServiceInterval) {
             syncPolling();
+            sectionStartUs = traceLoopStep("sync_polling", sectionStartUs, loopStartUs, input);
             refreshBatteryStatus(false);
+            sectionStartUs = traceLoopStep("battery_poll", sectionStartUs, loopStartUs, input);
             app.lastPollingServiceAt = now;
         }
     } else {
@@ -8490,16 +9036,24 @@ void remote_app_loop() {
             app.transportYieldedToUi = true;
         }
         refreshBatteryStatus(false);
+        sectionStartUs = traceLoopStep("battery_yield", sectionStartUs, loopStartUs, input);
     }
     remote_board_apply_indicator(currentIndicator());
+    sectionStartUs = traceLoopStep("indicator", sectionStartUs, loopStartUs, input);
     updateHomeWheelAnimation();
+    sectionStartUs = traceLoopStep("home_anim", sectionStartUs, loopStartUs, input);
     updateMenuRollAnimation();
+    sectionStartUs = traceLoopStep("menu_anim", sectionStartUs, loopStartUs, input);
     remoteConsoleMaybeStream();
+    sectionStartUs = traceLoopStep("console_stream", sectionStartUs, loopStartUs, input);
     enterIdleSleepIfNeeded();
+    sectionStartUs = traceLoopStep("idle_sleep", sectionStartUs, loopStartUs, input);
 
     if(app.redraw) {
         redrawUi();
+        sectionStartUs = traceLoopStep("redraw", sectionStartUs, loopStartUs, input);
     }
 
+    traceLoopTotal(loopStartUs, input, yieldTransport);
     remote_runtime_wait_for_input_or_timeout(computeLoopWaitMs(millis(), yieldTransport));
 }
