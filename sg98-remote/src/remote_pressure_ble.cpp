@@ -7,13 +7,18 @@
 
 namespace {
 
-constexpr const char* kBookooDeviceName = "bookoo_em";
+constexpr const char* kBookooDeviceName = "BOOKOO_EM SG98";
 constexpr const char* kBookooPressureServiceUuid = "0FFF";
 constexpr const char* kBookooCommandCharUuid = "FF01";
 constexpr const char* kBookooPressureCharUuid = "FF02";
 constexpr const char* kBookooPowerCharUuid = "FF03";
 constexpr const char* kBatteryServiceUuid = "180F";
 constexpr const char* kBatteryLevelCharUuid = "2A19";
+constexpr const char* kDeviceInfoServiceUuid = "180A";
+constexpr const char* kModelNumberCharUuid = "2A24";
+constexpr const char* kFirmwareRevisionCharUuid = "2A26";
+constexpr const char* kManufacturerNameCharUuid = "2A29";
+constexpr uint16_t kFastAdvertiseInterval = 80;  // 50 ms, in 0.625 ms BLE units.
 
 NimBLEServer* g_server = nullptr;
 NimBLECharacteristic* g_pressureChar = nullptr;
@@ -132,13 +137,38 @@ void remote_pressure_ble_begin() {
         g_batteryChar = batteryService->createCharacteristic(kBatteryLevelCharUuid,
                                                              NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY,
                                                              1);
+        const uint8_t initialBattery = 0;
+        g_batteryChar->setValue(&initialBattery, sizeof(initialBattery));
         batteryService->start();
     }
 
+    NimBLEService* deviceInfoService = g_server->createService(kDeviceInfoServiceUuid);
+    if(deviceInfoService != nullptr) {
+        NimBLECharacteristic* modelChar =
+            deviceInfoService->createCharacteristic(kModelNumberCharUuid, NIMBLE_PROPERTY::READ);
+        if(modelChar != nullptr) {
+            modelChar->setValue("BOOKOO_EM");
+        }
+        NimBLECharacteristic* firmwareChar =
+            deviceInfoService->createCharacteristic(kFirmwareRevisionCharUuid, NIMBLE_PROPERTY::READ);
+        if(firmwareChar != nullptr) {
+            firmwareChar->setValue("SG98");
+        }
+        NimBLECharacteristic* manufacturerChar =
+            deviceInfoService->createCharacteristic(kManufacturerNameCharUuid, NIMBLE_PROPERTY::READ);
+        if(manufacturerChar != nullptr) {
+            manufacturerChar->setValue("LingLong");
+        }
+        deviceInfoService->start();
+    }
+
     NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
+    advertising->setAdvertisingInterval(kFastAdvertiseInterval);
+    advertising->enableScanResponse(false);
     advertising->setName(kBookooDeviceName);
     advertising->addServiceUUID(kBookooPressureServiceUuid);
-    advertising->enableScanResponse(true);
+    advertising->addServiceUUID(kBatteryServiceUuid);
+    advertising->addServiceUUID(kDeviceInfoServiceUuid);
     advertising->start();
 
     g_ready = true;

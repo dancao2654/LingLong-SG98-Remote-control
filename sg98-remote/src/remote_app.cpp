@@ -4,13 +4,16 @@
 #include <string.h>
 
 #include <ESPmDNS.h>
+#include <HTTPClient.h>
 #include <Preferences.h>
 #include <WebSocketsClient.h>
 #include <WiFi.h>
+#include <WiFiClientSecure.h>
 #include <driver/gpio.h>
 #include <esp_now.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
+#include <time.h>
 
 #include "remote_board.h"
 #include "remote_audio.h"
@@ -64,6 +67,8 @@ constexpr uint32_t kHomeStatusPollIdleMs = 1800;
 constexpr uint32_t kHomeStatusPollRunningMs = 1200;
 constexpr uint32_t kHomeStatusPollActiveMs = 2400;
 constexpr uint32_t kPersistentStateDebounceMs = 1200;
+constexpr uint32_t kValidUnixTime = 1700000000UL;
+constexpr uint32_t kDockWeatherHttpTimeoutMs = 4500;
 constexpr bool kMotionHomeEnabled = false;
 constexpr uint32_t kMotionHomeConfirmWindowMs = 1500;
 constexpr uint32_t kMotionHomeMinGapMs = 200;
@@ -284,12 +289,21 @@ struct PressureProfilerState {
     uint32_t lastSampleAt = 0;
     uint32_t lastRedrawAt = 0;
     uint32_t lastAboveSenseAt = 0;
+    uint32_t senseCandidateAt = 0;
     uint16_t currentCentiBar = 0;
     uint16_t peakCentiBar = 0;
     uint16_t samples[kPressureProfileSampleCount] = {};
     uint32_t sampleTimes[kPressureProfileSampleCount] = {};
     uint16_t sampleHead = 0;
     uint16_t sampleCount = 0;
+};
+
+struct DockWeatherState {
+    bool valid = false;
+    int16_t temperatureF = 0;
+    int8_t precipitationPercent = -1;
+    uint16_t weatherCode = 0;
+    uint32_t updatedAt = 0;
 };
 
 struct AppState {
@@ -323,6 +337,8 @@ struct AppState {
     bool wsStaConnected = false;
     bool sendComplete = false;
     bool sendOk = false;
+    bool dockClockActive = false;
+    bool dockClockTimeConfigured = false;
     LinkTransport currentTransport = LinkTransport::None;
     LinkTransport pendingTransport = LinkTransport::None;
     uint32_t targetCommitAt = 0;
@@ -356,11 +372,15 @@ struct AppState {
     uint32_t lastTouchTapAt = 0;
     uint32_t lastBatteryPollAt = 0;
     uint32_t lastHomeAdjustAt = 0;
+    uint32_t dockClockLastRedrawAt = 0;
+    uint32_t dockClockLastNtpSyncAt = 0;
+    uint32_t dockClockLastWeatherFetchAt = 0;
     uint32_t homeWheelAnimatedAt = 0;
     uint32_t homeWheelFrameAt = 0;
     int16_t lastTouchTapX = 0;
     int16_t lastTouchTapY = 0;
     RemoteBatteryStatus battery;
+    DockWeatherState dockWeather;
     PendingTargetWrite pendingTarget;
     PendingAction pendingAction;
     PendingMenuWrite pendingMenuWrites[kPendingMenuWriteSlots];
@@ -575,6 +595,10 @@ void servicePressureProfiler(uint32_t now);
 void shortenWaitForPressureProfiler(uint32_t now, uint32_t* waitMs);
 void armPressureProfiler();
 void leavePressureProfiler();
+void serviceDockClock(uint32_t now);
+void shortenWaitForDockClock(uint32_t now, uint32_t* waitMs);
+void exitDockClock();
+void markUserActivity(uint32_t now = millis());
 
 uint32_t currentWebSocketLoopIntervalMs() {
     return app.wsConnected ? remote_config::kWebSocketServiceMs
@@ -674,6 +698,7 @@ uint32_t computeLoopWaitMs(uint32_t now, bool yieldTransport) {
     }
 
     shortenWaitForPressureProfiler(now, &waitMs);
+    shortenWaitForDockClock(now, &waitMs);
 
     if(g_consoleStreamEnabled) {
         shortenWaitForDeadline(now, g_consoleLastStreamAt + 1000, &waitMs);
@@ -693,7 +718,7 @@ uint32_t computeLoopWaitMs(uint32_t now, bool yieldTransport) {
         shortenWaitForDeadline(now, app.homeWheelFrameAt + kWheelAnimationFrameMs, &waitMs);
     }
 
-    if(!remote_config::kDisableIdleSleepForTesting) {
+    if(!remote_config::kDisableIdleSleepForTesting && !app.battery.usbPresent) {
         shortenWaitForDeadline(now, app.lastUserActivityAt + remote_config::kIdleSleepAfterMs,
                                &waitMs);
     }
@@ -1435,6 +1460,7 @@ void armPressureProfiler() {
     g_pressureProfiler.lastSampleAt = 0;
     g_pressureProfiler.lastRedrawAt = 0;
     g_pressureProfiler.lastAboveSenseAt = 0;
+    g_pressureProfiler.senseCandidateAt = 0;
     g_pressureProfiler.currentCentiBar = readPressureCentiBar();
     clearPressureProfilerSamples();
     setToast(g_pressureProfiler.adcReady ? "Profiler armed" : "Pressure ADC?", 1200);
@@ -1450,6 +1476,7 @@ void resetPressureProfilerRun(uint32_t now) {
     g_pressureProfiler.startedAt = 0;
     g_pressureProfiler.lastSampleAt = now;
     g_pressureProfiler.lastAboveSenseAt = 0;
+    g_pressureProfiler.senseCandidateAt = 0;
     clearPressureProfilerSamples();
 }
 
@@ -1457,6 +1484,7 @@ void startPressureProfilerRun(uint32_t now, uint16_t centiBar) {
     g_pressureProfiler.running = true;
     g_pressureProfiler.startedAt = now;
     g_pressureProfiler.lastAboveSenseAt = now;
+    g_pressureProfiler.senseCandidateAt = 0;
     clearPressureProfilerSamples();
     appendPressureProfilerSample(centiBar, 0);
     setToast("Profile started", 900);
@@ -1488,8 +1516,16 @@ void servicePressureProfiler(uint32_t now) {
 
     if(!g_pressureProfiler.running) {
         if(centiBar >= remote_config::kPressureProfilerSenseCentiBar) {
-            startPressureProfilerRun(now, centiBar);
-        } else if((now - g_pressureProfiler.lastRedrawAt) >= remote_config::kPressureProfilerRedrawMs) {
+            if(g_pressureProfiler.senseCandidateAt == 0) {
+                g_pressureProfiler.senseCandidateAt = now;
+            } else if((now - g_pressureProfiler.senseCandidateAt) >= remote_config::kPressureProfilerSenseHoldMs) {
+                startPressureProfilerRun(now, centiBar);
+            }
+        } else {
+            g_pressureProfiler.senseCandidateAt = 0;
+        }
+
+        if((now - g_pressureProfiler.lastRedrawAt) >= remote_config::kPressureProfilerRedrawMs) {
             g_pressureProfiler.lastRedrawAt = now;
             app.redraw = true;
         }
@@ -1546,6 +1582,194 @@ bool statusStateIsRunning(const String& state) {
 
 bool statusStateIsStopped(const String& state) {
     return state == "IDLE" || state == "IDLE_GBW";
+}
+
+bool localClockTime(struct tm* out) {
+    if(out == nullptr) {
+        return false;
+    }
+    const time_t now = time(nullptr);
+    if(now < static_cast<time_t>(kValidUnixTime)) {
+        return false;
+    }
+    localtime_r(&now, out);
+    return true;
+}
+
+const char* weatherCodeLabel(uint16_t code) {
+    if(code == 0) return "Clear";
+    if(code <= 3) return "Clouds";
+    if(code == 45 || code == 48) return "Fog";
+    if((code >= 51 && code <= 57) || (code >= 61 && code <= 67)) return "Rain";
+    if((code >= 71 && code <= 77) || code == 85 || code == 86) return "Snow";
+    if(code >= 80 && code <= 82) return "Showers";
+    if(code >= 95) return "Storm";
+    return "Weather";
+}
+
+bool jsonNumberBetween(const String& json, const char* key, int start, int end, float* out) {
+    if(key == nullptr || out == nullptr || start < 0) {
+        return false;
+    }
+    const int boundedEnd = end < 0 ? static_cast<int>(json.length()) : end;
+    int pos = json.indexOf(key, static_cast<unsigned int>(start));
+    if(pos < 0 || pos >= boundedEnd) {
+        return false;
+    }
+    pos += static_cast<int>(strlen(key));
+    while(pos < boundedEnd && (json[pos] == ' ' || json[pos] == ':' || json[pos] == '[')) {
+        ++pos;
+    }
+
+    char buffer[20] = {};
+    uint8_t len = 0;
+    while(pos < boundedEnd && len + 1 < sizeof(buffer)) {
+        const char c = json[pos];
+        if((c >= '0' && c <= '9') || c == '-' || c == '+') {
+            buffer[len++] = c;
+        } else if(c == '.') {
+            buffer[len++] = c;
+        } else {
+            break;
+        }
+        ++pos;
+    }
+    if(len == 0) {
+        return false;
+    }
+    *out = static_cast<float>(atof(buffer));
+    return true;
+}
+
+bool updateDockWeatherFromJson(const String& payload) {
+    const int currentStart = payload.indexOf("\"current\":");
+    const int hourlyStart = payload.indexOf("\"hourly\":");
+    if(currentStart < 0) {
+        return false;
+    }
+
+    float temperature = 0.0f;
+    float weatherCode = 0.0f;
+    if(!jsonNumberBetween(payload, "\"temperature_2m\":", currentStart, hourlyStart, &temperature) ||
+       !jsonNumberBetween(payload, "\"weather_code\":", currentStart, hourlyStart, &weatherCode)) {
+        return false;
+    }
+
+    float precip = -1.0f;
+    if(hourlyStart >= 0) {
+        (void)jsonNumberBetween(payload, "\"precipitation_probability\":[", hourlyStart, -1, &precip);
+    }
+
+    app.dockWeather.valid = true;
+    app.dockWeather.temperatureF = static_cast<int16_t>(lroundf(temperature));
+    app.dockWeather.weatherCode = static_cast<uint16_t>(max<int>(0, static_cast<int>(lroundf(weatherCode))));
+    app.dockWeather.precipitationPercent =
+        precip >= 0.0f ? static_cast<int8_t>(clampValue(static_cast<int32_t>(lroundf(precip)), 0, 100)) : -1;
+    app.dockWeather.updatedAt = millis();
+    return true;
+}
+
+String dockWeatherUrl() {
+    String url = "https://api.open-meteo.com/v1/forecast?latitude=";
+    url += String(remote_config::kDockClockWeatherLatitude, 4);
+    url += "&longitude=";
+    url += String(remote_config::kDockClockWeatherLongitude, 4);
+    url += "&current=temperature_2m,weather_code,is_day";
+    url += "&hourly=temperature_2m,precipitation_probability,weather_code";
+    url += "&temperature_unit=fahrenheit&forecast_hours=6&timezone=auto";
+    return url;
+}
+
+void serviceDockClockTime(uint32_t now) {
+    if(!remote_wifi_sta_connected()) {
+        return;
+    }
+    if(app.dockClockTimeConfigured &&
+       (now - app.dockClockLastNtpSyncAt) < remote_config::kDockClockNtpSyncMs) {
+        return;
+    }
+
+    configTzTime(remote_config::kDockClockTimezone,
+                 remote_config::kDockClockNtpServer1,
+                 remote_config::kDockClockNtpServer2);
+    app.dockClockTimeConfigured = true;
+    app.dockClockLastNtpSyncAt = now;
+}
+
+void serviceDockClockWeather(uint32_t now) {
+    if(!remote_wifi_sta_connected()) {
+        return;
+    }
+    if(app.dockClockLastWeatherFetchAt != 0 &&
+       (now - app.dockClockLastWeatherFetchAt) < remote_config::kDockClockWeatherFetchMs) {
+        return;
+    }
+    app.dockClockLastWeatherFetchAt = now;
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient https;
+    https.setTimeout(kDockWeatherHttpTimeoutMs);
+    if(!https.begin(client, dockWeatherUrl())) {
+        return;
+    }
+
+    const int code = https.GET();
+    if(code == HTTP_CODE_OK) {
+        const String payload = https.getString();
+        if(updateDockWeatherFromJson(payload)) {
+            app.redraw = true;
+        }
+    }
+    https.end();
+}
+
+bool dockClockAllowed() {
+    return app.battery.usbPresent && app.screen == Screen::Home && !app.editing && !app.targetDirty &&
+           !isRunningState() && !remote_pressure_ble_connected();
+}
+
+void exitDockClock() {
+    if(!app.dockClockActive) {
+        return;
+    }
+    app.dockClockActive = false;
+    app.dockClockLastRedrawAt = 0;
+    app.redraw = true;
+}
+
+void serviceDockClock(uint32_t now) {
+    if(!dockClockAllowed()) {
+        exitDockClock();
+        return;
+    }
+
+    serviceDockClockTime(now);
+    if(!app.dockClockActive) {
+        if((now - app.lastUserActivityAt) < remote_config::kDockClockAfterMs) {
+            return;
+        }
+        app.dockClockActive = true;
+        app.dockClockLastRedrawAt = 0;
+        app.redraw = true;
+    }
+
+    serviceDockClockWeather(now);
+    if((now - app.dockClockLastRedrawAt) >= remote_config::kDockClockRedrawMs) {
+        app.dockClockLastRedrawAt = now;
+        app.redraw = true;
+    }
+}
+
+void shortenWaitForDockClock(uint32_t now, uint32_t* waitMs) {
+    if(waitMs == nullptr || !dockClockAllowed()) {
+        return;
+    }
+    if(app.dockClockActive) {
+        shortenWaitForDeadline(now, app.dockClockLastRedrawAt + remote_config::kDockClockRedrawMs, waitMs);
+        return;
+    }
+    shortenWaitForDeadline(now, app.lastUserActivityAt + remote_config::kDockClockAfterMs, waitMs);
 }
 
 bool statusMotorUnavailable(const sg98_protocol::StatusFrame& status) {
@@ -2442,8 +2666,8 @@ uint32_t currentStatusPollIntervalMs() {
     return remote_config::kStatusPollIdleMs;
 }
 
-void markUserActivity() {
-    app.lastUserActivityAt = millis();
+void markUserActivity(uint32_t now) {
+    app.lastUserActivityAt = now;
 }
 
 bool handleMotionHomeGesture(uint32_t now) {
@@ -4918,48 +5142,112 @@ int16_t pressureGraphX(const Rect& graph, uint32_t elapsedMs, uint32_t visibleSt
                                 (static_cast<uint64_t>(relative) * graph.w) / visibleMs);
 }
 
-void drawPressureProfilerGraph(RemoteCanvas& canvas,
-                               const Rect& graph,
+float pressureRadarAngle(uint32_t elapsedMs, uint32_t visibleStartMs, uint32_t visibleMs) {
+    const uint32_t relativeMs = elapsedMs <= visibleStartMs ? 0 : elapsedMs - visibleStartMs;
+    const float phase = visibleMs == 0
+                            ? 0.0f
+                            : clampUnit(static_cast<float>(relativeMs) / static_cast<float>(visibleMs));
+    return static_cast<float>(-PI / 2.0f) + phase * static_cast<float>(2.0f * PI);
+}
+
+void pressureRadarPoint(int16_t centerX,
+                        int16_t centerY,
+                        int16_t innerRadius,
+                        int16_t outerRadius,
+                        uint16_t centiBar,
+                        uint32_t elapsedMs,
+                        uint32_t visibleStartMs,
+                        uint32_t visibleMs,
+                        int16_t* outX,
+                        int16_t* outY) {
+    const uint16_t displayValue = min<uint16_t>(centiBar, remote_config::kPressureProfilerGraphMaxCentiBar);
+    const int16_t radiusSpan = max<int16_t>(static_cast<int16_t>(outerRadius - innerRadius), 1);
+    const int16_t radius = static_cast<int16_t>(
+        innerRadius +
+        (static_cast<int32_t>(displayValue) * radiusSpan) /
+            static_cast<int32_t>(remote_config::kPressureProfilerGraphMaxCentiBar));
+    const float angle = pressureRadarAngle(elapsedMs, visibleStartMs, visibleMs);
+    if(outX != nullptr) {
+        *outX = static_cast<int16_t>(centerX + lroundf(cosf(angle) * radius));
+    }
+    if(outY != nullptr) {
+        *outY = static_cast<int16_t>(centerY + lroundf(sinf(angle) * radius));
+    }
+}
+
+void drawPressureRadarSweep(RemoteCanvas& canvas,
+                            int16_t centerX,
+                            int16_t centerY,
+                            int16_t innerRadius,
+                            int16_t outerRadius,
+                            float angle,
+                            uint16_t accent,
+                            uint16_t gridColor) {
+    for(uint8_t i = 0; i < 6; ++i) {
+        const float tailAngle = angle - static_cast<float>(i) * 0.055f;
+        const uint16_t color = blendColor565(gridColor, accent, 0.68f - static_cast<float>(i) * 0.10f);
+        const int16_t x0 = static_cast<int16_t>(centerX + lroundf(cosf(tailAngle) * innerRadius));
+        const int16_t y0 = static_cast<int16_t>(centerY + lroundf(sinf(tailAngle) * innerRadius));
+        const int16_t x1 = static_cast<int16_t>(centerX + lroundf(cosf(tailAngle) * outerRadius));
+        const int16_t y1 = static_cast<int16_t>(centerY + lroundf(sinf(tailAngle) * outerRadius));
+        canvas.drawLine(x0, y0, x1, y1, color);
+    }
+}
+
+void drawPressureProfilerRadar(RemoteCanvas& canvas,
+                               const Layout& layout,
                                uint32_t visibleStartMs,
                                uint32_t visibleEndMs,
-                               uint16_t lineColor,
-                               uint16_t panelColor,
+                               uint16_t bg,
+                               uint16_t accent,
                                uint16_t gridColor) {
-    canvas.fillRoundRect(graph.x, graph.y, graph.w, graph.h, 10, panelColor);
-    canvas.drawRoundRect(graph.x, graph.y, graph.w, graph.h, 10, blendColor565(gridColor, kColorText, 0.12f));
-
-    constexpr uint8_t kYSteps[] = {0, 4, 8, 12, 16};
-    for(uint8_t i = 0; i < sizeof(kYSteps); ++i) {
-        const uint16_t centiBar = static_cast<uint16_t>(kYSteps[i]) * 100;
-        const int16_t y = pressureGraphY(graph, centiBar);
-        canvas.drawLine(graph.x, y, static_cast<int16_t>(graph.x + graph.w), y, gridColor);
-        canvas.drawTextTopRight(String(static_cast<int>(kYSteps[i])),
-                                static_cast<int16_t>(graph.x - 7),
-                                static_cast<int16_t>(y - 6),
-                                RemoteTextStyle::Tiny,
-                                blendColor565(kColorMuted, kColorText, 0.10f),
-                                kColorBg);
-    }
-
+    const int16_t shortSide = min<int16_t>(layout.width, layout.height);
+    const int16_t edge = useRoundNavigation() ? 10 : 16;
+    const int16_t centerX = static_cast<int16_t>(layout.width / 2);
+    const int16_t centerY = static_cast<int16_t>(layout.height / 2 + (useRoundNavigation() ? 4 : 8));
+    const int16_t outerRadius = clampI16(static_cast<int16_t>(shortSide / 2 - edge),
+                                         86,
+                                         static_cast<int16_t>(shortSide / 2 - 4));
+    const int16_t innerRadius = clampI16(static_cast<int16_t>(outerRadius * 0.16f), 18, 34);
+    const uint16_t softGrid = blendColor565(gridColor, bg, 0.42f);
+    const uint16_t majorGrid = blendColor565(gridColor, accent, 0.24f);
     const uint32_t visibleMs = max<uint32_t>(visibleEndMs - visibleStartMs, 1);
-    for(uint8_t i = 0; i <= 2; ++i) {
-        const uint32_t tickElapsed = visibleStartMs + (visibleMs * i) / 2;
-        const int16_t x = pressureGraphX(graph, tickElapsed, visibleStartMs, visibleMs);
-        canvas.drawLine(x, graph.y, x, static_cast<int16_t>(graph.y + graph.h), gridColor);
-        canvas.drawCenteredText(pressureElapsedLabel(tickElapsed),
-                                x,
-                                static_cast<int16_t>(graph.y + graph.h + 14),
+
+    canvas.fillCircle(centerX, centerY, outerRadius, blendColor565(bg, packColor565(0, 42, 28), 0.28f));
+    canvas.drawCircle(centerX, centerY, outerRadius, majorGrid);
+    canvas.drawCircle(centerX, centerY, static_cast<int16_t>(outerRadius - 1), blendColor565(majorGrid, kColorText, 0.10f));
+
+    constexpr uint8_t kRingBars[] = {4, 8, 12, 16};
+    for(uint8_t i = 0; i < sizeof(kRingBars); ++i) {
+        const uint16_t centiBar = static_cast<uint16_t>(kRingBars[i]) * 100;
+        const int16_t ringRadius = static_cast<int16_t>(
+            innerRadius +
+            (static_cast<int32_t>(centiBar) * (outerRadius - innerRadius)) /
+                static_cast<int32_t>(remote_config::kPressureProfilerGraphMaxCentiBar));
+        const uint16_t ringColor = i == (sizeof(kRingBars) - 1) ? majorGrid : softGrid;
+        canvas.drawCircle(centerX, centerY, ringRadius, ringColor);
+        canvas.drawTextTopRight(String(static_cast<int>(kRingBars[i])),
+                                static_cast<int16_t>(centerX + ringRadius - 5),
+                                static_cast<int16_t>(centerY - 8),
                                 RemoteTextStyle::Tiny,
-                                blendColor565(kColorMuted, kColorText, 0.08f),
-                                kColorBg);
+                                blendColor565(kColorMuted, accent, 0.18f),
+                                bg);
     }
 
-    const int16_t senseY = pressureGraphY(graph, remote_config::kPressureProfilerSenseCentiBar);
-    canvas.drawLine(graph.x,
-                    senseY,
-                    static_cast<int16_t>(graph.x + graph.w),
-                    senseY,
-                    blendColor565(kColorAccent2, panelColor, 0.36f));
+    for(uint8_t i = 0; i < 12; ++i) {
+        const float angle = static_cast<float>(-PI / 2.0f) + static_cast<float>(i) * static_cast<float>(PI / 6.0f);
+        const int16_t x0 = static_cast<int16_t>(centerX + lroundf(cosf(angle) * innerRadius));
+        const int16_t y0 = static_cast<int16_t>(centerY + lroundf(sinf(angle) * innerRadius));
+        const int16_t x1 = static_cast<int16_t>(centerX + lroundf(cosf(angle) * outerRadius));
+        const int16_t y1 = static_cast<int16_t>(centerY + lroundf(sinf(angle) * outerRadius));
+        canvas.drawLine(x0, y0, x1, y1, (i % 3) == 0 ? majorGrid : softGrid);
+    }
+
+    const int16_t senseRadius = static_cast<int16_t>(
+        innerRadius +
+        (static_cast<int32_t>(remote_config::kPressureProfilerSenseCentiBar) * (outerRadius - innerRadius)) /
+            static_cast<int32_t>(remote_config::kPressureProfilerGraphMaxCentiBar));
+    canvas.drawCircle(centerX, centerY, senseRadius, blendColor565(kColorAccent2, bg, 0.22f));
 
     bool hasPrev = false;
     int16_t prevX = 0;
@@ -4974,10 +5262,25 @@ void drawPressureProfilerGraph(RemoteCanvas& canvas,
             continue;
         }
 
-        const int16_t x = pressureGraphX(graph, elapsed, visibleStartMs, visibleMs);
-        const int16_t y = pressureGraphY(graph, centiBar);
+        int16_t x = centerX;
+        int16_t y = centerY;
+        pressureRadarPoint(centerX,
+                           centerY,
+                           innerRadius,
+                           outerRadius,
+                           centiBar,
+                           elapsed,
+                           visibleStartMs,
+                           visibleMs,
+                           &x,
+                           &y);
+        const float freshness = g_pressureProfiler.sampleCount <= 1
+                                    ? 1.0f
+                                    : clampUnit(static_cast<float>(g_pressureProfiler.sampleCount - 1 - age) /
+                                                static_cast<float>(g_pressureProfiler.sampleCount - 1));
+        const uint16_t lineColor = blendColor565(blendColor565(gridColor, bg, 0.32f), accent, 0.28f + freshness * 0.58f);
         if(hasPrev) {
-            canvas.drawLine(prevX, prevY, x, y, blendColor565(lineColor, kColorText, 0.18f));
+            canvas.drawLine(prevX, prevY, x, y, blendColor565(lineColor, kColorText, 0.12f));
             canvas.drawLine(prevX, static_cast<int16_t>(prevY + 1), x, static_cast<int16_t>(y + 1), lineColor);
         } else {
             canvas.fillCircle(x, y, 2, lineColor);
@@ -4986,47 +5289,412 @@ void drawPressureProfilerGraph(RemoteCanvas& canvas,
         prevY = y;
         hasPrev = true;
     }
+
+    const uint32_t sweepElapsed = g_pressureProfiler.running
+                                      ? min<uint32_t>(millis() - g_pressureProfiler.startedAt, visibleEndMs)
+                                      : visibleStartMs + ((millis() - g_pressureProfiler.armedAt) % visibleMs);
+    const float sweepAngle = pressureRadarAngle(sweepElapsed, visibleStartMs, visibleMs);
+    drawPressureRadarSweep(canvas, centerX, centerY, innerRadius, outerRadius, sweepAngle, accent, softGrid);
+
+    uint32_t dotElapsed = sweepElapsed;
+    if(g_pressureProfiler.running) {
+        dotElapsed = min<uint32_t>(millis() - g_pressureProfiler.startedAt, visibleEndMs);
+    }
+    int16_t dotX = centerX;
+    int16_t dotY = centerY;
+    pressureRadarPoint(centerX,
+                       centerY,
+                       innerRadius,
+                       outerRadius,
+                       g_pressureProfiler.currentCentiBar,
+                       dotElapsed,
+                       visibleStartMs,
+                       visibleMs,
+                       &dotX,
+                       &dotY);
+    canvas.fillCircle(dotX, dotY, 4, blendColor565(accent, kColorText, 0.20f));
+    canvas.drawCircle(dotX, dotY, 7, blendColor565(accent, bg, 0.10f));
+    canvas.drawCircle(centerX, centerY, innerRadius, blendColor565(accent, kColorText, 0.16f));
+}
+
+void drawPressureProfilerGraph(RemoteCanvas& canvas,
+                               const Rect& graph,
+                               uint32_t visibleStartMs,
+                               uint32_t visibleEndMs,
+                               uint16_t traceColor,
+                               uint16_t themeColor,
+                               uint16_t panelColor,
+                               uint16_t gridColor) {
+    const uint16_t graphFace = blendColor565(panelColor, packColor565(0, 34, 24), 0.34f);
+    const uint16_t minorGrid = blendColor565(graphFace, gridColor, 0.13f);
+    const uint16_t majorGrid = blendColor565(graphFace, gridColor, 0.23f);
+    const uint16_t traceHi = blendColor565(traceColor, packColor565(255, 120, 78), 0.20f);
+    const uint16_t labelColor = blendColor565(themeColor, graphFace, 0.34f);
+    const uint16_t axisColor = blendColor565(gridColor, themeColor, 0.30f);
+    const uint16_t axisLabel = blendColor565(themeColor, graphFace, 0.24f);
+    canvas.fillRect(graph.x, graph.y, graph.w, graph.h, graphFace);
+    canvas.drawRect(graph.x, graph.y, graph.w, graph.h, blendColor565(majorGrid, graphFace, 0.16f));
+    canvas.drawLine(graph.x, graph.y, graph.x, static_cast<int16_t>(graph.y + graph.h), axisColor);
+    canvas.drawLine(static_cast<int16_t>(graph.x + 1),
+                    graph.y,
+                    static_cast<int16_t>(graph.x + 1),
+                    static_cast<int16_t>(graph.y + graph.h),
+                    blendColor565(axisColor, graphFace, 0.12f));
+    canvas.drawLine(graph.x,
+                    static_cast<int16_t>(graph.y + graph.h),
+                    static_cast<int16_t>(graph.x + graph.w),
+                    static_cast<int16_t>(graph.y + graph.h),
+                    axisColor);
+    canvas.drawLine(graph.x,
+                    static_cast<int16_t>(graph.y + graph.h - 1),
+                    static_cast<int16_t>(graph.x + graph.w),
+                    static_cast<int16_t>(graph.y + graph.h - 1),
+                    blendColor565(axisColor, graphFace, 0.12f));
+
+    const int16_t meshCell = clampI16(static_cast<int16_t>(min<int16_t>(graph.w, graph.h) / 8), 24, 42);
+    uint8_t meshIndex = 1;
+    for(int16_t x = static_cast<int16_t>(graph.x + meshCell);
+        x < static_cast<int16_t>(graph.x + graph.w);
+        x = static_cast<int16_t>(x + meshCell), ++meshIndex) {
+        const uint16_t color = (meshIndex % 2) == 0 ? majorGrid : minorGrid;
+        canvas.drawLine(x, graph.y, x, static_cast<int16_t>(graph.y + graph.h), color);
+    }
+    meshIndex = 1;
+    for(int16_t y = static_cast<int16_t>(graph.y + meshCell);
+        y < static_cast<int16_t>(graph.y + graph.h);
+        y = static_cast<int16_t>(y + meshCell), ++meshIndex) {
+        const uint16_t color = (meshIndex % 2) == 0 ? majorGrid : minorGrid;
+        canvas.drawLine(graph.x, y, static_cast<int16_t>(graph.x + graph.w), y, color);
+    }
+
+    constexpr uint8_t kYSteps[] = {0, 4, 8, 12, 16};
+    canvas.drawTextTopRight("BAR",
+                            static_cast<int16_t>(graph.x - 4),
+                            static_cast<int16_t>(graph.y - 20),
+                            RemoteTextStyle::Tiny,
+                            labelColor,
+                            panelColor);
+    for(uint8_t i = 0; i < sizeof(kYSteps); ++i) {
+        const uint16_t centiBar = static_cast<uint16_t>(kYSteps[i]) * 100;
+        const int16_t y = pressureGraphY(graph, centiBar);
+        canvas.drawLine(graph.x, y, static_cast<int16_t>(graph.x + graph.w), y, majorGrid);
+        canvas.drawLine(static_cast<int16_t>(graph.x - 6), y, graph.x, y, axisColor);
+        canvas.drawTextTopRight(String(static_cast<int>(kYSteps[i])),
+                                static_cast<int16_t>(graph.x - 8),
+                                static_cast<int16_t>(y - 7),
+                                RemoteTextStyle::Tiny,
+                                labelColor,
+                                panelColor);
+    }
+
+    const uint32_t visibleMs = max<uint32_t>(visibleEndMs - visibleStartMs, 1);
+    for(uint8_t i = 0; i <= 6; ++i) {
+        const uint32_t tickElapsed = visibleStartMs + (visibleMs * i) / 6;
+        const int16_t x = pressureGraphX(graph, tickElapsed, visibleStartMs, visibleMs);
+        canvas.drawLine(x, graph.y, x, static_cast<int16_t>(graph.y + graph.h), i == 0 || i == 6 ? majorGrid : minorGrid);
+        canvas.drawLine(x,
+                        static_cast<int16_t>(graph.y + graph.h),
+                        x,
+                        static_cast<int16_t>(graph.y + graph.h + 6),
+                        axisColor);
+        if((i % 2) == 0) {
+            const String tickLabel = pressureElapsedLabel(tickElapsed);
+            const int16_t labelX = clampI16(x,
+                                            static_cast<int16_t>(graph.x + 14),
+                                            static_cast<int16_t>(graph.x + graph.w - 14));
+            canvas.drawCenteredText(tickLabel,
+                                    labelX,
+                                    static_cast<int16_t>(graph.y + graph.h - 12),
+                                    RemoteTextStyle::Tiny,
+                                    axisLabel,
+                                    graphFace);
+        }
+    }
+    canvas.drawCenteredText(String("TIME ") + pressureElapsedLabel(visibleMs),
+                            static_cast<int16_t>(graph.x + graph.w / 2),
+                            static_cast<int16_t>(graph.y + graph.h + 16),
+                            RemoteTextStyle::Tiny,
+                            blendColor565(labelColor, axisColor, 0.18f),
+                            panelColor);
+
+    const int16_t senseY = pressureGraphY(graph, remote_config::kPressureProfilerSenseCentiBar);
+    canvas.drawLine(graph.x,
+                    senseY,
+                    static_cast<int16_t>(graph.x + graph.w),
+                    senseY,
+                    blendColor565(graphFace, kColorAccent2, 0.28f));
+    canvas.drawLine(graph.x, graph.y, graph.x, static_cast<int16_t>(graph.y + graph.h), axisColor);
+    canvas.drawLine(static_cast<int16_t>(graph.x + 1),
+                    graph.y,
+                    static_cast<int16_t>(graph.x + 1),
+                    static_cast<int16_t>(graph.y + graph.h),
+                    blendColor565(axisColor, graphFace, 0.12f));
+    canvas.drawLine(graph.x,
+                    static_cast<int16_t>(graph.y + graph.h),
+                    static_cast<int16_t>(graph.x + graph.w),
+                    static_cast<int16_t>(graph.y + graph.h),
+                    axisColor);
+    canvas.drawLine(graph.x,
+                    static_cast<int16_t>(graph.y + graph.h - 1),
+                    static_cast<int16_t>(graph.x + graph.w),
+                    static_cast<int16_t>(graph.y + graph.h - 1),
+                    blendColor565(axisColor, graphFace, 0.12f));
+
+    bool hasPrev = false;
+    int16_t prevX = 0;
+    int16_t prevY = 0;
+    int16_t latestX = 0;
+    int16_t latestY = 0;
+    for(int age = static_cast<int>(g_pressureProfiler.sampleCount) - 1; age >= 0; --age) {
+        uint16_t centiBar = 0;
+        uint32_t elapsed = 0;
+        if(!pressureProfilerSampleAt(static_cast<uint16_t>(age), &centiBar, &elapsed)) {
+            continue;
+        }
+        if(elapsed < visibleStartMs || elapsed > visibleEndMs) {
+            continue;
+        }
+
+        const int16_t x = pressureGraphX(graph, elapsed, visibleStartMs, visibleMs);
+        const int16_t y = pressureGraphY(graph, centiBar);
+        if(hasPrev) {
+            canvas.drawLine(prevX, prevY, x, y, traceHi);
+            canvas.drawLine(prevX, static_cast<int16_t>(prevY + 1), x, static_cast<int16_t>(y + 1), traceColor);
+        } else {
+            canvas.fillCircle(x, y, 2, traceColor);
+        }
+        prevX = x;
+        prevY = y;
+        latestX = x;
+        latestY = y;
+        hasPrev = true;
+    }
+    if(hasPrev) {
+        canvas.fillCircle(latestX, latestY, 4, traceHi);
+        canvas.drawCircle(latestX, latestY, 7, blendColor565(traceColor, graphFace, 0.12f));
+    }
+}
+
+uint16_t dockWeatherAccent() {
+    if(!app.dockWeather.valid) {
+        return blendColor565(kColorMuted, kColorGood, 0.20f);
+    }
+    const uint16_t code = app.dockWeather.weatherCode;
+    if(code == 0) {
+        return packColor565(255, 210, 90);
+    }
+    if(code >= 95) {
+        return blendColor565(kColorDanger, kColorAccent2, 0.28f);
+    }
+    if((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+        return packColor565(86, 190, 255);
+    }
+    if((code >= 71 && code <= 77) || code == 85 || code == 86) {
+        return blendColor565(kColorText, packColor565(130, 220, 255), 0.38f);
+    }
+    return blendColor565(kColorGood, kColorText, 0.24f);
+}
+
+String dockWeatherLine() {
+    if(app.dockWeather.valid) {
+        String out;
+        out.reserve(28);
+        out += String(static_cast<int>(app.dockWeather.temperatureF));
+        out += "F ";
+        out += weatherCodeLabel(app.dockWeather.weatherCode);
+        if(app.dockWeather.precipitationPercent >= 0) {
+            out += " ";
+            out += String(static_cast<int>(app.dockWeather.precipitationPercent));
+            out += "%";
+        }
+        return out;
+    }
+    return remote_wifi_sta_connected() ? String("Weather sync") : String("WiFi off");
+}
+
+void drawDockWeatherBackdrop(RemoteCanvas& canvas, const Layout& layout, uint16_t bg, uint16_t accent) {
+    const int16_t cx = static_cast<int16_t>(layout.width / 2);
+    const int16_t cy = static_cast<int16_t>(layout.height / 2);
+    const uint16_t haze = blendColor565(bg, accent, 0.13f);
+    const uint16_t hazeHi = blendColor565(bg, accent, 0.22f);
+    const uint16_t hazeLow = blendColor565(bg, kColorBlack, 0.10f);
+
+    if(app.dockWeather.valid && app.dockWeather.weatherCode == 0) {
+        canvas.fillCircle(static_cast<int16_t>(cx - layout.width / 4),
+                          static_cast<int16_t>(cy - layout.height / 4),
+                          clampI16(static_cast<int16_t>(layout.width / 9), 28, 52),
+                          hazeHi);
+        for(uint8_t i = 0; i < 10; ++i) {
+            const float angle = static_cast<float>(i) * static_cast<float>(2.0f * PI / 10.0f);
+            const int16_t x0 = static_cast<int16_t>(cx - layout.width / 4 + lroundf(cosf(angle) * 42));
+            const int16_t y0 = static_cast<int16_t>(cy - layout.height / 4 + lroundf(sinf(angle) * 42));
+            const int16_t x1 = static_cast<int16_t>(cx - layout.width / 4 + lroundf(cosf(angle) * 76));
+            const int16_t y1 = static_cast<int16_t>(cy - layout.height / 4 + lroundf(sinf(angle) * 76));
+            canvas.drawLine(x0, y0, x1, y1, haze);
+        }
+    } else {
+        const int16_t cloudY = static_cast<int16_t>(cy - layout.height / 5);
+        canvas.fillCircle(static_cast<int16_t>(cx - 56), cloudY, 46, haze);
+        canvas.fillCircle(static_cast<int16_t>(cx - 12), static_cast<int16_t>(cloudY - 18), 58, hazeHi);
+        canvas.fillCircle(static_cast<int16_t>(cx + 46), static_cast<int16_t>(cloudY + 2), 42, haze);
+        canvas.fillRoundRect(static_cast<int16_t>(cx - 102),
+                             static_cast<int16_t>(cloudY + 14),
+                             204,
+                             38,
+                             19,
+                             haze);
+    }
+
+    if(app.dockWeather.valid &&
+       ((app.dockWeather.weatherCode >= 51 && app.dockWeather.weatherCode <= 67) ||
+        (app.dockWeather.weatherCode >= 80 && app.dockWeather.weatherCode <= 82) ||
+        app.dockWeather.weatherCode >= 95)) {
+        for(uint8_t i = 0; i < 10; ++i) {
+            const int16_t x = static_cast<int16_t>((layout.width * (i + 1)) / 11);
+            const int16_t y = static_cast<int16_t>(layout.height / 2 + ((i % 3) * 22));
+            canvas.drawLine(x, y, static_cast<int16_t>(x - 10), static_cast<int16_t>(y + 28), hazeHi);
+        }
+    }
+
+    const String weather = dockWeatherLine();
+    canvas.drawCenteredText(fitTextToWidth(weather,
+                                           static_cast<int16_t>(layout.width - layout.pad * 4),
+                                           RemoteTextStyle::Large,
+                                           0),
+                            cx,
+                            static_cast<int16_t>(layout.height - (useRoundNavigation() ? 76 : 54)),
+                            RemoteTextStyle::Large,
+                            blendColor565(hazeLow, accent, 0.24f),
+                            bg);
+}
+
+void drawClockHand(RemoteCanvas& canvas,
+                   int16_t cx,
+                   int16_t cy,
+                   int16_t radius,
+                   float angle,
+                   uint16_t color,
+                   bool heavy) {
+    const int16_t x = static_cast<int16_t>(cx + lroundf(cosf(angle) * radius));
+    const int16_t y = static_cast<int16_t>(cy + lroundf(sinf(angle) * radius));
+    canvas.drawLine(cx, cy, x, y, color);
+    if(heavy) {
+        canvas.drawLine(static_cast<int16_t>(cx + 1), cy, static_cast<int16_t>(x + 1), y, color);
+        canvas.drawLine(cx, static_cast<int16_t>(cy + 1), x, static_cast<int16_t>(y + 1), color);
+    }
+}
+
+void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
+    const uint16_t bg = blendColor565(kColorBg, packColor565(0, 18, 28), 0.46f);
+    const uint16_t accent = dockWeatherAccent();
+    const uint16_t grid = blendColor565(packColor565(74, 210, 164), bg, 0.34f);
+    const uint16_t text = blendColor565(kColorText, accent, 0.12f);
+    const uint16_t muted = blendColor565(kColorMuted, accent, 0.18f);
+    canvas.fillScreen(bg);
+    drawDockWeatherBackdrop(canvas, layout, bg, accent);
+
+    struct tm timeInfo = {};
+    const bool hasTime = localClockTime(&timeInfo);
+    if(!hasTime) {
+        const time_t uptime = static_cast<time_t>((millis() / 1000UL) % (24UL * 60UL * 60UL));
+        gmtime_r(&uptime, &timeInfo);
+    }
+
+    const int16_t cx = static_cast<int16_t>(layout.width / 2);
+    const int16_t cy = static_cast<int16_t>(layout.height / 2 + (useRoundNavigation() ? 8 : 4));
+    const int16_t shortSide = min<int16_t>(layout.width, layout.height);
+    const int16_t radius = clampI16(static_cast<int16_t>(shortSide / 2 - (useRoundNavigation() ? 66 : 50)),
+                                    92,
+                                    static_cast<int16_t>(shortSide / 2 - 28));
+    const uint16_t face = blendColor565(bg, kColorBlack, 0.10f);
+    canvas.fillCircle(cx, cy, radius, face);
+    canvas.drawCircle(cx, cy, radius, blendColor565(grid, accent, 0.18f));
+    canvas.drawCircle(cx, cy, static_cast<int16_t>(radius - 8), blendColor565(grid, bg, 0.16f));
+
+    for(uint8_t i = 0; i < 60; ++i) {
+        const float angle = static_cast<float>(-PI / 2.0f) + static_cast<float>(i) * static_cast<float>(2.0f * PI / 60.0f);
+        const bool major = (i % 5) == 0;
+        const int16_t outer = static_cast<int16_t>(radius - (major ? 3 : 8));
+        const int16_t inner = static_cast<int16_t>(radius - (major ? 18 : 13));
+        const int16_t x0 = static_cast<int16_t>(cx + lroundf(cosf(angle) * inner));
+        const int16_t y0 = static_cast<int16_t>(cy + lroundf(sinf(angle) * inner));
+        const int16_t x1 = static_cast<int16_t>(cx + lroundf(cosf(angle) * outer));
+        const int16_t y1 = static_cast<int16_t>(cy + lroundf(sinf(angle) * outer));
+        canvas.drawLine(x0, y0, x1, y1, major ? blendColor565(text, accent, 0.18f) : blendColor565(grid, bg, 0.30f));
+    }
+
+    const float secondAngle = static_cast<float>(-PI / 2.0f) +
+                              static_cast<float>(timeInfo.tm_sec) * static_cast<float>(2.0f * PI / 60.0f);
+    const float minuteAngle = static_cast<float>(-PI / 2.0f) +
+                              (static_cast<float>(timeInfo.tm_min) + static_cast<float>(timeInfo.tm_sec) / 60.0f) *
+                                  static_cast<float>(2.0f * PI / 60.0f);
+    const float hourAngle = static_cast<float>(-PI / 2.0f) +
+                            (static_cast<float>(timeInfo.tm_hour % 12) + static_cast<float>(timeInfo.tm_min) / 60.0f) *
+                                static_cast<float>(2.0f * PI / 12.0f);
+
+    drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.48f), hourAngle, text, true);
+    drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.72f), minuteAngle, blendColor565(text, accent, 0.12f), true);
+    drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.82f), secondAngle, accent, false);
+    canvas.fillCircle(cx, cy, 7, blendColor565(accent, kColorText, 0.20f));
+    canvas.drawCircle(cx, cy, 12, blendColor565(grid, accent, 0.16f));
+
+    char timeText[12] = {};
+    char dateText[24] = {};
+    if(hasTime) {
+        strftime(timeText, sizeof(timeText), "%I:%M", &timeInfo);
+        if(timeText[0] == '0') {
+            memmove(timeText, timeText + 1, strlen(timeText));
+        }
+        strftime(dateText, sizeof(dateText), "%a %b %d", &timeInfo);
+    } else {
+        copyStringToBuffer(String("SYNC"), timeText);
+        copyStringToBuffer(String("Time setup"), dateText);
+    }
+
+    canvas.drawCenteredText(remote_config::kDockClockLocationName,
+                            cx,
+                            static_cast<int16_t>(layout.pad + 14),
+                            RemoteTextStyle::Small,
+                            muted,
+                            bg);
+    canvas.drawCenteredText(timeText,
+                            cx,
+                            static_cast<int16_t>(cy + radius + (useRoundNavigation() ? 30 : 24)),
+                            RemoteTextStyle::Medium,
+                            text,
+                            bg);
+    canvas.drawCenteredText(dateText,
+                            cx,
+                            static_cast<int16_t>(cy + radius + (useRoundNavigation() ? 56 : 44)),
+                            tinyTextStyle(),
+                            muted,
+                            bg);
+
+    const String weather = dockWeatherLine();
+    canvas.drawCenteredText(fitTextToWidth(weather,
+                                           static_cast<int16_t>(layout.width - layout.pad * 5),
+                                           tinyTextStyle(),
+                                           0),
+                            cx,
+                            static_cast<int16_t>(layout.height - layout.pad - 12),
+                            tinyTextStyle(),
+                            blendColor565(text, accent, 0.22f),
+                            bg);
+    drawBatteryIndicator(canvas, layout, bg);
 }
 
 void drawPressureProfiler(RemoteCanvas& canvas, const Layout& layout) {
-    const uint16_t bg = blendColor565(kColorBg, packColor565(22, 45, 40), 0.42f);
-    const uint16_t panel = blendColor565(kColorPanel, packColor565(20, 98, 75), 0.26f);
-    const uint16_t graphPanel = blendColor565(kColorBg, packColor565(8, 20, 22), 0.40f);
-    const uint16_t accent = blendColor565(kColorGood, kColorAccent, 0.18f);
-    const uint16_t grid = blendColor565(kColorPanelHi, bg, 0.38f);
+    const uint16_t bg = blendColor565(kColorBg, packColor565(0, 22, 18), 0.52f);
+    const uint16_t accent = blendColor565(kColorGood, packColor565(88, 255, 170), 0.30f);
+    const uint16_t grid = blendColor565(packColor565(16, 176, 108), bg, 0.26f);
+    const uint16_t labelColor = blendColor565(accent, bg, 0.16f);
+    const uint16_t dimLabel = blendColor565(accent, bg, 0.48f);
     canvas.fillScreen(bg);
 
-    drawPill(canvas, layout.topLeft, "PROFILE", kColorPanel, kColorText);
     const String state = !g_pressureProfiler.adcReady
                              ? "ADC?"
                              : (g_pressureProfiler.running ? pressureElapsedLabel(millis() - g_pressureProfiler.startedAt)
                                                            : "ARM");
-    drawPill(canvas, layout.topCenter, state, g_pressureProfiler.running ? accent : kColorPanel, kColorText);
-    drawBatteryIndicator(canvas, layout, bg);
-
-    const uint16_t current = g_pressureProfiler.currentCentiBar;
-    const String value = pressureBarLabel(current);
-    const int16_t valueY = useRoundNavigation() ? static_cast<int16_t>(layout.topLeft.y + layout.topLeft.h + 48)
-                                                : static_cast<int16_t>(layout.topLeft.y + layout.topLeft.h + 30);
-    canvas.drawCenteredText(fitTextToWidth(value, static_cast<int16_t>(layout.width - 128), heroTextStyle(), 8),
-                            static_cast<int16_t>(layout.width / 2),
-                            valueY,
-                            heroTextStyle(),
-                            blendColor565(kColorText, accent, 0.24f),
-                            bg);
-    canvas.drawCenteredText("BAR",
-                            static_cast<int16_t>(layout.width / 2),
-                            static_cast<int16_t>(valueY + (isLargeCanvas() ? 42 : 28)),
-                            tinyTextStyle(),
-                            blendColor565(kColorMuted, accent, 0.16f),
-                            bg);
-
-    const int16_t graphX = useRoundNavigation() ? 72 : 38;
-    const int16_t graphY = useRoundNavigation() ? 158 : 78;
-    const int16_t graphW = useRoundNavigation() ? static_cast<int16_t>(layout.width - 148)
-                                                : static_cast<int16_t>(layout.width - 76);
-    const int16_t graphH = useRoundNavigation() ? 190 : 112;
-    const Rect graph = {graphX, graphY, graphW, graphH};
 
     uint32_t visibleEndMs = remote_config::kPressureProfilerVisibleWindowMs;
     if(g_pressureProfiler.running) {
@@ -5037,25 +5705,137 @@ void drawPressureProfiler(RemoteCanvas& canvas, const Layout& layout) {
     if(visibleEndMs > remote_config::kPressureProfilerVisibleWindowMs) {
         visibleStartMs = visibleEndMs - remote_config::kPressureProfilerVisibleWindowMs;
     }
-    drawPressureProfilerGraph(canvas,
-                              graph,
-                              visibleStartMs,
-                              visibleEndMs,
-                              accent,
-                              graphPanel,
-                              grid);
 
+    Rect graph = {};
+    if(useRoundNavigation()) {
+        const int16_t shortSide = min<int16_t>(layout.width, layout.height);
+        const int16_t topReserved = clampI16(static_cast<int16_t>(layout.pad + 52), 62, 76);
+        const int16_t bottomReserved = clampI16(static_cast<int16_t>(layout.pad + 76), 86, 100);
+        int16_t graphW = clampI16(static_cast<int16_t>((shortSide * 74) / 100),
+                                  static_cast<int16_t>((shortSide * 62) / 100),
+                                  static_cast<int16_t>(layout.width - 112));
+        int16_t graphH = clampI16(static_cast<int16_t>((shortSide * 46) / 100),
+                                  static_cast<int16_t>((shortSide * 36) / 100),
+                                  static_cast<int16_t>(layout.height - topReserved - bottomReserved));
+        const float safeRadius = static_cast<float>(shortSide / 2 - 18);
+        const float cornerRadius = sqrtf(static_cast<float>(graphW * graphW + graphH * graphH)) * 0.5f;
+        if(cornerRadius > safeRadius && cornerRadius > 0.0f) {
+            const float scale = safeRadius / cornerRadius;
+            graphW = static_cast<int16_t>(graphW * scale);
+            graphH = static_cast<int16_t>(graphH * scale);
+        }
+        graph = {
+            static_cast<int16_t>((layout.width - graphW) / 2),
+            static_cast<int16_t>((layout.height - graphH) / 2 + 4),
+            graphW,
+            graphH
+        };
+    } else {
+        const int16_t leftMargin = static_cast<int16_t>(layout.pad + 28);
+        const int16_t topMargin = static_cast<int16_t>(layout.pad + layout.topPillH + 8);
+        const int16_t rightMargin = static_cast<int16_t>(layout.pad + 12);
+        const int16_t bottomMargin = static_cast<int16_t>(layout.pad + 34);
+        graph = {
+            leftMargin,
+            topMargin,
+            static_cast<int16_t>(layout.width - leftMargin - rightMargin),
+            static_cast<int16_t>(layout.height - topMargin - bottomMargin)
+        };
+    }
+    const uint16_t traceColor = g_pressureProfiler.running ? packColor565(255, 36, 28) : accent;
+    drawPressureProfilerGraph(canvas, graph, visibleStartMs, visibleEndMs, traceColor, accent, bg, grid);
+
+    const int16_t centerX = static_cast<int16_t>(layout.width / 2);
+    const uint16_t current = g_pressureProfiler.currentCentiBar;
+    const String value = pressureBarLabel(current);
+    const RemoteTextStyle valueStyle = isLargeCanvas() ? RemoteTextStyle::Large : RemoteTextStyle::Medium;
     const String peak = pressureBarLabel(g_pressureProfiler.peakCentiBar);
-    const String footer = String("PK ") + peak +
-                          "  " + (remote_pressure_ble_connected()
-                                      ? (remote_pressure_ble_streaming() ? "BLE*" : "BLE")
-                                      : "BLE-");
-    drawFooter(canvas,
-               layout,
-               g_pressureProfiler.running ? footer
-                                          : (app.toastUntil > millis() ? upperText(app.toast)
-                                                                      : String("SENSE ") +
-                                                                            pressureBarLabel(remote_config::kPressureProfilerSenseCentiBar)));
+    const String sense = pressureBarLabel(remote_config::kPressureProfilerSenseCentiBar);
+    const String ble = remote_pressure_ble_connected()
+                           ? (remote_pressure_ble_streaming() ? "BC*" : "BC")
+                           : "BC";
+    const uint16_t bleColor = remote_pressure_ble_connected()
+                                  ? (remote_pressure_ble_streaming()
+                                         ? packColor565(120, 255, 166)
+                                         : packColor565(78, 238, 126))
+                                  : blendColor565(bg, kColorMuted, 0.26f);
+    if(useRoundNavigation()) {
+        const String topReadout = value + " BAR";
+        canvas.drawCenteredText(fitTextToWidth(topReadout,
+                                               static_cast<int16_t>(layout.width / 2),
+                                               RemoteTextStyle::Small,
+                                               0),
+                                centerX,
+                                static_cast<int16_t>(layout.pad + 20),
+                                RemoteTextStyle::Small,
+                                blendColor565(accent, bg, 0.24f),
+                                bg);
+        canvas.drawCenteredText(state,
+                                centerX,
+                                static_cast<int16_t>(layout.pad + 42),
+                                tinyTextStyle(),
+                                g_pressureProfiler.running ? labelColor : dimLabel,
+                                bg);
+
+        const int16_t bottomY = min<int16_t>(
+            static_cast<int16_t>(layout.height - layout.pad - 44),
+            static_cast<int16_t>(graph.y + graph.h + 56));
+        const String middle = app.toastUntil > millis() ? upperText(app.toast) : String("S ") + sense;
+        canvas.drawCenteredText(String("PK ") + peak,
+                                static_cast<int16_t>(centerX - graph.w / 4),
+                                bottomY,
+                                tinyTextStyle(),
+                                dimLabel,
+                                bg);
+        canvas.drawCenteredText(middle,
+                                centerX,
+                                bottomY,
+                                tinyTextStyle(),
+                                dimLabel,
+                                bg);
+        canvas.drawCenteredText(ble,
+                                static_cast<int16_t>(centerX + graph.w / 4),
+                                bottomY,
+                                tinyTextStyle(),
+                                bleColor,
+                                bg);
+    } else {
+        canvas.drawTextTopLeft(fitTextToWidth(value,
+                                              static_cast<int16_t>(graph.w / 2),
+                                              valueStyle,
+                                              0),
+                               static_cast<int16_t>(layout.pad + 2),
+                               static_cast<int16_t>(layout.pad + 2),
+                               valueStyle,
+                               labelColor,
+                               bg);
+        canvas.drawTextTopLeft("BAR",
+                               static_cast<int16_t>(layout.pad + 4),
+                               static_cast<int16_t>(layout.pad + (isLargeCanvas() ? 34 : 24)),
+                               tinyTextStyle(),
+                               dimLabel,
+                               bg);
+        canvas.drawCenteredText(state,
+                                centerX,
+                                static_cast<int16_t>(layout.pad + 12),
+                                RemoteTextStyle::Small,
+                                g_pressureProfiler.running ? labelColor : dimLabel,
+                                bg);
+
+        const String footer = g_pressureProfiler.running
+                                  ? String("PK ") + peak + "  " + ble
+                                  : (app.toastUntil > millis() ? upperText(app.toast) : String("SENSE ") + sense);
+        canvas.drawCenteredText(fitTextToWidth(footer,
+                                               static_cast<int16_t>(layout.width - layout.pad * 4),
+                                               tinyTextStyle(),
+                                               0),
+                                centerX,
+                                static_cast<int16_t>(layout.height - layout.pad - 12),
+                                tinyTextStyle(),
+                                dimLabel,
+                                bg);
+    }
+    drawBatteryIndicator(canvas, layout, bg);
 }
 
 void drawMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title) {
@@ -5458,7 +6238,9 @@ void redrawUi() {
     RemoteCanvas& canvas = remote_board_canvas();
     const Layout layout = buildLayout();
 
-    if(app.screen == Screen::Home) {
+    if(app.dockClockActive) {
+        drawDockClock(canvas, layout);
+    } else if(app.screen == Screen::Home) {
         drawHome(canvas, layout);
     } else if(app.screen == Screen::Profiler) {
         drawPressureProfiler(canvas, layout);
@@ -7063,6 +7845,7 @@ void setScreen(Screen screen) {
         return;
     }
 
+    exitDockClock();
     const Screen previousScreen = app.screen;
     app.screen = screen;
     app.menuRollOffset = 0.0f;
@@ -7308,6 +8091,9 @@ bool idleSleepAllowed() {
         return false;
     }
     if(kDisableTransportPerfTest) {
+        return false;
+    }
+    if(app.battery.usbPresent) {
         return false;
     }
     if(app.editing || app.targetDirty || isRunningState() ||
@@ -8947,6 +9733,19 @@ void remote_app_loop() {
         input.dialDelta != 0 || input.primaryPressed || input.primaryLongPress || input.primaryShortPress ||
         input.secondaryPressed || input.secondaryLongPress || input.secondaryShortPress ||
         input.touch.pressed || input.touch.justPressed || input.touch.justReleased;
+    if(app.dockClockActive && hasControlInput) {
+        exitDockClock();
+        markUserActivity(now);
+        app.lastControlActivityAt = now;
+        input.dialDelta = 0;
+        input.primaryPressed = false;
+        input.primaryShortPress = false;
+        input.primaryLongPress = false;
+        input.secondaryPressed = false;
+        input.secondaryShortPress = false;
+        input.secondaryLongPress = false;
+        input.touch = {};
+    }
     if(hasControlInput) {
         app.lastControlActivityAt = now;
         app.motionHomeCandidateAt = 0;
@@ -8960,11 +9759,11 @@ void remote_app_loop() {
        input.primaryLongPress || input.primaryShortPress ||
        input.secondaryPressed || input.secondaryLongPress || input.secondaryShortPress ||
        input.touch.pressed || input.touch.justPressed || input.touch.justReleased) {
-        markUserActivity();
+        markUserActivity(now);
     }
 
     if(input.motionDetected && handleMotionHomeGesture(now)) {
-        markUserActivity();
+        markUserActivity(now);
         input.dialDelta = 0;
         input.primaryPressed = false;
         input.primaryShortPress = false;
@@ -9004,6 +9803,8 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("heartbeat", sectionStartUs, loopStartUs, input);
     servicePressureProfiler(now);
     sectionStartUs = traceLoopStep("pressure", sectionStartUs, loopStartUs, input);
+    serviceDockClock(now);
+    sectionStartUs = traceLoopStep("dock_clock", sectionStartUs, loopStartUs, input);
     const bool yieldTransport = shouldYieldTransportToUi();
     if(!kDisableTransportPerfTest && !yieldTransport) {
         const uint32_t transportServiceInterval = currentTransportServiceIntervalMs();
