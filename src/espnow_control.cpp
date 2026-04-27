@@ -36,6 +36,7 @@ struct LatestEspNowEvent {
 QueueHandle_t espnowQueue = nullptr;
 bool espnowActive = false;
 bool espnowCoexistActive = false;
+volatile bool espnowWifiClientActive = false;
 uint8_t espnowChannelValue = default_espnow_channel;
 wifi_interface_t espnowInterface = WIFI_IF_STA;
 unsigned long lastRxAt = 0;
@@ -202,6 +203,9 @@ void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, 
     if(espnowQueue == nullptr || data == nullptr || data_len <= 0) {
         return;
     }
+    if(espnowWifiClientActive) {
+        return;
+    }
 
     EspNowEvent event = {};
     const uint8_t* mac_addr = recv_info != nullptr ? recv_info->src_addr : nullptr;
@@ -243,14 +247,41 @@ bool ensurePeer(const uint8_t* mac_addr) {
         return true;
     }
 
-    esp_now_peer_info_t peer = {};
-    memcpy(peer.peer_addr, mac_addr, sizeof(peer.peer_addr));
-    // Channel 0 tracks the current WiFi channel, which keeps ESP-NOW usable
-    // when AP+STA coexistence moves the radio to a home-router channel.
-    peer.channel = 0;
-    peer.ifidx = espnowInterface;
-    peer.encrypt = false;
-    return esp_now_add_peer(&peer) == ESP_OK;
+    auto addPeerOnInterface = [&](wifi_interface_t interface) -> esp_err_t {
+        esp_now_peer_info_t peer = {};
+        memcpy(peer.peer_addr, mac_addr, sizeof(peer.peer_addr));
+        // Channel 0 tracks the current WiFi channel, which keeps ESP-NOW usable
+        // when AP+STA coexistence moves the radio to a home-router channel.
+        peer.channel = 0;
+        peer.ifidx = interface;
+        peer.encrypt = false;
+        return esp_now_add_peer(&peer);
+    };
+
+    const wifi_interface_t preferred = espnowInterface;
+    esp_err_t err = addPeerOnInterface(preferred);
+    if(err == ESP_OK || err == ESP_ERR_ESPNOW_EXIST) {
+        return true;
+    }
+
+    const wifi_interface_t fallbacks[] = {WIFI_IF_STA, WIFI_IF_AP};
+    for(wifi_interface_t fallback : fallbacks) {
+        if(fallback == preferred) {
+            continue;
+        }
+        err = addPeerOnInterface(fallback);
+        if(err == ESP_OK || err == ESP_ERR_ESPNOW_EXIST) {
+            espnowInterface = fallback;
+            Serial.printf("[espnow] peer_if_fallback=%s\n",
+                          fallback == WIFI_IF_AP ? "AP" : "STA");
+            return true;
+        }
+    }
+
+    Serial.printf("[espnow] peer_setup_err=0x%x if=%s\n",
+                  static_cast<unsigned>(err),
+                  preferred == WIFI_IF_AP ? "AP" : "STA");
+    return false;
 }
 
 bool sendFrame(const uint8_t* mac_addr, const String& frame) {
@@ -262,7 +293,11 @@ bool sendFrame(const uint8_t* mac_addr, const String& frame) {
         return false;
     }
     if(!ensurePeer(mac_addr)) {
-        Serial.println("[espnow] peer setup failed");
+        static unsigned long lastPeerSetupLogAt = 0;
+        if(millis() - lastPeerSetupLogAt > 5000UL) {
+            lastPeerSetupLogAt = millis();
+            Serial.println("[espnow] peer setup deferred");
+        }
         return false;
     }
     const uint8_t* payload = reinterpret_cast<const uint8_t*>(frame.c_str());
@@ -321,6 +356,7 @@ bool espnow_control_start(bool coexistWithWifi) {
     lastCommandRxAt = 0;
     rxCount = 0;
     lastCommand[0] = '\0';
+    espnowWifiClientActive = false;
     espnowActive = true;
     espnowCoexistActive = coexistWithWifi;
     Serial.printf("[espnow] started channel=%u modem_sleep=%s coexist=%s\n",
@@ -340,9 +376,12 @@ void espnow_control_stop() {
     if(espnowQueue != nullptr) {
         xQueueReset(espnowQueue);
     }
-    WiFi.mode(WIFI_MODE_NULL);
+    if(!espnowCoexistActive) {
+        WiFi.mode(WIFI_MODE_NULL);
+    }
     espnowActive = false;
     espnowCoexistActive = false;
+    espnowWifiClientActive = false;
     Serial.println("[espnow] stopped");
 }
 
@@ -352,6 +391,10 @@ void espnow_control_poll() {
     }
 
     refreshCoexistChannel();
+    if(espnowWifiClientActive) {
+        xQueueReset(espnowQueue);
+        return;
+    }
 
     EspNowEvent event = {};
     const uint8_t queueBudget = controller_is_menu_state(state) ? 1 : ESPNOW_RX_QUEUE_LEN;
@@ -383,8 +426,23 @@ bool espnow_control_broadcast_wifi_config(const String& ssid, const String& pass
     return ok;
 }
 
+void espnow_control_set_wifi_client_active(bool active) {
+    if(espnowWifiClientActive == active) {
+        return;
+    }
+    espnowWifiClientActive = active;
+    if(active && espnowQueue != nullptr) {
+        xQueueReset(espnowQueue);
+    }
+    Serial.printf("[espnow] wifi_client_hold=%s\n", active ? "on" : "off");
+}
+
 bool espnow_control_is_active() {
     return espnowActive;
+}
+
+bool espnow_control_is_wifi_client_active() {
+    return espnowWifiClientActive;
 }
 
 uint8_t espnow_control_channel() {
@@ -406,6 +464,9 @@ String espnow_control_status_text() {
 
     String out = "ESP-NOW ch";
     out += String(static_cast<unsigned>(espnowChannelValue));
+    if(espnowWifiClientActive) {
+        out += " hold";
+    }
     if(lastRxAt > 0) {
         out += " rx ";
         out += String(static_cast<unsigned long>(rxCount));

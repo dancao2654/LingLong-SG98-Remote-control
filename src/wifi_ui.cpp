@@ -1,14 +1,22 @@
 #include "wifi_ui.h"
 
+#include <cstring>
+
 #include <DNSServer.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <WiFi.h>
+#include <esp_idf_version.h>
+#include <esp_interface.h>
+#include <esp_netif.h>
 
 #include "diag_console.h"
 #include "espnow_control.h"
+#include "gbw.h"
 #include "remote_link.h"
 #include "remote_ws.h"
+
+esp_netif_t* get_esp_interface_netif(esp_interface_t interface);
 
 namespace {
 WebServer server(80);
@@ -27,11 +35,49 @@ bool apRunning = false;
 bool dnsRunning = false;
 bool serverStarted = false;
 unsigned long lastWebActivityAt = 0;
+bool pendingStaConnect = false;
+bool pendingStaConfigBroadcast = false;
+unsigned long pendingStaConnectAt = 0;
+bool pendingHttpServiceRefresh = false;
+unsigned long pendingHttpServiceRefreshAt = 0;
+bool captiveSetupComplete = false;
+uint32_t captiveProbeHits = 0;
+uint32_t captiveApiHits = 0;
+uint32_t captiveSetupHits = 0;
+uint32_t captiveRedirectHits = 0;
+uint32_t rootHits = 0;
+uint32_t controlHits = 0;
+uint32_t wifiApiHits = 0;
+uint32_t wifiScanDeferredHits = 0;
+uint32_t apConnectEvents = 0;
+uint32_t apDisconnectEvents = 0;
+uint32_t apIpAssignEvents = 0;
+uint32_t apDhcpWatchdogRestarts = 0;
+unsigned long lastApClientConnectAt = 0;
+unsigned long lastApClientIpAt = 0;
+unsigned long lastApRestartAt = 0;
+String lastCaptivePath;
+static char captivePortalApiUri[80] = {};
+char lastApClientMac[18] = "";
+char lastApLeaseIp[16] = "";
+char lastApEvent[16] = "";
+bool apClientLeaseSeen = false;
 
 constexpr uint32_t STA_RETRY_MS = 15000;
 constexpr uint32_t WEB_ACTIVITY_HOLD_MS = 120000;
+constexpr uint32_t STA_CONNECT_AFTER_HTTP_ACK_MS = 1200;
+constexpr uint32_t AP_DHCP_LEASE_WATCHDOG_MS = 8000;
+constexpr uint32_t AP_RESTART_COOLDOWN_MS = 15000;
+constexpr uint32_t HTTP_SERVICE_REFRESH_AFTER_CLIENT_MS = 120;
+constexpr uint32_t REMOTE_WS_MIN_FREE_HEAP = 30000;
+constexpr uint16_t WIFI_SCAN_MAX_MS_PER_CHANNEL = 160;
 constexpr uint16_t DNS_PORT = 53;
+constexpr int WIFI_SCAN_DEFERRED = -4;
 constexpr bool kDisableWifiModemSleepForTesting = true;
+const IPAddress kApIp(192, 168, 4, 1);
+const IPAddress kApSubnet(255, 255, 255, 0);
+const IPAddress kApFirstLease(192, 168, 4, 2);
+bool apEventsRegistered = false;
 
 const char kPage[] PROGMEM = R"HTML(
 <!doctype html>
@@ -544,7 +590,9 @@ const char kPage[] PROGMEM = R"HTML(
       state.scan = scan;
       el('scanStatus').textContent = scan.scanning
         ? 'Scanning nearby networks...'
-        : `${scan.count || 0} network${scan.count === 1 ? '' : 's'} found`;
+        : scan.deferred
+          ? 'Scan paused while setup client is connected. Enter SSID manually.'
+          : `${scan.count || 0} network${scan.count === 1 ? '' : 's'} found`;
       const results = el('scanResults');
       const networks = scan.networks || [];
       results.innerHTML = networks.length
@@ -662,7 +710,15 @@ const char kPage[] PROGMEM = R"HTML(
       renderStatusGrid(snapshot.status);
       renderLive(snapshot.status);
       renderWifi(snapshot.wifi);
-      if (state.pendingWifiSave && snapshot.wifi?.staConnected && snapshot.wifi?.staIp) {
+      if (state.pendingWifiSave && snapshot.wifi?.staConnected && !snapshot.wifi?.captiveComplete && snapshot.wifi?.staIp) {
+        showSetupOverlay(
+          'Syncing Link',
+          'Home Wi-Fi is online. Waiting for ESP-NOW and the first data sync before closing setup.',
+          `http://${snapshot.wifi.staIp}/`,
+          false
+        );
+      }
+      if (state.pendingWifiSave && snapshot.wifi?.captiveComplete && snapshot.wifi?.staIp) {
         state.pendingWifiSave = false;
         state.wizard.choice = '';
         showSetupOverlay(
@@ -801,7 +857,6 @@ const char kPage[] PROGMEM = R"HTML(
     renderView();
     renderPages();
     refresh().catch((error) => log(`[startup] ${error.message}`));
-    setTimeout(() => refreshScan(true).catch((error) => log(`[scan] ${error.message}`)), 2200);
     state.pollTimer = setInterval(() => refresh().catch((error) => log(`[poll] ${error.message}`)), 1200);
   </script>
 </body>
@@ -867,7 +922,7 @@ const char kWifiSetupPage[] PROGMEM = R"HTML(
         <button id="apOnlyButton" class="secondary">Use AP Only</button>
         <button id="forgetButton" class="secondary">Forget Saved</button>
         <button id="scanButton" class="secondary">Scan Networks</button>
-        <a class="button secondary" href="/control">Control UI</a>
+        <a class="button secondary" href="http://192.168.4.1/control">Control UI</a>
       </div>
       <div id="scanState" class="hint">No scan yet.</div>
       <div id="scanResults" class="scan-list"></div>
@@ -876,18 +931,26 @@ const char kWifiSetupPage[] PROGMEM = R"HTML(
   <script>
     const el=(id)=>document.getElementById(id);
     let formEditUntil=0;
+    let captiveCloseArmed=false;
     function markFormEditing(ms=6000){formEditUntil=Date.now()+ms}
     function formEditingActive(){const active=document.activeElement;return Date.now()<formEditUntil||active===el('ssid')||active===el('password')}
+    function closeCaptiveWhenDone(){if(captiveCloseArmed)return;captiveCloseArmed=true;setTimeout(()=>{window.location.assign('http://captive.apple.com/hotspot-detect.html')},1200)}
     async function getJson(url){const response=await fetch(url,{cache:'no-store'});if(!response.ok)throw new Error(`${response.status} ${response.statusText}`);return response.json()}
     async function postForm(url,body){const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:new URLSearchParams(body)});if(!response.ok)throw new Error(`${response.status} ${response.statusText}`);return response.json()}
     function renderStatus(status){
       el('apInfo').textContent=`${status.apSsid} @ ${status.apIp}`;
       el('staInfo').textContent=status.staConnected?`${status.staSsid} @ ${status.staIp}`:(status.staEnabled?`${status.staSsid} (${status.staStatus})`:'Not configured');
-      el('statusInfo').textContent=status.staConnected?`Connected: http://${status.staIp}/`:(status.setupDone?'Saved, waiting for LAN link':'Onboarding');
+      el('statusInfo').textContent=status.captiveComplete?'Ready. Closing setup...':(status.staConnected?`Connected: http://${status.staIp}/`:(status.setupDone?'Saved, waiting for LAN link':'Onboarding'));
+      if(status.captiveComplete)closeCaptiveWhenDone();
       if(!formEditingActive())el('ssid').value=status.staSsid||'';
     }
+    let scanRetryTimer=0;
+    function scheduleScanRetry(delay=1700){if(scanRetryTimer)clearTimeout(scanRetryTimer);scanRetryTimer=setTimeout(()=>refreshScan(false),delay)}
     function renderScan(scan){
-      el('scanState').textContent=scan.scanning?'Scanning nearby networks...':`${scan.count||0} network${scan.count===1?'':'s'} found`;
+      if(scan.scanning)el('scanState').textContent='Scanning nearby networks...';
+      else if(scan.deferred)el('scanState').textContent='Scan paused while setup client is connected. Enter SSID manually.';
+      else if(scan.code<0)el('scanState').textContent=`Scan failed (${scan.code}). Tap Scan Networks again.`;
+      else el('scanState').textContent=`${scan.count||0} network${scan.count===1?'':'s'} found`;
       const results=el('scanResults');
       const networks=scan.networks||[];
       results.innerHTML=networks.length?networks.map((net)=>`
@@ -899,10 +962,10 @@ const char kWifiSetupPage[] PROGMEM = R"HTML(
       results.querySelectorAll('[data-ssid]').forEach((button)=>{
         button.onclick=()=>{el('ssid').value=button.dataset.ssid||'';el('password').focus()}
       });
-      if(scan.scanning)setTimeout(()=>refreshScan(false).catch(()=>{}),1400);
+      if(scan.scanning)scheduleScanRetry();
     }
     async function refreshStatus(){renderStatus(await getJson('/api/wifi'))}
-    async function refreshScan(force){renderScan(await getJson(`/api/wifi_scan${force?'?force=1':''}`))}
+    async function refreshScan(force){try{renderScan(await getJson(`/api/wifi_scan${force?'?force=1':''}`))}catch(error){el('scanState').textContent='Scanning... reconnecting to setup page';scheduleScanRetry(2200)}}
     async function saveWifi(){markFormEditing(0);await postForm('/api/wifi',{action:'save',ssid:el('ssid').value||'',password:el('password').value||''});el('password').value='';await refreshStatus()}
     async function useApOnly(){markFormEditing(0);await postForm('/api/wifi',{action:'ap_only'});el('password').value='';await refreshStatus()}
     async function forgetWifi(){markFormEditing(0);await postForm('/api/wifi',{action:'forget'});el('ssid').value='';el('password').value='';await refreshStatus()}
@@ -910,13 +973,16 @@ const char kWifiSetupPage[] PROGMEM = R"HTML(
     el('saveButton').onclick=()=>saveWifi().catch(()=>{});
     el('apOnlyButton').onclick=()=>useApOnly().catch(()=>{});
     el('forgetButton').onclick=()=>forgetWifi().catch(()=>{});
-    el('scanButton').onclick=()=>refreshScan(true).catch(()=>{});
+    el('scanButton').onclick=()=>refreshScan(true);
     refreshStatus().catch(()=>{});
-    refreshScan(true).catch(()=>{});
     setInterval(()=>refreshStatus().catch(()=>{}),1500);
   </script>
 </body>
 </html>
+)HTML";
+
+const char kWifiSetupPageLite[] = R"HTML(
+<!doctype html><meta name=viewport content=width=device-width><style>body{background:#07111b;color:#eef;font:16px system-ui;padding:18px}input,button{width:100%;min-height:42px;margin:6px 0;font:inherit}button{background:#68c7ff}.n{background:#162536;color:#eef;text-align:left}#r{color:#9fb2c5}</style><h2>SG98 WiFi</h2><iframe name=x hidden></iframe><form id=f method=post action=/api/wifi target=x onsubmit="r.textContent='Saved. Connecting...'"><input type=hidden name=action value=save><input name=ssid placeholder=SSID><input name=password type=password placeholder=Password><button>Save + Connect</button></form><button id=b>Scan SSIDs</button><div id=r></div><script>async function q(v){r.textContent='Scanning...';try{let j=await(await fetch('/api/wifi_scan'+(v?'?force=1':''))).json();if(j.scanning)return setTimeout(q,900);let a=j.networks||[];r.innerHTML=a.length?a.map(n=>'<button class=n>'+n.ssid+'</button>').join(''):'No SSIDs found';document.querySelectorAll('.n').forEach(e=>e.onclick=()=>f.ssid.value=e.textContent)}catch(e){r.textContent='Scan failed'}}b.onclick=()=>q(1)</script>
 )HTML";
 
 String jsonEscape(const String& value) {
@@ -949,7 +1015,8 @@ String wifiStatusText() {
 }
 
 String apIpString() {
-    return WiFi.softAPIP().toString();
+    const IPAddress apIp = WiFi.softAPIP();
+    return apIp[0] != 0 ? apIp.toString() : kApIp.toString();
 }
 
 String staIpString() {
@@ -983,27 +1050,93 @@ void beginStaConnect(bool forceRetry = false) {
     }
 
     lastStaAttemptAt = millis();
+    WiFi.mode(apRunning ? WIFI_AP_STA : WIFI_STA);
+    WiFi.setSleep(!kDisableWifiModemSleepForTesting);
     WiFi.begin(staSsid.c_str(), staPassword.c_str());
 }
 
+void disconnectSta(bool eraseSdkConfig) {
+    WiFi.setAutoReconnect(false);
+    const wifi_mode_t mode = WiFi.getMode();
+    if(mode == WIFI_MODE_NULL || mode == WIFI_AP) {
+        return;
+    }
+    WiFi.disconnect(false, eraseSdkConfig);
+}
+
 void stopSta() {
-    WiFi.disconnect(false, false);
+    disconnectSta(false);
+}
+
+void forgetStaConnection() {
+    pendingStaConnect = false;
+    pendingStaConfigBroadcast = false;
+    pendingHttpServiceRefresh = false;
+    lastStaAttemptAt = 0;
+    disconnectSta(true);
+}
+
+void scheduleStaConnectAfterAck(bool broadcastConfig) {
+    pendingStaConnect = true;
+    pendingStaConfigBroadcast = broadcastConfig;
+    pendingStaConnectAt = millis() + STA_CONNECT_AFTER_HTTP_ACK_MS;
+    lastStaAttemptAt = 0;
+}
+
+bool timeReached(unsigned long dueAt) {
+    return static_cast<int32_t>(millis() - dueAt) >= 0;
+}
+
+void noteCaptiveRequest(const char* label) {
+    lastCaptivePath = label != nullptr ? label : "";
+    Serial.printf("[wifi] captive_req=%s uri=%s host=%s\n",
+                  lastCaptivePath.c_str(),
+                  server.uri().c_str(),
+                  server.hostHeader().c_str());
 }
 
 String wifiJson() {
     String out;
-    out.reserve(320);
+    out.reserve(512);
     out += '{';
     out += "\"apSsid\":\"";
     out += jsonEscape(apSsid);
     out += "\",\"apIp\":\"";
     out += jsonEscape(apIpString());
-    out += "\",\"apStations\":";
+    out += "\",\"active\":";
+    out += (wifiUiActive ? "true" : "false");
+    out += ",\"apRunning\":";
+    out += (apRunning ? "true" : "false");
+    out += ",\"dnsRunning\":";
+    out += (dnsRunning ? "true" : "false");
+    out += ",\"serverStarted\":";
+    out += (serverStarted ? "true" : "false");
+    out += ",\"apStations\":";
     out += String(WiFi.softAPgetStationNum());
+    out += ",\"apConnectEvents\":";
+    out += String(apConnectEvents);
+    out += ",\"apDisconnectEvents\":";
+    out += String(apDisconnectEvents);
+    out += ",\"apIpAssignEvents\":";
+    out += String(apIpAssignEvents);
+    out += ",\"apDhcpWatchdogRestarts\":";
+    out += String(apDhcpWatchdogRestarts);
+    out += ",\"lastApClientMac\":\"";
+    out += jsonEscape(String(lastApClientMac));
+    out += "\",\"lastApLeaseIp\":\"";
+    out += jsonEscape(String(lastApLeaseIp));
+    out += "\",\"lastApEvent\":\"";
+    out += jsonEscape(String(lastApEvent));
+    out += "\",\"apClientLeaseSeen\":";
+    out += (apClientLeaseSeen ? "true" : "false");
+    out += ",\"espnowHold\":";
+    out += (espnow_control_is_wifi_client_active() ? "true" : "false");
     out += ",\"staEnabled\":";
     out += (staEnabled ? "true" : "false");
     out += ",\"setupDone\":";
     out += (setupDone ? "true" : "false");
+    out += ",\"captiveComplete\":";
+    out += (captiveSetupComplete ? "true" : "false");
     out += ",\"staSsid\":\"";
     out += jsonEscape(staSsid);
     out += "\",\"staConnected\":";
@@ -1012,8 +1145,45 @@ String wifiJson() {
     out += jsonEscape(staIpString());
     out += "\",\"staStatus\":\"";
     out += jsonEscape(wifiStatusText());
-    out += "\"}";
+    out += "\",\"captiveProbeHits\":";
+    out += String(captiveProbeHits);
+    out += ",\"captiveApiHits\":";
+    out += String(captiveApiHits);
+    out += ",\"captiveSetupHits\":";
+    out += String(captiveSetupHits);
+    out += ",\"captiveRedirectHits\":";
+    out += String(captiveRedirectHits);
+    out += ",\"rootHits\":";
+    out += String(rootHits);
+    out += ",\"controlHits\":";
+    out += String(controlHits);
+    out += ",\"wifiApiHits\":";
+    out += String(wifiApiHits);
+    out += ",\"wifiScanDeferredHits\":";
+    out += String(wifiScanDeferredHits);
+    out += ",\"lastCaptivePath\":\"";
+    out += jsonEscape(lastCaptivePath);
+    out += "\",\"freeHeap\":";
+    out += String(ESP.getFreeHeap());
+    out += ",\"minFreeHeap\":";
+    out += String(ESP.getMinFreeHeap());
+    out += "}";
     return out;
+}
+
+void formatMac(const uint8_t* mac, char* out, size_t outLen) {
+    if(mac == nullptr || out == nullptr || outLen == 0) {
+        return;
+    }
+    snprintf(out,
+             outLen,
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0],
+             mac[1],
+             mac[2],
+             mac[3],
+             mac[4],
+             mac[5]);
 }
 
 const char* authModeText(uint8_t authMode) {
@@ -1032,6 +1202,7 @@ const char* authModeText(uint8_t authMode) {
 
 int startWifiScan(bool force) {
     int scanState = WiFi.scanComplete();
+    const bool apClientActive = apRunning && WiFi.softAPgetStationNum() > 0;
     if(force && scanState >= 0) {
         WiFi.scanDelete();
         scanState = WiFi.scanComplete();
@@ -1039,19 +1210,155 @@ int startWifiScan(bool force) {
     if(scanState == WIFI_SCAN_RUNNING) {
         return scanState;
     }
+    if(apClientActive && !force) {
+        return scanState >= 0 ? scanState : WIFI_SCAN_DEFERRED;
+    }
     if(force || scanState < 0) {
-        scanState = WiFi.scanNetworks(true, true, false, 300, 0);
-        if(scanState == WIFI_SCAN_RUNNING) {
-            return scanState;
+        if(apClientActive) {
+            ++wifiScanDeferredHits;
+            Serial.println("[wifi] scan_async ap_client_active");
         }
+        WiFi.mode(WIFI_AP_STA);
+        scanState = WiFi.scanNetworks(true, true, false, apClientActive ? 80 : WIFI_SCAN_MAX_MS_PER_CHANNEL, 0);
     }
     return scanState;
 }
 
+void ensureApEventLogging() {
+    if(apEventsRegistered) {
+        return;
+    }
+    WiFi.onEvent(
+        [](WiFiEvent_t, WiFiEventInfo_t info) {
+            const auto& event = info.wifi_ap_staconnected;
+            ++apConnectEvents;
+            lastApClientConnectAt = millis();
+            lastWebActivityAt = lastApClientConnectAt;
+            if(WiFi.softAPgetStationNum() <= 1) {
+                apClientLeaseSeen = false;
+            }
+            formatMac(event.mac, lastApClientMac, sizeof(lastApClientMac));
+            strncpy(lastApEvent, "connect", sizeof(lastApEvent) - 1);
+            lastApEvent[sizeof(lastApEvent) - 1] = '\0';
+            espnow_control_set_wifi_client_active(true);
+            Serial.printf("[wifi] ap_client_connect mac=%s aid=%u\n",
+                          lastApClientMac,
+                          static_cast<unsigned>(event.aid));
+        },
+        WiFiEvent_t::ARDUINO_EVENT_WIFI_AP_STACONNECTED);
+    WiFi.onEvent(
+        [](WiFiEvent_t, WiFiEventInfo_t info) {
+            const auto& event = info.wifi_ap_stadisconnected;
+            ++apDisconnectEvents;
+            formatMac(event.mac, lastApClientMac, sizeof(lastApClientMac));
+            strncpy(lastApEvent, "disconnect", sizeof(lastApEvent) - 1);
+            lastApEvent[sizeof(lastApEvent) - 1] = '\0';
+            if(WiFi.softAPgetStationNum() == 0) {
+                apClientLeaseSeen = false;
+                espnow_control_set_wifi_client_active(false);
+            }
+            Serial.printf("[wifi] ap_client_disconnect mac=%s aid=%u reason=%u\n",
+                          lastApClientMac,
+                          static_cast<unsigned>(event.aid),
+                          static_cast<unsigned>(event.reason));
+        },
+        WiFiEvent_t::ARDUINO_EVENT_WIFI_AP_STADISCONNECTED);
+    WiFi.onEvent(
+        [](WiFiEvent_t, WiFiEventInfo_t info) {
+            const auto& event = info.wifi_ap_staipassigned;
+            ++apIpAssignEvents;
+            lastApClientIpAt = millis();
+            lastWebActivityAt = lastApClientIpAt;
+            apClientLeaseSeen = true;
+            formatMac(event.mac, lastApClientMac, sizeof(lastApClientMac));
+            strncpy(lastApLeaseIp, IPAddress(event.ip.addr).toString().c_str(), sizeof(lastApLeaseIp) - 1);
+            lastApLeaseIp[sizeof(lastApLeaseIp) - 1] = '\0';
+            strncpy(lastApEvent, "lease", sizeof(lastApEvent) - 1);
+            lastApEvent[sizeof(lastApEvent) - 1] = '\0';
+            espnow_control_set_wifi_client_active(true);
+            Serial.printf("[wifi] dhcp_lease ip=%s mac=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                          lastApLeaseIp,
+                          event.mac[0],
+                          event.mac[1],
+                          event.mac[2],
+                          event.mac[3],
+                          event.mac[4],
+                          event.mac[5]);
+        },
+        WiFiEvent_t::ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED);
+    apEventsRegistered = true;
+}
+
 String wifiScanJson(bool force = false) {
     int scanState = startWifiScan(force);
-    if(scanState != WIFI_SCAN_RUNNING) {
+    if(scanState != WIFI_SCAN_RUNNING && scanState != WIFI_SCAN_DEFERRED) {
         scanState = WiFi.scanComplete();
+    }
+
+    constexpr uint8_t MAX_WIFI_SCAN_RESULTS = 12;
+    struct ScanEntry {
+        int index = -1;
+        int rssi = -999;
+        String ssid;
+    };
+    ScanEntry entries[MAX_WIFI_SCAN_RESULTS];
+    uint8_t networkCount = 0;
+
+    if(scanState > 0) {
+        for(int i = 0; i < scanState; ++i) {
+            String ssid = WiFi.SSID(i);
+            ssid.trim();
+            if(ssid.isEmpty()) {
+                continue;
+            }
+
+            const int rssi = WiFi.RSSI(i);
+            int existing = -1;
+            for(uint8_t j = 0; j < networkCount; ++j) {
+                if(entries[j].ssid == ssid) {
+                    existing = j;
+                    break;
+                }
+            }
+
+            if(existing >= 0) {
+                if(rssi > entries[existing].rssi) {
+                    entries[existing].index = i;
+                    entries[existing].rssi = rssi;
+                }
+                continue;
+            }
+
+            if(networkCount < MAX_WIFI_SCAN_RESULTS) {
+                entries[networkCount].index = i;
+                entries[networkCount].rssi = rssi;
+                entries[networkCount].ssid = ssid;
+                ++networkCount;
+                continue;
+            }
+
+            uint8_t weakest = 0;
+            for(uint8_t j = 1; j < networkCount; ++j) {
+                if(entries[j].rssi < entries[weakest].rssi) {
+                    weakest = j;
+                }
+            }
+            if(rssi > entries[weakest].rssi) {
+                entries[weakest].index = i;
+                entries[weakest].rssi = rssi;
+                entries[weakest].ssid = ssid;
+            }
+        }
+
+        for(uint8_t i = 0; i < networkCount; ++i) {
+            for(uint8_t j = i + 1; j < networkCount; ++j) {
+                if(entries[j].rssi > entries[i].rssi) {
+                    const ScanEntry tmp = entries[i];
+                    entries[i] = entries[j];
+                    entries[j] = tmp;
+                }
+            }
+        }
     }
 
     String out;
@@ -1059,22 +1366,30 @@ String wifiScanJson(bool force = false) {
     out += '{';
     out += "\"scanning\":";
     out += (scanState == WIFI_SCAN_RUNNING ? "true" : "false");
+    out += ",\"deferred\":";
+    out += (scanState == WIFI_SCAN_DEFERRED ? "true" : "false");
+    out += ",\"status\":\"";
+    out += (scanState == WIFI_SCAN_RUNNING ? "running" :
+            (scanState == WIFI_SCAN_DEFERRED ? "deferred" :
+             (scanState >= 0 ? "complete" : "failed")));
+    out += "\",\"code\":";
+    out += String(scanState);
     out += ",\"count\":";
-    out += (scanState > 0 ? String(scanState) : "0");
+    out += String(networkCount);
     out += ",\"networks\":[";
 
-    if(scanState > 0) {
-        for(int i = 0; i < scanState; ++i) {
+    if(networkCount > 0) {
+        for(uint8_t i = 0; i < networkCount; ++i) {
             if(i > 0) out += ',';
             out += '{';
             out += "\"ssid\":\"";
-            out += jsonEscape(WiFi.SSID(i));
+            out += jsonEscape(entries[i].ssid);
             out += "\",\"rssi\":";
-            out += String(WiFi.RSSI(i));
+            out += String(entries[i].rssi);
             out += ",\"channel\":";
-            out += String(WiFi.channel(i));
+            out += String(WiFi.channel(entries[i].index));
             out += ",\"auth\":\"";
-            out += authModeText(WiFi.encryptionType(i));
+            out += authModeText(WiFi.encryptionType(entries[i].index));
             out += "\"}";
         }
     }
@@ -1112,6 +1427,10 @@ void sendAck(bool ok, const String& message) {
 
 void noteWebActivity() {
     lastWebActivityAt = millis();
+    if(apRunning && WiFi.softAPgetStationNum() > 0) {
+        lastApClientIpAt = lastWebActivityAt;
+        apClientLeaseSeen = true;
+    }
 }
 
 void serveAppleSuccess() {
@@ -1130,29 +1449,114 @@ void serveAndroidSuccess() {
     server.send(204, "text/plain", "");
 }
 
+void serveEmptyIcon() {
+    noteWebActivity();
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(204, "image/x-icon", "");
+}
+
 void serveNcsiSuccess() {
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "text/plain", "Microsoft Connect Test");
 }
 
+bool shouldServeCaptivePortal();
+void serveWifiSetupPage();
+
+void serveCaptivePortalApi() {
+    ++captiveApiHits;
+    noteCaptiveRequest("api");
+    server.sendHeader("Cache-Control", "no-store");
+    if(!shouldServeCaptivePortal()) {
+        server.send(200, "application/captive+json", "{\"captive\":false}");
+        return;
+    }
+    server.send(200, "application/captive+json",
+                "{\"captive\":true,\"user-portal-url\":\"http://192.168.4.1/setup\","
+                "\"venue-info-url\":\"http://192.168.4.1/setup\"}");
+}
+
+bool writeHttpBodyWithRetry(const char* data, size_t length) {
+    WiFiClient client = server.client();
+    if(!client) {
+        return false;
+    }
+    client.setNoDelay(true);
+    size_t sent = 0;
+    unsigned long lastProgressAt = millis();
+    while(sent < length && (millis() - lastProgressAt) < 2500UL) {
+        const size_t remaining = length - sent;
+        const size_t chunk = remaining > 256 ? 256 : remaining;
+        const size_t written = client.write(reinterpret_cast<const uint8_t*>(data + sent), chunk);
+        if(written > 0) {
+            sent += written;
+            lastProgressAt = millis();
+            continue;
+        }
+        delay(3);
+        yield();
+    }
+    if(sent != length) {
+        Serial.printf("[wifi] setup_body_short sent=%u len=%u\n",
+                      static_cast<unsigned>(sent),
+                      static_cast<unsigned>(length));
+        return false;
+    }
+    return true;
+}
+
+void sendSetupHtml() {
+    const size_t setupPageLength = sizeof(kWifiSetupPageLite) - 1;
+    server.sendHeader("Cache-Control", "no-store");
+    server.setContentLength(setupPageLength);
+    server.send(200, "text/html; charset=utf-8", "");
+    server.setContentLength(CONTENT_LENGTH_NOT_SET);
+    (void)writeHttpBodyWithRetry(kWifiSetupPageLite, setupPageLength);
+}
+
 void servePortalPage() {
+    ++controlHits;
+    lastCaptivePath = "control";
+    Serial.printf("[wifi] http_req=control uri=%s host=%s\n", server.uri().c_str(), server.hostHeader().c_str());
     noteWebActivity();
+    if(shouldServeCaptivePortal()) {
+        serveWifiSetupPage();
+        return;
+    }
     server.sendHeader("Cache-Control", "no-store");
     server.send_P(200, "text/html; charset=utf-8", kPage);
 }
 
 void serveWifiSetupPage() {
+    ++captiveSetupHits;
+    lastCaptivePath = "setup";
+    Serial.printf("[wifi] http_req=setup uri=%s host=%s\n", server.uri().c_str(), server.hostHeader().c_str());
     noteWebActivity();
-    server.sendHeader("Cache-Control", "no-store");
-    server.send_P(200, "text/html; charset=utf-8", kWifiSetupPage);
+    sendSetupHtml();
 }
 
 bool shouldServeCaptivePortal() {
+    const bool staConnected = staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
+    if(captiveSetupComplete && setupDone && staConnected) {
+        return false;
+    }
+    if(apRunning) {
+        const IPAddress remoteIp = server.client().remoteIP();
+        const IPAddress apIp = WiFi.softAPIP();
+        if(remoteIp[0] == apIp[0] &&
+           remoteIp[1] == apIp[1] &&
+           remoteIp[2] == apIp[2]) {
+            return true;
+        }
+    }
     return !setupDone || !staEnabled || staSsid.isEmpty() ||
            !(WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
 }
 
 void serveRootPage() {
+    ++rootHits;
+    lastCaptivePath = "root";
+    Serial.printf("[wifi] http_req=root uri=%s host=%s\n", server.uri().c_str(), server.hostHeader().c_str());
     if(shouldServeCaptivePortal()) {
         serveWifiSetupPage();
         return;
@@ -1161,16 +1565,25 @@ void serveRootPage() {
 }
 
 void serveCaptivePortalPage() {
-    server.sendHeader("Cache-Control", "no-store");
-    server.send_P(200, "text/html; charset=utf-8", kWifiSetupPage);
+    sendSetupHtml();
+}
+
+void serveCaptiveSetupRedirect() {
+    ++captiveRedirectHits;
+    noteCaptiveRequest("setup");
+    serveWifiSetupPage();
+}
+
+void serveCaptiveProbePage() {
+    ++captiveProbeHits;
+    noteCaptiveRequest("probe");
+    serveCaptiveSuccess();
 }
 
 void serveCaptiveAwarePage() {
-    if(!shouldServeCaptivePortal()) {
-        serveCaptiveSuccess();
-        return;
-    }
-    serveCaptivePortalPage();
+    ++captiveProbeHits;
+    noteCaptiveRequest("aware");
+    serveCaptiveSuccess();
 }
 
 void handleStatus() {
@@ -1224,6 +1637,8 @@ void handleAction() {
 }
 
 void handleWifi() {
+    ++wifiApiHits;
+    lastCaptivePath = "api_wifi";
     noteWebActivity();
     const String action = server.arg("action");
     if(server.method() == HTTP_GET || action.isEmpty()) {
@@ -1236,13 +1651,14 @@ void handleWifi() {
         staPassword = server.arg("password");
         staEnabled = !staSsid.isEmpty();
         setupDone = staEnabled;
+        captiveSetupComplete = false;
+        pendingHttpServiceRefresh = false;
         saveStaConfig();
         if(staEnabled) {
-            beginStaConnect(true);
-            espnow_control_broadcast_wifi_config(staSsid, staPassword);
+            scheduleStaConnectAfterAck(true);
             sendAck(true, "saved and connecting");
         } else {
-            stopSta();
+            forgetStaConnection();
             sendAck(true, "cleared");
         }
         return;
@@ -1251,10 +1667,11 @@ void handleWifi() {
     if(action == "forget") {
         staEnabled = false;
         setupDone = false;
+        captiveSetupComplete = false;
         staSsid = "";
         staPassword = "";
         saveStaConfig();
-        stopSta();
+        forgetStaConnection();
         sendAck(true, "forgotten");
         return;
     }
@@ -1262,14 +1679,15 @@ void handleWifi() {
     if(action == "ap_only") {
         staEnabled = false;
         setupDone = true;
+        captiveSetupComplete = false;
         saveStaConfig();
-        stopSta();
+        forgetStaConnection();
         sendAck(true, "ap only");
         return;
     }
 
     if(action == "reconnect") {
-        beginStaConnect(true);
+        scheduleStaConnectAfterAck(false);
         sendAck(true, "reconnecting");
         return;
     }
@@ -1287,13 +1705,15 @@ void configureRoutes() {
     server.on("/control", HTTP_GET, servePortalPage);
     server.on("/hotspot-detect.html", HTTP_GET, serveCaptiveAwarePage);
     server.on("/library/test/success.html", HTTP_GET, serveCaptiveAwarePage);
-    server.on("/generate_204", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveAndroidSuccess(); });
-    server.on("/gen_204", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveAndroidSuccess(); });
-    server.on("/connecttest.txt", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveCaptiveSuccess(); });
+    server.on("/generate_204", HTTP_GET, serveAndroidSuccess);
+    server.on("/gen_204", HTTP_GET, serveAndroidSuccess);
+    server.on("/connecttest.txt", HTTP_GET, serveCaptiveSuccess);
     server.on("/redirect", HTTP_GET, serveCaptiveAwarePage);
     server.on("/canonical.html", HTTP_GET, serveCaptiveAwarePage);
-    server.on("/ncsi.txt", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveNcsiSuccess(); });
-    server.on("/success.txt", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveCaptiveSuccess(); });
+    server.on("/ncsi.txt", HTTP_GET, serveNcsiSuccess);
+    server.on("/success.txt", HTTP_GET, serveCaptiveSuccess);
+    server.on("/favicon.ico", HTTP_GET, serveEmptyIcon);
+    server.on("/.well-known/captive-portal", HTTP_GET, serveCaptivePortalApi);
     server.on("/api/status", HTTP_GET, handleStatus);
     server.on("/api/snapshot", HTTP_GET, handleSnapshot);
     server.on("/api/set", HTTP_POST, handleSet);
@@ -1301,7 +1721,10 @@ void configureRoutes() {
     server.on("/api/setweight", HTTP_POST, handleSetWeight);
     server.on("/api/action", HTTP_POST, handleAction);
     server.on("/api/wifi", HTTP_ANY, handleWifi);
-    server.on("/api/wifi_scan", HTTP_GET, []() { sendJson(wifiScanJson(server.hasArg("force"))); });
+    server.on("/api/wifi_scan", HTTP_GET, []() {
+        noteWebActivity();
+        sendJson(wifiScanJson(server.hasArg("force")));
+    });
     server.onNotFound([]() {
         if(server.uri().startsWith("/api/")) {
             sendAck(false, "not found");
@@ -1312,12 +1735,61 @@ void configureRoutes() {
     wifiUiRoutesConfigured = true;
 }
 
+void configureSoftApNetwork() {
+    if(!WiFi.softAPConfig(kApIp, kApIp, kApSubnet, kApFirstLease, kApIp)) {
+        Serial.println("[wifi] ap_config_failed");
+        return;
+    }
+    Serial.printf("[wifi] ap_config ip=%s lease_start=%s\n",
+                  kApIp.toString().c_str(),
+                  kApFirstLease.toString().c_str());
+}
+
+void enableDhcpCaptivePortalHint() {
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 2)
+    esp_netif_t* apNetif = get_esp_interface_netif(ESP_IF_WIFI_AP);
+    if(apNetif == nullptr) {
+        Serial.println("[wifi] dhcp_captive_hint=missing_netif");
+        return;
+    }
+
+    snprintf(captivePortalApiUri,
+             sizeof(captivePortalApiUri),
+             "http://%s/.well-known/captive-portal",
+             apIpString().c_str());
+
+    esp_err_t err = esp_netif_dhcps_stop(apNetif);
+    if(err != ESP_OK && err != ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED) {
+        Serial.printf("[wifi] dhcp_captive_hint=stop_failed err=0x%x\n", static_cast<unsigned>(err));
+        return;
+    }
+    err = esp_netif_dhcps_option(apNetif,
+                                 ESP_NETIF_OP_SET,
+                                 ESP_NETIF_CAPTIVEPORTAL_URI,
+                                 captivePortalApiUri,
+                                 strlen(captivePortalApiUri));
+    if(err != ESP_OK) {
+        Serial.printf("[wifi] dhcp_captive_hint=set_failed err=0x%x\n", static_cast<unsigned>(err));
+        (void)esp_netif_dhcps_start(apNetif);
+        return;
+    }
+    err = esp_netif_dhcps_start(apNetif);
+    if(err != ESP_OK) {
+        Serial.printf("[wifi] dhcp_captive_hint=start_failed err=0x%x\n", static_cast<unsigned>(err));
+        return;
+    }
+    Serial.printf("[wifi] dhcp_captive_hint=%s\n", captivePortalApiUri);
+#endif
+}
+
 bool startAccessPoint() {
     if(apRunning) {
         return true;
     }
 
-    WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
+    WiFi.mode(WIFI_AP_STA);
+    ensureApEventLogging();
+    configureSoftApNetwork();
     if(!WiFi.softAP(apSsid.c_str())) {
         return false;
     }
@@ -1325,8 +1797,43 @@ bool startAccessPoint() {
     dnsRunning = true;
     apRunning = true;
     lastWebActivityAt = millis();
+    strncpy(lastApEvent, "start", sizeof(lastApEvent) - 1);
+    lastApEvent[sizeof(lastApEvent) - 1] = '\0';
     Serial.printf("[wifi] ap_on ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
     return true;
+}
+
+void stopHttpServices() {
+    if(serverStarted) {
+        server.stop();
+        serverStarted = false;
+    }
+    remote_ws_stop();
+}
+
+void startHttpServices() {
+    if(!serverStarted) {
+        server.begin();
+        serverStarted = true;
+    }
+    pendingHttpServiceRefresh = false;
+}
+
+void serviceRemoteWs(bool staConnected) {
+    const bool shouldRun = staConnected &&
+                           WiFi.softAPgetStationNum() == 0 &&
+                           !wifi_ui_web_activity_recent() &&
+                           ESP.getFreeHeap() >= REMOTE_WS_MIN_FREE_HEAP;
+    if(!shouldRun) {
+        if(remote_ws_is_active()) {
+            remote_ws_stop();
+        }
+        return;
+    }
+    if(!remote_ws_is_active()) {
+        (void)remote_ws_start();
+    }
+    remote_ws_poll();
 }
 
 void stopAccessPoint() {
@@ -1335,10 +1842,26 @@ void stopAccessPoint() {
         dnsRunning = false;
     }
     if(apRunning) {
+        espnow_control_set_wifi_client_active(false);
         WiFi.softAPdisconnect(true);
         apRunning = false;
+        apClientLeaseSeen = false;
+        strncpy(lastApEvent, "stop", sizeof(lastApEvent) - 1);
+        lastApEvent[sizeof(lastApEvent) - 1] = '\0';
         Serial.println("[wifi] ap_off");
     }
+}
+
+void restartAccessPointForDhcpStall() {
+    if(!apRunning || (millis() - lastApRestartAt) < AP_RESTART_COOLDOWN_MS) {
+        return;
+    }
+    ++apDhcpWatchdogRestarts;
+    lastApRestartAt = millis();
+    Serial.printf("[wifi] dhcp_watchdog_observe count=%lu stations=%u last_mac=%s\n",
+                  static_cast<unsigned long>(apDhcpWatchdogRestarts),
+                  static_cast<unsigned>(WiFi.softAPgetStationNum()),
+                  lastApClientMac);
 }
 }
 
@@ -1363,17 +1886,17 @@ bool wifi_ui_start() {
         return true;
     }
 
+    gbw_set_ble_paused_for_wifi(true);
     configureRoutes();
-    WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
+    captiveSetupComplete = false;
     WiFi.setAutoReconnect(true);
+    WiFi.mode(WIFI_AP_STA);
     WiFi.setSleep(!kDisableWifiModemSleepForTesting);
     startAccessPoint();
-    beginStaConnect(true);
-    if(!serverStarted) {
-        server.begin();
-        serverStarted = true;
+    if(staEnabled) {
+        beginStaConnect(true);
     }
-    remote_ws_start();
+    startHttpServices();
     wifiUiActive = true;
 
     Serial.printf("[wifi] ap_ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
@@ -1389,20 +1912,22 @@ bool wifi_ui_start() {
 
 void wifi_ui_stop() {
     if(!wifiUiActive) {
+        gbw_set_ble_paused_for_wifi(false);
         return;
     }
 
+    stopHttpServices();
     stopAccessPoint();
-    if(serverStarted) {
-        server.stop();
-        serverStarted = false;
-    }
-    remote_ws_stop();
     WiFi.scanDelete();
     stopSta();
     WiFi.mode(WIFI_MODE_NULL);
     lastStaAttemptAt = 0;
+    pendingStaConnect = false;
+    pendingStaConfigBroadcast = false;
+    pendingHttpServiceRefresh = false;
+    captiveSetupComplete = false;
     wifiUiActive = false;
+    gbw_set_ble_paused_for_wifi(false);
 }
 
 void wifi_ui_poll() {
@@ -1411,24 +1936,61 @@ void wifi_ui_poll() {
     }
 
     const bool staConnected = staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
-    if(staConnected) {
-        if(apRunning) {
-            stopAccessPoint();
-        }
-    } else {
-        if(!apRunning) {
-            startAccessPoint();
-        }
-        if(dnsRunning) {
-            dnsServer.processNextRequest();
-        }
+    if(!staConnected) {
+        captiveSetupComplete = false;
+    }
+    const bool setupApNeeded = !staEnabled || staSsid.isEmpty() || !setupDone || !staConnected;
+    if(setupApNeeded && !apRunning) {
+        startAccessPoint();
+    } else if(!setupApNeeded && apRunning) {
+        stopAccessPoint();
+        Serial.printf("[wifi] home Wi-Fi online; AP closed sta_ip=%s\n", staIpString().c_str());
+    }
+
+    const uint8_t apStations = apRunning ? WiFi.softAPgetStationNum() : 0;
+    espnow_control_set_wifi_client_active(apRunning && apStations > 0);
+    const bool allowDhcpWatchdog = !staEnabled && !pendingStaConnect;
+    const bool clientReachedHttp = lastWebActivityAt != 0 && lastWebActivityAt >= lastApClientConnectAt;
+    if(allowDhcpWatchdog &&
+       !apClientLeaseSeen &&
+       !clientReachedHttp &&
+       apStations > 0 &&
+       (millis() - lastApClientConnectAt) >= AP_DHCP_LEASE_WATCHDOG_MS) {
+        restartAccessPointForDhcpStall();
+        return;
+    }
+    if(dnsRunning) {
+        dnsServer.processNextRequest();
     }
 
     if(serverStarted) {
         server.handleClient();
     }
-    remote_ws_poll();
+    serviceRemoteWs(staConnected);
+    if(pendingHttpServiceRefresh && apStations == 0 && timeReached(pendingHttpServiceRefreshAt)) {
+        pendingHttpServiceRefresh = false;
+        stopHttpServices();
+        delay(20);
+        startHttpServices();
+        Serial.println("[wifi] http_services_refreshed");
+        return;
+    }
+    if(pendingStaConnect) {
+        if(!timeReached(pendingStaConnectAt)) {
+            return;
+        }
+        pendingStaConnect = false;
+        beginStaConnect(true);
+        if(pendingStaConfigBroadcast) {
+            espnow_control_broadcast_wifi_config(staSsid, staPassword);
+            pendingStaConfigBroadcast = false;
+        }
+        return;
+    }
     if(staEnabled && !staConnected) {
+        if(apRunning && WiFi.softAPgetStationNum() > 0 && lastStaAttemptAt != 0) {
+            return;
+        }
         beginStaConnect(false);
     }
 }
@@ -1452,6 +2014,14 @@ bool wifi_ui_has_saved_network() {
     return staEnabled && !staSsid.isEmpty();
 }
 
+bool wifi_ui_home_setup_online() {
+    return setupDone && staEnabled && !staSsid.isEmpty() && wifi_ui_sta_connected();
+}
+
+void wifi_ui_set_captive_setup_complete(bool complete) {
+    captiveSetupComplete = complete && wifi_ui_home_setup_online();
+}
+
 uint8_t wifi_ui_ap_station_count() {
     return static_cast<uint8_t>(WiFi.softAPgetStationNum());
 }
@@ -1466,6 +2036,31 @@ bool wifi_ui_web_activity_recent() {
     return lastWebActivityAt != 0 && (millis() - lastWebActivityAt) < WEB_ACTIVITY_HOLD_MS;
 }
 
+bool wifi_ui_web_idle_for(unsigned long quietMs) {
+    if(!wifiUiActive || lastWebActivityAt == 0) {
+        return false;
+    }
+    return (millis() - lastWebActivityAt) >= quietMs;
+}
+
+bool wifi_ui_save_network_settings(const String& ssid, const String& password) {
+    staSsid = ssid;
+    staPassword = password;
+    staEnabled = !staSsid.isEmpty();
+    setupDone = staEnabled;
+    captiveSetupComplete = false;
+    pendingHttpServiceRefresh = false;
+    saveStaConfig();
+    if(!staEnabled) {
+        forgetStaConnection();
+        return false;
+    }
+    if(wifiUiActive) {
+        scheduleStaConnectAfterAck(true);
+    }
+    return true;
+}
+
 String wifi_ui_sta_ip() {
     return wifi_ui_sta_connected() ? staIpString() : "";
 }
@@ -1477,13 +2072,48 @@ String wifi_ui_lcd_status() {
     return wifi_ui_sta_connected() ? staIpString() : "AP only";
 }
 
+String wifi_ui_status_json() {
+    return wifiJson();
+}
+
+String wifi_ui_scan_json(bool force) {
+    return wifiScanJson(force);
+}
+
 void wifi_ui_reset_network_settings() {
     staEnabled = false;
     setupDone = false;
+    captiveSetupComplete = false;
+    captiveProbeHits = 0;
+    captiveApiHits = 0;
+    captiveSetupHits = 0;
+    captiveRedirectHits = 0;
+    rootHits = 0;
+    controlHits = 0;
+    wifiApiHits = 0;
+    wifiScanDeferredHits = 0;
+    apConnectEvents = 0;
+    apDisconnectEvents = 0;
+    apIpAssignEvents = 0;
+    apDhcpWatchdogRestarts = 0;
+    lastApClientConnectAt = 0;
+    lastApClientIpAt = 0;
+    lastApRestartAt = 0;
+    apClientLeaseSeen = false;
+    lastCaptivePath = "";
+    lastApClientMac[0] = '\0';
+    lastApLeaseIp[0] = '\0';
+    lastApEvent[0] = '\0';
+    pendingHttpServiceRefresh = false;
     staSsid = "";
     staPassword = "";
     saveStaConfig();
-    stopSta();
-    lastStaAttemptAt = 0;
+    forgetStaConnection();
+    if(wifiUiActive) {
+        stopHttpServices();
+        stopAccessPoint();
+        startAccessPoint();
+        startHttpServices();
+    }
     Serial.println("[wifi] network settings reset to onboarding defaults");
 }

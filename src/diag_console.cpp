@@ -12,9 +12,12 @@
 #include "main.h"
 #include "ble_console.h"
 #include "comm.h"
+#include "controller_env.h"
+#include "espnow_control.h"
 #include "motor_hal.h"
 #include "pdata.h"
 #include "radio_mode.h"
+#include "remote_ws.h"
 #include "wifi_ui.h"
 
 namespace {
@@ -339,13 +342,28 @@ void jsonPrintQuoted(const String& value) {
     jsonPrintQuoted(value.c_str());
 }
 
+String stableDeviceMacAddress() {
+    const uint64_t mac = ESP.getEfuseMac();
+    char out[18];
+    snprintf(out,
+             sizeof(out),
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             static_cast<unsigned>(mac & 0xFF),
+             static_cast<unsigned>((mac >> 8) & 0xFF),
+             static_cast<unsigned>((mac >> 16) & 0xFF),
+             static_cast<unsigned>((mac >> 24) & 0xFF),
+             static_cast<unsigned>((mac >> 32) & 0xFF),
+             static_cast<unsigned>((mac >> 40) & 0xFF));
+    return String(out);
+}
+
 void apiPrintDevice() {
     Serial.print("{\"type\":\"device\",\"protocol\":\"sg98-usb-device-v1\",\"role\":\"controller\",\"target\":");
     jsonPrintQuoted(controller_board_target_name());
     Serial.print(",\"board\":");
     jsonPrintQuoted(controller_board_display_name());
     Serial.print(",\"mac\":");
-    jsonPrintQuoted(WiFi.macAddress());
+    jsonPrintQuoted(stableDeviceMacAddress());
     Serial.print(",\"buildId\":");
     jsonPrintQuoted(BUILD_ID);
     Serial.println("}");
@@ -677,23 +695,21 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
 
     if(menuNum == 1) {
         const int16_t originalValue = Menu1[itemIdx].value;
+        int32_t valueToWrite = requestedValue;
         if(itemIdx == Menu1Items::SETMOTORDIRECTION &&
            !(state == IDLE || state == IDLE_GBW || state == MENU1)) {
             *message = "motor direction can only change while idle";
             return false;
         }
-        if(itemIdx == Menu1Items::RADIOMODE && controller_board_requires_remote_recovery()) {
+        if(itemIdx == Menu1Items::RADIOMODE) {
             const RadioMode requestedMode = radio_mode_from_value(requestedValue);
-            if(requestedMode == RADIO_MODE_OFF) {
+            if(controller_board_requires_remote_recovery() && requestedMode == RADIO_MODE_OFF) {
                 *message = "radio off is unavailable on headless controller";
                 return false;
             }
-            if(requestedMode == RADIO_MODE_WEB) {
-                *message = "web-only radio is unavailable on headless controller";
-                return false;
-            }
+            valueToWrite = radio_mode_sanitize_value(requestedValue);
         }
-        Menu1[itemIdx].value = clampMenuValue(Menu1[itemIdx], requestedValue);
+        Menu1[itemIdx].value = clampMenuValue(Menu1[itemIdx], valueToWrite);
         if(itemIdx == Menu1Items::SETMAX && Menu1[SETMAX].value < Menu1[SETMIN].value) {
             Menu1[SETMAX].value = Menu1[SETMIN].value;
         }
@@ -1076,7 +1092,9 @@ void printHelp() {
     Serial.println("[diag] config: jb <9600|19200|38400|57600|115200> (set preferred JMC boot baud, takes effect on redetect/reboot)");
     Serial.println("[diag] raw: mr <j|r> <slave> <reg> <count> | mw <j|r> <slave> <reg> <value>");
     Serial.println("[diag] raw-uart: mru <baud> <8N1|8N2|8E1|8E2|8O1|8O2> <slave> <reg> <count> | mwu <baud> <mode> <slave> <reg> <value>");
-    Serial.println("[diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
+    Serial.println("[diag] dbg: dbg status | dbg wifi <on|off|reset|scan> | dbg espnow <on|off|coexist> | dbg ws <on|off> | dbg all off");
+    Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
+    Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm>");
 }
 
@@ -1149,6 +1167,125 @@ void emitHistoryLine(const char* line, bool toSerial, bool toBle) {
     if(toBle) {
         ble_console_send_line(line);
     }
+}
+
+void printDebugStatus() {
+    Serial.print("{\"type\":\"dbg\",\"wifi\":");
+    Serial.print(wifi_ui_status_json());
+    Serial.print(",\"espnowActive\":");
+    Serial.print(espnow_control_is_active() ? "true" : "false");
+    Serial.print(",\"espnowChannel\":");
+    Serial.print(static_cast<unsigned>(espnow_control_channel()));
+    Serial.print(",\"espnowStatus\":");
+    jsonPrintQuoted(espnow_control_status_text());
+    Serial.print(",\"wsActive\":");
+    Serial.print(remote_ws_is_active() ? "true" : "false");
+    Serial.print(",\"wifiMode\":");
+    Serial.print(static_cast<unsigned>(WiFi.getMode()));
+    Serial.print(",\"wifiStatusCode\":");
+    Serial.print(static_cast<int>(WiFi.status()));
+    Serial.println("}");
+}
+
+void handleDebugCommand(char* savePtr, const char* originalLine) {
+    char* target = strtok_r(nullptr, " \t", &savePtr);
+    if(target == nullptr || strcmp(target, "status") == 0) {
+        printDebugStatus();
+        return;
+    }
+
+    char* action = strtok_r(nullptr, " \t", &savePtr);
+    if(strcmp(target, "wifi") == 0) {
+        if(action == nullptr) {
+            apiPrintAck("dbg", false, "usage: dbg wifi <on|off|reset|scan>");
+            return;
+        }
+        if(strcmp(action, "on") == 0) {
+            apiPrintAck("dbg", wifi_ui_start(), "wifi on");
+            return;
+        }
+        if(strcmp(action, "off") == 0) {
+            const bool espWasActive = espnow_control_is_active();
+            if(espWasActive) {
+                espnow_control_stop();
+            }
+            wifi_ui_stop();
+            const bool ok = !espWasActive || espnow_control_start(false);
+            apiPrintAck("dbg", ok, ok ? "wifi off" : "wifi off; esp-now restart failed");
+            return;
+        }
+        if(strcmp(action, "reset") == 0) {
+            wifi_ui_reset_network_settings();
+            apiPrintAck("dbg", true, "wifi reset");
+            return;
+        }
+        if(strcmp(action, "scan") == 0) {
+            Serial.println(wifi_ui_scan_json(true));
+            return;
+        }
+        apiPrintAck("dbg", false, "usage: dbg wifi <on|off|reset|scan>");
+        return;
+    }
+
+    if(strcmp(target, "espnow") == 0) {
+        if(action == nullptr) {
+            apiPrintAck("dbg", false, "usage: dbg espnow <on|off|coexist>");
+            return;
+        }
+        if(strcmp(action, "off") == 0) {
+            const bool webWasActive = wifi_ui_is_active();
+            espnow_control_stop();
+            const bool ok = !webWasActive || wifi_ui_start();
+            apiPrintAck("dbg", ok, ok ? "esp-now off" : "esp-now off; wifi restart failed");
+            return;
+        }
+        if(strcmp(action, "on") == 0) {
+            const bool webWasActive = wifi_ui_is_active();
+            if(webWasActive) {
+                wifi_ui_stop();
+            }
+            espnow_control_stop();
+            const bool ok = espnow_control_start(false);
+            apiPrintAck("dbg", ok, ok ? "esp-now on" : "esp-now start failed");
+            return;
+        }
+        if(strcmp(action, "coexist") == 0) {
+            espnow_control_stop();
+            const bool ok = wifi_ui_start() && espnow_control_start(true);
+            apiPrintAck("dbg", ok, ok ? "esp-now coexist" : "coexist start failed");
+            return;
+        }
+        apiPrintAck("dbg", false, "usage: dbg espnow <on|off|coexist>");
+        return;
+    }
+
+    if(strcmp(target, "ws") == 0) {
+        if(action == nullptr) {
+            apiPrintAck("dbg", false, "usage: dbg ws <on|off>");
+            return;
+        }
+        if(strcmp(action, "on") == 0) {
+            apiPrintAck("dbg", remote_ws_start(), "ws on");
+            return;
+        }
+        if(strcmp(action, "off") == 0) {
+            remote_ws_stop();
+            apiPrintAck("dbg", true, "ws off");
+            return;
+        }
+        apiPrintAck("dbg", false, "usage: dbg ws <on|off>");
+        return;
+    }
+
+    if(strcmp(target, "all") == 0 && action != nullptr && strcmp(action, "off") == 0) {
+        remote_ws_stop();
+        wifi_ui_stop();
+        espnow_control_stop();
+        apiPrintAck("dbg", true, "all off");
+        return;
+    }
+
+    apiPrintAck("dbg", false, originalLine != nullptr ? "usage: dbg status|wifi|espnow|ws|all" : "usage");
 }
 
 void dumpErrorHistory(bool toSerial, bool toBle) {
@@ -1561,6 +1698,40 @@ void handleLineCommand(char* line) {
             return;
         }
 
+        if(strcmp(subcmd, "env") == 0 || strcmp(subcmd, "environment") == 0) {
+            Serial.println(controller_env_build_frame());
+            return;
+        }
+
+        if(strcmp(subcmd, "wifi") == 0) {
+            Serial.println(wifi_ui_status_json());
+            return;
+        }
+
+        if(strcmp(subcmd, "wifi_scan") == 0) {
+            const char* arg = strtok_r(nullptr, " \t", &savePtr);
+            Serial.println(wifi_ui_scan_json(arg == nullptr || strcmp(arg, "force") == 0 || strcmp(arg, "1") == 0));
+            return;
+        }
+
+        if(strcmp(subcmd, "wifi_save") == 0) {
+            char* ssid = strtok_r(nullptr, " \t", &savePtr);
+            char* password = strtok_r(nullptr, " \t", &savePtr);
+            if(ssid == nullptr || ssid[0] == '\0') {
+                apiPrintAck("wifi_save", false, "usage: api wifi_save <ssid> <password>");
+                return;
+            }
+            const bool ok = wifi_ui_save_network_settings(String(ssid), password != nullptr ? String(password) : String(""));
+            apiPrintAck("wifi_save", ok, ok ? "saved" : "cleared");
+            return;
+        }
+
+        if(strcmp(subcmd, "wifi_forget") == 0) {
+            wifi_ui_reset_network_settings();
+            apiPrintAck("wifi_forget", true, "forgotten");
+            return;
+        }
+
         if(strcmp(subcmd, "set") == 0) {
             uint32_t menuNum = 0;
             uint32_t itemIdx = 0;
@@ -1654,6 +1825,11 @@ void handleLineCommand(char* line) {
         }
 
         apiPrintAck("api", false, "unknown subcommand");
+        return;
+    }
+
+    if(strcmp(cmd, "dbg") == 0 || strcmp(cmd, "DBG") == 0) {
+        handleDebugCommand(savePtr, line);
         return;
     }
 

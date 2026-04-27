@@ -165,7 +165,7 @@ def main() -> None:
     pdf.text(
         36,
         526,
-        "Primary rule: ESP-NOW stays available in every normal connectivity state. Wi-Fi enabled adds AP/web access beside ESP-NOW; Wi-Fi disabled parks in ESP-NOW-only. Only Radio off disables ESP-NOW, and only full-size local controllers may use it.",
+        "Primary rule: ESP-NOW stays available in every normal connectivity state. Wi-Fi enabled adds AP/web access beside ESP-NOW during setup/control, then parks back to ESP-NOW after home Wi-Fi is online, internet sync is valid, and ESP-NOW is healthy.",
         9.2,
         "F2",
     )
@@ -178,7 +178,7 @@ def main() -> None:
         [
             ["Remote", "ESP-NOW first", "Factory/no-info remote scans and locks a controller without requiring saved Wi-Fi."],
             ["Controller default", "Wi-Fi disabled", "Default internal state is ESP-NOW-only; Wi-Fi/AP is not a parked state."],
-            ["Wi-Fi enabled", "WEB+ESP", "Controller AP/web UI is available while ESP-NOW stays online for the remote."],
+            ["Wi-Fi enabled", "WEB+ESP", "Controller AP/web UI is available while ESP-NOW stays online; after home Wi-Fi joins and sync completes, it parks back to ESP-NOW."],
             ["Full-size only", "Radio off allowed", "A standalone controller can choose Radio off because the local UI can recover it."],
             ["Headless", "Radio off rejected", "Headless also rejects Wi-Fi-only, then opens WEB+ESP recovery if ESP-NOW traffic is missing."],
         ],
@@ -207,9 +207,9 @@ def main() -> None:
         ["Case", "Start", "Expected Operation", "Recovery / Exit"],
         [
             ["Fresh pair", "Both ESP-NOW", "Remote scans, discovers controller, locks peer, and polls over ESP-NOW. No saved Wi-Fi required.", "Final state is ESP-NOW-only with Wi-Fi/AP off."],
-            ["Wi-Fi enabled", "WEB+ESP", "AP/home web UI is available; remote still controls over ESP-NOW.", "Controller closes back to ESP-NOW after quiet web activity and healthy ESP-NOW."],
+            ["Wi-Fi enabled", "WEB+ESP", "AP/home web UI is available; remote still controls over ESP-NOW.", "Keep AP/web up through setup, then park to ESP-NOW after home Wi-Fi is online, synced, and the ESP-NOW link is healthy."],
             ["Full-size only", "ESP-NOW", "Controller stays locally usable with no remote present.", "User can enable Wi-Fi or choose Radio off locally."],
-            ["Headless only", "ESP-NOW", "Controller waits for ESP-NOW traffic.", "If silent for the timeout, open WEB+ESP recovery AP."],
+            ["Headless only", "ESP-NOW", "Controller waits for ESP-NOW traffic.", "If silent for the timeout, open WEB+ESP recovery AP; close recovery bridge after relock and quiet web access."],
             ["Remote lost", "Was healthy", "Headless controller tracks command/status traffic as activity.", "If traffic stays missing, stop unsafe running states first, then open WEB+ESP recovery."],
             ["Wi-Fi-only request", "WEB requested", "Full-size diagnostic/bench state only.", "Headless rejects it because ESP-NOW would be unavailable."],
             ["Radio off", "OFF requested", "Allowed only for full-size standalone use.", "Headless rejects/sanitizes it so the controller cannot strand itself."],
@@ -268,7 +268,7 @@ def main() -> None:
             ["Headless user selects Radio off", "API/menu radio OFF request.", "Request rejected with remoteRecoveryRequired=true."],
             ["Headless user selects Wi-Fi only", "API/menu WEB-only request.", "Request rejected; WEB+ESP is the supported recovery bridge."],
             ["Full-size standalone owner", "Remote ESP-NOW disabled while controller is local.", "Controller does not force AP recovery because local screen/buttons/encoder exist."],
-            ["Wi-Fi/web UI active", "WEB+ESP bridge with AP/web activity.", "Bridge remains open while active, then can park back to ESP-NOW when quiet and link is healthy."],
+            ["Wi-Fi/web UI active", "User-selected WEB+ESP bridge with AP/web activity.", "Bridge remains open through home setup; automatic park happens after online sync and a healthy ESP-NOW link. Recovery bridges still wait for quiet web access."],
         ],
     )
     pdf.text(36, 64, "Report artifact: Documentation/remote-controller-connection-matrix-report.pdf", 8.5, "F2")

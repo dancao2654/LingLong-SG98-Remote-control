@@ -28,7 +28,7 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
 endobj
 10 0 obj
-<< /Length 4700 >>
+<< /Length 4818 >>
 stream
 1.000 1.000 1.000 rg
 0.00 0.00 792.00 612.00 re f
@@ -37,7 +37,7 @@ BT /F2 22.0 Tf 36.00 568.00 Td (SG98 Remote / Controller Connection Matrix) Tj E
 0.100 0.120 0.150 rg
 BT /F1 9.0 Tf 36.00 548.00 Td (Final live regression run: 2026-04-26 PDT, generic remote + controller on the bench ports.) Tj ET
 0.100 0.120 0.150 rg
-BT /F2 9.2 Tf 36.00 526.00 Td (Primary rule: ESP-NOW stays available in every normal connectivity state. Wi-Fi enabled adds AP/web access beside ESP-NOW; Wi-Fi disabled parks in ESP-NOW-only. Only Radio off disables ESP-NOW, and only full-size local controllers may use it.) Tj ET
+BT /F2 9.2 Tf 36.00 526.00 Td (Primary rule: ESP-NOW stays available in every normal connectivity state. Wi-Fi enabled adds AP/web access beside ESP-NOW during setup/control, then parks back to ESP-NOW after home Wi-Fi is online, internet sync is valid, and ESP-NOW is healthy.) Tj ET
 0.120 0.150 0.190 rg
 36.00 473.00 700.00 23.00 re f
 1.000 1.000 1.000 rg
@@ -67,38 +67,40 @@ BT /F1 7.4 Tf 171.00 447.20 Td (Wi-Fi disabled) Tj ET
 0.100 0.120 0.150 rg
 BT /F1 7.4 Tf 321.00 447.20 Td (Default internal state is ESP-NOW-only; Wi-Fi/AP is not a parked state.) Tj ET
 0.955 0.970 0.985 rg
-36.00 420.60 700.00 16.80 re f
+36.00 410.80 700.00 26.60 re f
 0.780 0.800 0.840 RG
 0.35 w
-36.00 420.60 700.00 16.80 re S
+36.00 410.80 700.00 26.60 re S
 0.100 0.120 0.150 rg
 BT /F1 7.4 Tf 41.00 430.40 Td (Wi-Fi enabled) Tj ET
 0.100 0.120 0.150 rg
 BT /F1 7.4 Tf 171.00 430.40 Td (WEB+ESP) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 321.00 430.40 Td (Controller AP/web UI is available while ESP-NOW stays online for the remote.) Tj ET
+BT /F1 7.4 Tf 321.00 430.40 Td (Controller AP/web UI is available while ESP-NOW stays online; after home Wi-Fi joins and) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.4 Tf 321.00 421.00 Td (sync completes, it parks back to ESP-NOW.) Tj ET
 0.780 0.800 0.840 RG
 0.35 w
-36.00 403.80 700.00 16.80 re S
+36.00 394.00 700.00 16.80 re S
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 41.00 413.60 Td (Full-size only) Tj ET
+BT /F1 7.4 Tf 41.00 403.80 Td (Full-size only) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 171.00 413.60 Td (Radio off allowed) Tj ET
+BT /F1 7.4 Tf 171.00 403.80 Td (Radio off allowed) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 321.00 413.60 Td (A standalone controller can choose Radio off because the local UI can recover it.) Tj ET
+BT /F1 7.4 Tf 321.00 403.80 Td (A standalone controller can choose Radio off because the local UI can recover it.) Tj ET
 0.955 0.970 0.985 rg
-36.00 377.20 700.00 26.60 re f
+36.00 367.40 700.00 26.60 re f
 0.780 0.800 0.840 RG
 0.35 w
-36.00 377.20 700.00 26.60 re S
+36.00 367.40 700.00 26.60 re S
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 41.00 396.80 Td (Headless) Tj ET
+BT /F1 7.4 Tf 41.00 387.00 Td (Headless) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 171.00 396.80 Td (Radio off rejected) Tj ET
+BT /F1 7.4 Tf 171.00 387.00 Td (Radio off rejected) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 321.00 396.80 Td (Headless also rejects Wi-Fi-only, then opens WEB+ESP recovery if ESP-NOW traffic is) Tj ET
+BT /F1 7.4 Tf 321.00 387.00 Td (Headless also rejects Wi-Fi-only, then opens WEB+ESP recovery if ESP-NOW traffic is) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 321.00 387.40 Td (missing.) Tj ET
+BT /F1 7.4 Tf 321.00 377.60 Td (missing.) Tj ET
 0.120 0.150 0.190 rg
 36.00 307.00 700.00 23.00 re f
 1.000 1.000 1.000 rg
@@ -152,7 +154,7 @@ BT /F1 7.4 Tf 326.00 237.80 Td (Both full-size and headless-sim matrices passed 
 endstream
 endobj
 11 0 obj
-<< /Length 4459 >>
+<< /Length 4676 >>
 stream
 1.000 1.000 1.000 rg
 0.00 0.00 792.00 612.00 re f
@@ -187,7 +189,7 @@ BT /F1 7.4 Tf 253.00 482.60 Td (polls over ESP-NOW. No saved Wi-Fi required.) Tj
 BT /F1 7.4 Tf 501.00 492.00 Td (Final state is ESP-NOW-only with Wi-Fi/AP off.) Tj ET
 0.780 0.800 0.840 RG
 0.35 w
-28.00 445.80 712.00 26.60 re S
+28.00 436.00 712.00 36.40 re S
 0.100 0.120 0.150 rg
 BT /F1 7.4 Tf 33.00 465.40 Td (Wi-Fi enabled) Tj ET
 0.100 0.120 0.150 rg
@@ -197,82 +199,86 @@ BT /F1 7.4 Tf 253.00 465.40 Td (AP/home web UI is available; remote still contro
 0.100 0.120 0.150 rg
 BT /F1 7.4 Tf 253.00 456.00 Td (over ESP-NOW.) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 465.40 Td (Controller closes back to ESP-NOW after quiet web) Tj ET
+BT /F1 7.4 Tf 501.00 465.40 Td (Keep AP/web up through setup, then park to ESP-NOW) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 456.00 Td (activity and healthy ESP-NOW.) Tj ET
+BT /F1 7.4 Tf 501.00 456.00 Td (after home Wi-Fi is online, synced, and the ESP-NOW) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.4 Tf 501.00 446.60 Td (link is healthy.) Tj ET
 0.955 0.970 0.985 rg
-28.00 419.20 712.00 26.60 re f
+28.00 409.40 712.00 26.60 re f
 0.780 0.800 0.840 RG
 0.35 w
-28.00 419.20 712.00 26.60 re S
+28.00 409.40 712.00 26.60 re S
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 33.00 438.80 Td (Full-size only) Tj ET
+BT /F1 7.4 Tf 33.00 429.00 Td (Full-size only) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 151.00 438.80 Td (ESP-NOW) Tj ET
+BT /F1 7.4 Tf 151.00 429.00 Td (ESP-NOW) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 253.00 438.80 Td (Controller stays locally usable with no remote) Tj ET
+BT /F1 7.4 Tf 253.00 429.00 Td (Controller stays locally usable with no remote) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 253.00 429.40 Td (present.) Tj ET
+BT /F1 7.4 Tf 253.00 419.60 Td (present.) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 438.80 Td (User can enable Wi-Fi or choose Radio off locally.) Tj ET
+BT /F1 7.4 Tf 501.00 429.00 Td (User can enable Wi-Fi or choose Radio off locally.) Tj ET
 0.780 0.800 0.840 RG
 0.35 w
-28.00 392.60 712.00 26.60 re S
+28.00 373.00 712.00 36.40 re S
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 33.00 412.20 Td (Headless only) Tj ET
+BT /F1 7.4 Tf 33.00 402.40 Td (Headless only) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 151.00 412.20 Td (ESP-NOW) Tj ET
+BT /F1 7.4 Tf 151.00 402.40 Td (ESP-NOW) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 253.00 412.20 Td (Controller waits for ESP-NOW traffic.) Tj ET
+BT /F1 7.4 Tf 253.00 402.40 Td (Controller waits for ESP-NOW traffic.) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 412.20 Td (If silent for the timeout, open WEB+ESP recovery) Tj ET
+BT /F1 7.4 Tf 501.00 402.40 Td (If silent for the timeout, open WEB+ESP recovery) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 402.80 Td (AP.) Tj ET
+BT /F1 7.4 Tf 501.00 393.00 Td (AP; close recovery bridge after relock and quiet) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.4 Tf 501.00 383.60 Td (web access.) Tj ET
 0.955 0.970 0.985 rg
-28.00 366.00 712.00 26.60 re f
+28.00 346.40 712.00 26.60 re f
 0.780 0.800 0.840 RG
 0.35 w
-28.00 366.00 712.00 26.60 re S
+28.00 346.40 712.00 26.60 re S
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 33.00 385.60 Td (Remote lost) Tj ET
+BT /F1 7.4 Tf 33.00 366.00 Td (Remote lost) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 151.00 385.60 Td (Was healthy) Tj ET
+BT /F1 7.4 Tf 151.00 366.00 Td (Was healthy) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 253.00 385.60 Td (Headless controller tracks command/status traffic as) Tj ET
+BT /F1 7.4 Tf 253.00 366.00 Td (Headless controller tracks command/status traffic as) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 253.00 376.20 Td (activity.) Tj ET
+BT /F1 7.4 Tf 253.00 356.60 Td (activity.) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 385.60 Td (If traffic stays missing, stop unsafe running) Tj ET
+BT /F1 7.4 Tf 501.00 366.00 Td (If traffic stays missing, stop unsafe running) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 376.20 Td (states first, then open WEB+ESP recovery.) Tj ET
+BT /F1 7.4 Tf 501.00 356.60 Td (states first, then open WEB+ESP recovery.) Tj ET
 0.780 0.800 0.840 RG
 0.35 w
-28.00 339.40 712.00 26.60 re S
+28.00 319.80 712.00 26.60 re S
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 33.00 359.00 Td (Wi-Fi-only request) Tj ET
+BT /F1 7.4 Tf 33.00 339.40 Td (Wi-Fi-only request) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 151.00 359.00 Td (WEB requested) Tj ET
+BT /F1 7.4 Tf 151.00 339.40 Td (WEB requested) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 253.00 359.00 Td (Full-size diagnostic/bench state only.) Tj ET
+BT /F1 7.4 Tf 253.00 339.40 Td (Full-size diagnostic/bench state only.) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 359.00 Td (Headless rejects it because ESP-NOW would be) Tj ET
+BT /F1 7.4 Tf 501.00 339.40 Td (Headless rejects it because ESP-NOW would be) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 349.60 Td (unavailable.) Tj ET
+BT /F1 7.4 Tf 501.00 330.00 Td (unavailable.) Tj ET
 0.955 0.970 0.985 rg
-28.00 312.80 712.00 26.60 re f
+28.00 293.20 712.00 26.60 re f
 0.780 0.800 0.840 RG
 0.35 w
-28.00 312.80 712.00 26.60 re S
+28.00 293.20 712.00 26.60 re S
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 33.00 332.40 Td (Radio off) Tj ET
+BT /F1 7.4 Tf 33.00 312.80 Td (Radio off) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 151.00 332.40 Td (OFF requested) Tj ET
+BT /F1 7.4 Tf 151.00 312.80 Td (OFF requested) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 253.00 332.40 Td (Allowed only for full-size standalone use.) Tj ET
+BT /F1 7.4 Tf 253.00 312.80 Td (Allowed only for full-size standalone use.) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 332.40 Td (Headless rejects/sanitizes it so the controller) Tj ET
+BT /F1 7.4 Tf 501.00 312.80 Td (Headless rejects/sanitizes it so the controller) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 501.00 323.00 Td (cannot strand itself.) Tj ET
+BT /F1 7.4 Tf 501.00 303.40 Td (cannot strand itself.) Tj ET
 endstream
 endobj
 12 0 obj
@@ -554,7 +560,7 @@ BT /F1 7.4 Tf 502.00 332.40 Td (ALL_DUAL_BOARD_REGRESSION_PASS) Tj ET
 endstream
 endobj
 14 0 obj
-<< /Length 3555 >>
+<< /Length 3752 >>
 stream
 1.000 1.000 1.000 rg
 0.00 0.00 792.00 612.00 re f
@@ -633,15 +639,19 @@ BT /F1 7.4 Tf 441.00 405.20 Td (Controller does not force AP recovery because lo
 BT /F1 7.4 Tf 441.00 395.80 Td (screen/buttons/encoder exist.) Tj ET
 0.780 0.800 0.840 RG
 0.35 w
-36.00 359.00 700.00 26.60 re S
+36.00 349.20 700.00 36.40 re S
 0.100 0.120 0.150 rg
 BT /F1 7.4 Tf 41.00 378.60 Td (Wi-Fi/web UI active) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 211.00 378.60 Td (WEB+ESP bridge with AP/web activity.) Tj ET
+BT /F1 7.4 Tf 211.00 378.60 Td (User-selected WEB+ESP bridge with AP/web) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 441.00 378.60 Td (Bridge remains open while active, then can park back to ESP-NOW) Tj ET
+BT /F1 7.4 Tf 211.00 369.20 Td (activity.) Tj ET
 0.100 0.120 0.150 rg
-BT /F1 7.4 Tf 441.00 369.20 Td (when quiet and link is healthy.) Tj ET
+BT /F1 7.4 Tf 441.00 378.60 Td (Bridge remains open through home setup; automatic park happens) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.4 Tf 441.00 369.20 Td (after online sync and a healthy ESP-NOW link. Recovery bridges) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.4 Tf 441.00 359.80 Td (still wait for quiet web access.) Tj ET
 0.100 0.120 0.150 rg
 BT /F2 8.5 Tf 36.00 64.00 Td (Report artifact: Documentation/remote-controller-connection-matrix-report.pdf) Tj ET
 0.100 0.120 0.150 rg
@@ -661,12 +671,12 @@ xref
 0000000830 00000 n
 0000000900 00000 n
 0000000975 00000 n
-0000005728 00000 n
-0000010240 00000 n
-0000015024 00000 n
-0000019888 00000 n
+0000005846 00000 n
+0000010575 00000 n
+0000015359 00000 n
+0000020223 00000 n
 trailer
 << /Size 15 /Root 1 0 R >>
 startxref
-23496
+24028
 %%EOF

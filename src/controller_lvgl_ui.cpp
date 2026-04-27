@@ -43,6 +43,7 @@ constexpr uint32_t kColorGood = 0x57E89A;
 constexpr uint32_t kColorWarn = 0xFFD86A;
 constexpr uint32_t kColorDanger = 0xFF7272;
 constexpr uint32_t kColorRun = 0x2FD67B;
+constexpr uint32_t kColorEspNow = 0x63C7FF;
 
 Adafruit_ST7789* gDisplay = nullptr;
 bool gReady = false;
@@ -356,10 +357,9 @@ const char* getErrorChar(uint8_t errorCode) {
 }
 
 String headerLinkLabel() {
-    if(radio_mode_is_dual()) return "WEB+ESP";
-    if(radio_mode_is_espnow()) return "ESP-NOW";
-    if(!wifi_ui_is_active()) return "WEB / OFF";
-    return wifi_ui_sta_connected() ? "WEB / LAN" : "WEB / AP";
+    if(radio_mode_is_espnow()) return "REMOTE LINK";
+    if(!wifi_ui_is_active()) return "WI-FI OFF";
+    return wifi_ui_sta_connected() ? "WI-FI LAN" : "WI-FI AP";
 }
 
 String headerMotorLabel() {
@@ -371,13 +371,19 @@ String headerMotorLabel() {
 }
 
 lv_color_t headerLinkColor() {
-    return radio_mode_status_ok() ? lvColor(kColorGood) : lvColor(kColorWarn);
+    if(!radio_mode_status_ok()) {
+        return lvColor(kColorWarn);
+    }
+    return radio_mode_is_espnow() ? lvColor(kColorEspNow) : lvColor(kColorGood);
 }
 
 uint32_t headerLinkFillColor() {
-    return radio_mode_status_ok()
-               ? blendRgb(kColorPanelHi, kColorGood, 0.56f)
-               : blendRgb(kColorPanelHi, kColorWarn, 0.50f);
+    if(!radio_mode_status_ok()) {
+        return blendRgb(kColorPanelHi, kColorWarn, 0.50f);
+    }
+    return radio_mode_is_espnow()
+               ? blendRgb(kColorPanelHi, kColorEspNow, 0.54f)
+               : blendRgb(kColorPanelHi, kColorGood, 0.56f);
 }
 
 lv_color_t headerMotorColor() {
@@ -543,7 +549,7 @@ String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
     }
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Hold encoder to start";
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Writes drive baud for next boot";
-    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Wi-Fi enabled keeps remote active";
+    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Wi-Fi enabled opens setup";
     if(menuNum == 1 && (selectedIdx == Menu1Items::RESET || selectedIdx == Menu1Items::RESETNETWORK)) return "Reset needs encoder confirm";
     if(item.minValue == 0 && item.maxValue == 1 && item.scalar == 1) return "Rotate to choose";
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) return "Encoder opens";
@@ -1399,7 +1405,11 @@ bool controller_lvgl_ready() {
 }
 
 void controller_lvgl_show_motor_probe_splash(const char* motorLabel) {
-    if(motorLabel == nullptr || motorLabel[0] == '\0') return;
-    gSplashLabel = motorLabel;
-    gSplashUntil = millis() + kSplashVisibleMs;
+    controller_lvgl_show_flash(motorLabel, kSplashVisibleMs);
+}
+
+void controller_lvgl_show_flash(const char* label, uint32_t durationMs) {
+    if(label == nullptr || label[0] == '\0') return;
+    gSplashLabel = label;
+    gSplashUntil = millis() + (durationMs > 0 ? durationMs : kSplashVisibleMs);
 }

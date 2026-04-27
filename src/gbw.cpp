@@ -241,14 +241,49 @@ BLEScale scale(DEBUG_SCALE);
 //BLEService weightService("0x0FFE"); // create service
 //BLEByteCharacteristic weightCharacteristic("0xFF11",  BLEWrite | BLERead);
 
+namespace {
+bool scaleBleReady = false;
+volatile bool scaleBlePausedForWifi = false;
+
+bool ensureScaleBleReady() {
+    if(scaleBleReady) {
+        return true;
+    }
+
+    NimBLEDevice::init("GbWService");
+    scaleBleReady = ble_console_init();
+    return scaleBleReady;
+}
+
+void markScaleUnavailable() {
+    connect = false;
+    maintain = false;
+    currentWeight = 0;
+    newWeightAvail = false;
+    scaleStatus = SCALE_DISCONNECTED;
+}
+}
+
 //SEPARATE TASK!!
 void scales_init() { 
-    NimBLEDevice::init("GbWService");
-    ble_console_init();
     if (xSemaphoreTake(scaleMutex, portMAX_DELAY)) {
         mac_local = scale_connect_mac;
         xSemaphoreGive(scaleMutex);
     } 
+    markScaleUnavailable();
+}
+
+void gbw_set_ble_paused_for_wifi(bool paused) {
+    scaleBlePausedForWifi = paused;
+    if(!paused) {
+        return;
+    }
+
+    if(scaleBleReady) {
+        ble_console_set_advertising_enabled(false);
+        scale.disconnect();
+    }
+    markScaleUnavailable();
 }
 
 //SEPARATE TASK!!
@@ -259,11 +294,28 @@ void gbwVitals()
     static int32_t prevWeight;
     const bool scaleModeActive = (state == IDLE_GBW || state == GRINDING_GBW);
 
+    if(scaleBlePausedForWifi) {
+        markScaleUnavailable();
+        return;
+    }
+
+    if(!scaleModeActive && !scaleBleReady) {
+        markScaleUnavailable();
+        return;
+    }
+
+    if(scaleModeActive && !ensureScaleBleReady()) {
+        markScaleUnavailable();
+        return;
+    }
+
     connect = scaleModeActive;
     maintain = scaleModeActive;
-    ble_console_set_advertising_enabled(!scaleModeActive);
+    if(scaleBleReady) {
+        ble_console_set_advertising_enabled(!scaleModeActive);
+    }
 
-    if(scale.manage(connect, maintain, mac_local) == true) { 
+    if(scaleBleReady && scale.manage(connect, maintain, mac_local) == true) {
         scaleStatus = SCALE_CONNECTED;
         if (xSemaphoreTake(scaleMutex, portMAX_DELAY)) {
             scale_mac = scale.connected_mac;

@@ -435,7 +435,9 @@ void drawTopIndicators(int screenId) {
   const int leftRegionWidth = regionX - leftMargin - 8;
   const String motorLabel = fitHeaderLabel(getMotorDisplayLabel(), regionWidth);
   const String wifiLabel = fitLabelToFont(radio_mode_lcd_status(), leftRegionWidth, WIFI_STATUS_FONT);
-  const uint16_t wifiColor = radio_mode_status_ok() ? COLOR_GREEN : COLOR_YELLOW;
+  const uint16_t wifiColor = radio_mode_status_ok()
+                                 ? (radio_mode_is_espnow() ? COLOR_BRIGHT_BLUE : COLOR_GREEN)
+                                 : COLOR_YELLOW;
   const bool motorChanged = forceRedraw || motorLabel != prevMotorLabel;
   const bool wifiChanged = forceRedraw || wifiLabel != prevWifiLabel || wifiColor != prevWifiColor;
 
@@ -632,6 +634,15 @@ void display_show_motor_probe_splash(const char* motorLabel) {
   }
   controller_lvgl_show_motor_probe_splash(motorLabel);
   disp_updateRequired = true;
+}
+
+void display_show_action_feedback(const char* label, unsigned long durationMs) {
+  if (label == nullptr || label[0] == '\0') {
+    return;
+  }
+  controller_lvgl_show_flash(label, static_cast<uint32_t>(durationMs));
+  disp_updateRequired = true;
+  controller_lvgl_sync();
 }
 
 const char* getCommStatusText(SYSTEM_STATUS status) {
@@ -1838,18 +1849,20 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
         tft->fillRect(0, 60, SCREEN_WIDTH, SCREEN_HEIGHT-60, ST77XX_BLACK);
         prevValue = item.value;
         if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
-            const int selected = item.value < 0 ? 0 : (item.value > 3 ? 3 : item.value);
-            for(int i = 0; i < 4; ++i) {
-                const bool active = i == selected;
+            const int32_t selectedValue = radio_mode_sanitize_value(item.value);
+            const uint8_t optionCount = radio_mode_user_value_count();
+            for(uint8_t i = 0; i < optionCount; ++i) {
+                const int32_t optionValue = radio_mode_user_value_at(i);
+                const bool active = optionValue == selectedValue;
                 const GFXfont* font = active ? &FreeSans18pt7b : &FreeSans12pt7b;
-                const char* label = radio_mode_value_label(i);
+                const char* label = radio_mode_value_label(optionValue);
                 tft->setFont(font);
                 tft->setTextColor(active ? COLOR_GREEN : ST77XX_WHITE);
 
                 int16_t x1, y1;
                 uint16_t w, h;
                 tft->getTextBounds(label, 0, 0, &x1, &y1, &w, &h);
-                const int y = 86 + i * 36;
+                const int y = 92 + i * 44;
                 tft->setCursor((SCREEN_WIDTH - w) / 2, y);
                 tft->print(label);
                 if(active) {
@@ -1859,8 +1872,8 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
 
             tft->setFont(&FreeSans9pt7b);
             tft->setTextColor(ST77XX_WHITE);
-            const char* msg1 = "OFF sleeps from idle.";
-            const char* msg2 = "Wake with local button.";
+            const char* msg1 = "Enabled opens AP + web.";
+            const char* msg2 = optionCount > 2 ? "Off disables all radios." : "Disabled returns remote link.";
             int16_t x1, y1;
             uint16_t w, h;
             tft->getTextBounds(msg1, 0, 0, &x1, &y1, &w, &h);
@@ -1935,7 +1948,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                   if(i == 0) {
                     tft->setFont(&FreeSans9pt7b);
                     const char* msg1 = "Enabled opens AP + web.";
-                    const char* msg2 = "Disabled parks ESP-NOW.";
+                    const char* msg2 = "Disabled returns remote link.";
                     tft->setCursor(12, 184);
                     tft->print(msg1);
                     tft->setCursor(12, 204);

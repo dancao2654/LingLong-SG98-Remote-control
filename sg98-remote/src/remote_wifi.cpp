@@ -499,7 +499,7 @@ bool startAccessPoint() {
         return true;
     }
 
-    WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
+    WiFi.mode(WIFI_AP_STA);
     if(!WiFi.softAP(apSsid.c_str())) {
         return false;
     }
@@ -558,7 +558,7 @@ bool remote_wifi_start() {
     }
 
     configureRoutes();
-    WiFi.mode(staEnabled ? WIFI_AP_STA : WIFI_AP);
+    WiFi.mode(WIFI_AP_STA);
     WiFi.setAutoReconnect(true);
     WiFi.setSleep(staEnabled && !remote_config::kDisableWifiModemSleepForTesting);
     startAccessPoint();

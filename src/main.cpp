@@ -31,21 +31,21 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"EXIT MENU", 0, 0, 0, 0, "EXITMENU", ""},                 // 0
     {"Purge Settings", 0, 0, 0, 0, "PURGESETT", ""},           // 1
     {"GbW Settings", 0, 0, 0, 0, "GBWSETT", ""},               // 2
-    {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 3
-    {"Wi-Fi", default_radio_mode, 0, 3, 1, "RADIOMODE", ""}, // 4
-    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 5
-    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 6
-    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 7
-    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 8
-    {"Max RPM", default_maxRPM, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "MAXRPM", "rpm"}, // 9
-    {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 10
-    {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 11
-    {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, //12
-    {"Motor direction", default_motor_direction_reversed, 0, 1, 1, "MOTORDIR", ""}, //13
-    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 14
-    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 15
-    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 16
-    {"Drive", 0, 0, 0, 0, "DRIVESEL", ""},                // 17
+    {"Max RPM", default_maxRPM, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "MAXRPM", "rpm"}, // 3
+    {"Min RPM", default_minRPM, absolute_min_rpm, 500, rpm_scalar, "MINRPM", "rpm"},              // 4
+    {"Motor torque", default_motor_torque, 1, 300, 1, "MOTORTORQ", "%"},               // 5
+    {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, // 6
+    {"Motor direction", default_motor_direction_reversed, 0, 1, 1, "MOTORDIR", ""}, // 7
+    {"Drive", 0, 0, 0, 0, "DRIVESEL", ""},                // 8
+    {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 9
+    {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 10
+    {"Wi-Fi", default_radio_mode, 0, 3, 1, "RADIOMODE", ""}, // 11
+    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 12
+    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 13
+    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 14
+    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 15
+    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 16
+    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 17
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {

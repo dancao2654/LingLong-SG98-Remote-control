@@ -36,6 +36,7 @@ constexpr uint16_t kColorAccent2 = 0xFD20;
 constexpr uint16_t kColorWarn = 0xFD20;
 constexpr uint16_t kColorDanger = 0xF9C6;
 constexpr uint16_t kColorGood = 0x3D8A;
+constexpr uint16_t kColorEspNow = 0x55FF;
 constexpr uint16_t kColorMuted = 0x7BEF;
 constexpr uint16_t kColorText = 0xFFFF;
 
@@ -486,6 +487,8 @@ constexpr SettingItem kMainItems[] = {
     {"Sleep time", ItemKind::Value, 1, SETSLEEP, 0, 300, 5, "min", nullptr, nullptr},
     {"Brightness", ItemKind::Value, 1, DISP_BRIGHTNESS, 1, 255, 1, "", nullptr, nullptr},
     {"LED max Brightness", ItemKind::Value, 1, LED_BRIGHTNESS, 0, 100, 1, "%", nullptr, nullptr},
+    {"Invert scrolling", ItemKind::Toggle, 1, INVERT_SCROLL, 0, 1, 1, "", nullptr, nullptr},
+    {"Audio diag", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "audio"},
     {"Reset default", ItemKind::Danger, 0, 0, 0, 0, 0, "", "reset_defaults", "confirm"},
 };
 
@@ -525,7 +528,6 @@ constexpr SettingItem kGbwItems[] = {
 constexpr SettingItem kNetworkItems[] = {
     {"Wi-Fi", ItemKind::Value, 1, RADIOMODE, 0, 3, 1, "", nullptr, nullptr},
     {"Controller link", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "peers"},
-    {"Audio diag", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "audio"},
     {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
 };
 
@@ -761,7 +763,9 @@ const char* transportName(LinkTransport transport) {
 }
 
 LinkTransport transportFromRadioMode(int32_t radioMode) {
-    return radioMode == kControllerRadioWeb ? LinkTransport::WebSocket : LinkTransport::EspNow;
+    return (radioMode == kControllerRadioWeb || radioMode == kControllerRadioDual)
+               ? LinkTransport::WebSocket
+               : LinkTransport::EspNow;
 }
 
 int32_t sanitizeControllerRadioMode(int32_t value) {
@@ -769,19 +773,19 @@ int32_t sanitizeControllerRadioMode(int32_t value) {
        value == kControllerRadioOff || value == kControllerRadioDual) {
         return value;
     }
-    return kControllerRadioDual;
+    return kControllerRadioWeb;
 }
 
 int32_t safeUserRadioMode(int32_t value) {
     const int32_t mode = sanitizeControllerRadioMode(value);
-    return (mode == kControllerRadioWeb || mode == kControllerRadioDual) ? kControllerRadioDual
+    return (mode == kControllerRadioWeb || mode == kControllerRadioDual) ? kControllerRadioWeb
                                                                          : kControllerRadioEspNow;
 }
 
 String radioModeValueLabel(int32_t value) {
     switch(sanitizeControllerRadioMode(value)) {
         case kControllerRadioWeb:
-            return "WI-FI ONLY";
+            return "ENABLED";
         case kControllerRadioEspNow:
             return "DISABLED";
         case kControllerRadioOff:
@@ -809,7 +813,7 @@ int32_t stepRadioModeValue(int32_t current, int delta) {
     if(delta == 0) {
         return safeUserRadioMode(current);
     }
-    return safeUserRadioMode(current) == kControllerRadioEspNow ? kControllerRadioDual
+    return safeUserRadioMode(current) == kControllerRadioEspNow ? kControllerRadioWeb
                                                                 : kControllerRadioEspNow;
 }
 
@@ -1625,6 +1629,17 @@ void shortenWaitForPressureProfiler(uint32_t now, uint32_t* waitMs) {
 bool isLinkOnline() {
     return app.lastLinkActivityAt != 0 &&
            (millis() - app.lastLinkActivityAt) < remote_config::kLinkTimeoutMs;
+}
+
+bool isEspNowLinkOnline() {
+    return isLinkOnline() && app.currentTransport == LinkTransport::EspNow;
+}
+
+uint16_t linkStatusColor() {
+    if(!isLinkOnline()) {
+        return kColorDanger;
+    }
+    return isEspNowLinkOnline() ? kColorEspNow : kColorGood;
 }
 
 bool isGbwState() {
@@ -4256,7 +4271,9 @@ void drawRoundHomeArcLabels(RemoteCanvas& canvas, const Layout& layout, const Ho
                       bottomSpan,
                       true,
                       bottomStyle,
-                      blendColor565(palette.muted, palette.background, running ? 0.18f : 0.26f),
+                      isEspNowLinkOnline()
+                          ? blendColor565(kColorEspNow, palette.background, running ? 0.10f : 0.02f)
+                          : blendColor565(palette.muted, palette.background, running ? 0.18f : 0.26f),
                       palette.background);
 }
 
@@ -5187,7 +5204,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
     drawPill(canvas,
              layout.topLeft,
              isLinkOnline() ? "LINK" : "OFFLINE",
-             isLinkOnline() ? kColorGood : kColorDanger,
+             linkStatusColor(),
              kColorBlack);
     drawPill(canvas,
              layout.topCenter,
@@ -7596,13 +7613,7 @@ void serviceEspNowFirstPolicy() {
     if(app.currentTransport == LinkTransport::WebSocket) {
         if(app.wsConnected && app.radioModeKnown) {
             const int32_t mode = sanitizeControllerRadioMode(app.menuValues[1][RADIOMODE]);
-            if(mode == kControllerRadioWeb) {
-                if(requestControllerRadioMode(kControllerRadioDual)) {
-                    setToast("Preparing ESP-NOW", 1000);
-                }
-                return;
-            }
-            if(mode == kControllerRadioDual || mode == kControllerRadioEspNow) {
+            if(mode == kControllerRadioEspNow) {
                 scheduleTransportSwitch(LinkTransport::EspNow, remote_config::kTransportSwitchDelayMs);
                 return;
             }
@@ -7624,10 +7635,8 @@ void serviceEspNowFirstPolicy() {
     }
 
     const int32_t mode = sanitizeControllerRadioMode(app.menuValues[1][RADIOMODE]);
-    if(mode == kControllerRadioWeb) {
-        if(requestControllerRadioMode(kControllerRadioDual)) {
-            setToast("WEB+ESP mode", 900);
-        }
+    if(transportFromRadioMode(mode) == LinkTransport::WebSocket) {
+        scheduleTransportSwitch(LinkTransport::WebSocket, remote_config::kTransportSwitchDelayMs);
     }
 }
 
@@ -8266,6 +8275,19 @@ void lockEspNowPeer(const DiscoveredEspNowPeer& peer) {
     setToast(String("Locked ") + espNowPeerName(peer), 1200);
 }
 
+String actionFeedbackLabel(const SettingItem& item) {
+    if(item.action == nullptr) {
+        return String(item.label) + " applied";
+    }
+    if(strcmp(item.action, "reset_network") == 0) return "Network reset";
+    if(strcmp(item.action, "reset_defaults") == 0) return "Defaults reset";
+    if(strcmp(item.action, "calibrate") == 0) return "Calibration started";
+    if(strcmp(item.action, "redetect") == 0) return "Detecting drive";
+    if(strcmp(item.action, "drive") == 0) return "Drive applied";
+    if(strcmp(item.action, "jmc_baud") == 0) return "Baud applied";
+    return String(item.label) + " applied";
+}
+
 void runConfirmAction(const SettingItem& item) {
     if(item.action == nullptr) {
         return;
@@ -8277,7 +8299,7 @@ void runConfirmAction(const SettingItem& item) {
         switchTransportNow(initialTransport());
         requestFullControllerRefresh();
         markPersistentStateDirty();
-        setToast("Remote network reset", 1200);
+        setToast(actionFeedbackLabel(item), 1200);
         return;
     }
 
@@ -8331,7 +8353,7 @@ void runConfirmAction(const SettingItem& item) {
         if(item.kind == ItemKind::Danger) {
             app.dangerArmUntil = 0;
         }
-        setToast(String("Sent ") + item.label, 1000);
+        setToast(actionFeedbackLabel(item), 1200);
         return;
     }
 
@@ -8369,9 +8391,9 @@ void activateSelectedItem() {
                 const int32_t nextValue = clampValue(app.draftValue, item.minValue, item.maxValue);
                 if(applyMenuValue(item, nextValue)) {
                     if(isRadioModeItem(item)) {
-                        setToast(nextValue == kControllerRadioDual ? "Wi-Fi enabling" : "Wi-Fi disabling", 1200);
+                        setToast(transportFromRadioMode(nextValue) == LinkTransport::WebSocket ? "Wi-Fi enabling" : "Wi-Fi disabling", 1200);
                     } else {
-                        setToast(String("Saved ") + item.label);
+                        setToast(actionFeedbackLabel(item), 1200);
                     }
                 } else {
                     setToast("Send failed", 1000);
@@ -8388,7 +8410,7 @@ void activateSelectedItem() {
             if(app.localUiSounds != 0) {
                 remote_audio_play(RemoteAudioTone::Click);
             }
-            setToast(String(item.label) + ": " + formatValueLabel(item, nextValue));
+            setToast(actionFeedbackLabel(item), 1200);
         } else {
             setToast("Send failed", 1000);
         }
@@ -9757,6 +9779,612 @@ void appendRemoteSnapshotJson(String& out) {
     out += "]}";
 }
 
+String stableRemoteMacAddress() {
+    const uint64_t mac = ESP.getEfuseMac();
+    char out[18];
+    snprintf(out,
+             sizeof(out),
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             static_cast<unsigned>(mac & 0xFF),
+             static_cast<unsigned>((mac >> 8) & 0xFF),
+             static_cast<unsigned>((mac >> 16) & 0xFF),
+             static_cast<unsigned>((mac >> 24) & 0xFF),
+             static_cast<unsigned>((mac >> 32) & 0xFF),
+             static_cast<unsigned>((mac >> 40) & 0xFF));
+    return String(out);
+}
+
+String urlEncodeFormValue(const String& value) {
+    static const char* kHex = "0123456789ABCDEF";
+    String out;
+    out.reserve(value.length() + 8);
+    for(size_t i = 0; i < value.length(); ++i) {
+        const uint8_t ch = static_cast<uint8_t>(value.charAt(i));
+        if((ch >= 'A' && ch <= 'Z') ||
+           (ch >= 'a' && ch <= 'z') ||
+           (ch >= '0' && ch <= '9') ||
+           ch == '-' ||
+           ch == '_' ||
+           ch == '.' ||
+           ch == '~') {
+            out += static_cast<char>(ch);
+        } else if(ch == ' ') {
+            out += '+';
+        } else {
+            out += '%';
+            out += kHex[(ch >> 4) & 0x0F];
+            out += kHex[ch & 0x0F];
+        }
+    }
+    return out;
+}
+
+const char* wifiStatusName(wl_status_t status) {
+    switch(status) {
+        case WL_CONNECTED: return "connected";
+        case WL_NO_SSID_AVAIL: return "no_ssid";
+        case WL_CONNECT_FAILED: return "connect_failed";
+        case WL_CONNECTION_LOST: return "connection_lost";
+        case WL_DISCONNECTED: return "disconnected";
+        case WL_IDLE_STATUS: return "idle";
+        default: return "unknown";
+    }
+}
+
+struct WifiPhoneHttpResult {
+    bool ok = false;
+    int code = -1;
+    size_t length = 0;
+    String body;
+    String error;
+};
+
+struct WifiPhoneApScanResult {
+    bool found = false;
+    int32_t channel = 0;
+    int32_t rssi = -127;
+    uint8_t bssid[6] = {};
+};
+
+void printWifiPhoneEvent(const char* step,
+                         bool ok,
+                         int code,
+                         size_t length,
+                         const String& detail,
+                         const String& body = String(),
+                         const String& needle = String()) {
+    String out;
+    out.reserve(512);
+    out += "{\"type\":\"wifi_phone\",\"step\":";
+    appendJsonQuoted(out, step);
+    out += ",\"ok\":";
+    out += ok ? "true" : "false";
+    out += ",\"code\":";
+    out += String(code);
+    out += ",\"length\":";
+    out += String(length);
+    out += ",\"detail\":";
+    appendJsonQuoted(out, detail);
+    if(needle.length() > 0) {
+        out += ",\"containsNeedle\":";
+        out += body.indexOf(needle) >= 0 ? "true" : "false";
+    }
+    if(body.length() > 0) {
+        String snippet = body.substring(0, min<size_t>(body.length(), 180));
+        snippet.replace("\n", " ");
+        snippet.replace("\r", " ");
+        out += ",\"snippet\":";
+        appendJsonQuoted(out, snippet);
+    }
+    out += '}';
+    Serial.println(out);
+}
+
+WifiPhoneHttpResult wifiPhoneHttpRequest(const char* method, const String& path, const String& formBody = String()) {
+    WifiPhoneHttpResult result;
+    WiFiClient client;
+    client.setTimeout(2500);
+    const IPAddress controllerIp(192, 168, 4, 1);
+    if(!client.connect(controllerIp, 80, 2500)) {
+        result.error = "connect failed";
+        return result;
+    }
+    client.setNoDelay(true);
+
+    client.print(method);
+    client.print(' ');
+    client.print(path);
+    client.print(" HTTP/1.0\r\nHost: 192.168.4.1\r\nConnection: close\r\n");
+    if(formBody.length() > 0) {
+        client.print("Content-Type: application/x-www-form-urlencoded;charset=UTF-8\r\nContent-Length: ");
+        client.print(formBody.length());
+        client.print("\r\n");
+    }
+    client.print("\r\n");
+    if(formBody.length() > 0) {
+        client.print(formBody);
+    }
+
+    const uint32_t startedAt = millis();
+    uint32_t lastDataAt = startedAt;
+    int expectedTotal = -1;
+    while((millis() - startedAt) < 20000) {
+        while(client.available() > 0) {
+            const char ch = static_cast<char>(client.read());
+            if(result.body.length() < 4096) {
+                result.body += ch;
+            }
+            ++result.length;
+            lastDataAt = millis();
+        }
+        if(expectedTotal < 0) {
+            const int headerEnd = result.body.indexOf("\r\n\r\n");
+            const int contentLengthAt = result.body.indexOf("Content-Length:");
+            if(headerEnd >= 0 && contentLengthAt >= 0 && contentLengthAt < headerEnd) {
+                const int valueStart = contentLengthAt + 15;
+                const int valueEnd = result.body.indexOf("\r\n", valueStart);
+                const int contentLength = result.body.substring(valueStart, valueEnd).toInt();
+                if(contentLength >= 0) {
+                    expectedTotal = headerEnd + 4 + contentLength;
+                }
+            }
+        }
+        if(expectedTotal >= 0 && result.length >= static_cast<size_t>(expectedTotal)) {
+            break;
+        }
+        const uint32_t idleMs = millis() - lastDataAt;
+        if(!client.connected() && client.available() <= 0 && idleMs > 500) {
+            break;
+        }
+        if(idleMs > (expectedTotal >= 0 ? 8000UL : 5000UL)) {
+            break;
+        }
+        delay(10);
+        yield();
+    }
+    const uint32_t settleUntil = millis() + 450UL;
+    while(static_cast<int32_t>(millis() - settleUntil) < 0) {
+        while(client.available() > 0) {
+            (void)client.read();
+        }
+        delay(10);
+        yield();
+    }
+    client.stop();
+
+    const int firstSpace = result.body.indexOf(' ');
+    if(firstSpace >= 0 && result.body.startsWith("HTTP/")) {
+        result.code = result.body.substring(firstSpace + 1, firstSpace + 4).toInt();
+    }
+    result.ok = result.code >= 200 && result.code < 400;
+    if(result.code < 0) {
+        result.error = "no status";
+    } else if(!result.ok) {
+        result.error = String("http ") + String(result.code);
+    }
+    return result;
+}
+
+WifiPhoneHttpResult wifiPhoneHttpGet(const String& path) {
+    return wifiPhoneHttpRequest("GET", path);
+}
+
+WifiPhoneHttpResult wifiPhoneHttpPost(const String& path, const String& formBody) {
+    return wifiPhoneHttpRequest("POST", path, formBody);
+}
+
+WifiPhoneHttpResult wifiProbeHttpGet(const String& host, const String& path) {
+    WifiPhoneHttpResult result;
+    WiFiClient client;
+    client.setTimeout(2500);
+    IPAddress numericHost;
+    const bool hostIsIp = numericHost.fromString(host);
+    const bool connected = hostIsIp
+                               ? client.connect(numericHost, 80, 5000)
+                               : client.connect(host.c_str(), 80, 5000);
+    if(!connected) {
+        result.error = "connect failed";
+        return result;
+    }
+    client.setNoDelay(true);
+
+    client.print("GET ");
+    client.print(path.length() > 0 ? path : String("/"));
+    client.print(" HTTP/1.0\r\nHost: ");
+    client.print(host);
+    client.print("\r\nConnection: close\r\n\r\n");
+
+    const uint32_t startedAt = millis();
+    uint32_t lastDataAt = startedAt;
+    while((millis() - startedAt) < 20000) {
+        while(client.available() > 0) {
+            const char ch = static_cast<char>(client.read());
+            if(result.body.length() < 4096) {
+                result.body += ch;
+            }
+            ++result.length;
+            lastDataAt = millis();
+        }
+        const uint32_t idleMs = millis() - lastDataAt;
+        if(!client.connected() && client.available() <= 0 && idleMs > 500) {
+            break;
+        }
+        if(idleMs > 5000) {
+            break;
+        }
+        delay(10);
+        yield();
+    }
+    const uint32_t settleUntil = millis() + 450UL;
+    while(static_cast<int32_t>(millis() - settleUntil) < 0) {
+        while(client.available() > 0) {
+            (void)client.read();
+        }
+        delay(10);
+        yield();
+    }
+    client.stop();
+
+    const int firstSpace = result.body.indexOf(' ');
+    if(firstSpace >= 0 && result.body.startsWith("HTTP/")) {
+        result.code = result.body.substring(firstSpace + 1, firstSpace + 4).toInt();
+    }
+    result.ok = result.code >= 200 && result.code < 400;
+    if(result.code < 0) {
+        result.error = "no status";
+    } else if(!result.ok) {
+        result.error = String("http ") + String(result.code);
+    }
+    return result;
+}
+
+bool waitForPhoneStaConnection(const String& ssid, const String& password, uint32_t timeoutMs) {
+    WiFi.mode(WIFI_STA);
+    delay(100);
+    delay(1800);
+    yield();
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+    const uint32_t disconnectStartedAt = millis();
+    while((millis() - disconnectStartedAt) < 1500 &&
+          (WiFi.status() == WL_CONNECTED || WiFi.localIP()[0] != 0)) {
+        delay(50);
+        yield();
+    }
+    WiFi.mode(WIFI_STA);
+    delay(100);
+    WiFi.setAutoReconnect(false);
+    WiFi.setSleep(false);
+
+    WifiPhoneApScanResult scanResult;
+    const int networkCount = WiFi.scanNetworks(false, true, false, 500, 0);
+    for(int i = 0; i < networkCount; ++i) {
+        if(WiFi.SSID(i) == ssid) {
+            scanResult.found = true;
+            scanResult.channel = WiFi.channel(i);
+            scanResult.rssi = WiFi.RSSI(i);
+            const uint8_t* bssid = WiFi.BSSID(i);
+            if(bssid != nullptr) {
+                memcpy(scanResult.bssid, bssid, sizeof(scanResult.bssid));
+            }
+            break;
+        }
+    }
+    printWifiPhoneEvent("scan_controller_ap",
+                        scanResult.found,
+                        networkCount,
+                        networkCount > 0 ? static_cast<size_t>(networkCount) : 0,
+                        scanResult.found
+                            ? (String("channel=") + String(scanResult.channel) +
+                               " rssi=" + String(scanResult.rssi))
+                            : String("not found"));
+
+    const char* passphrase = password.length() > 0 ? password.c_str() : nullptr;
+    WiFi.scanDelete();
+    delay(50);
+    const wl_status_t beginStatus = scanResult.found && scanResult.channel > 0
+                                        ? WiFi.begin(ssid.c_str(), passphrase, scanResult.channel, scanResult.bssid)
+                                        : WiFi.begin(ssid.c_str(), passphrase);
+    printWifiPhoneEvent("begin_controller_ap",
+                        beginStatus != WL_CONNECT_FAILED,
+                        static_cast<int>(beginStatus),
+                        0,
+                        wifiStatusName(beginStatus));
+
+    const uint32_t startedAt = millis();
+    while((millis() - startedAt) < timeoutMs) {
+        if(WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0 && WiFi.gatewayIP()[0] != 0) {
+            delay(650);
+            yield();
+            return true;
+        }
+        delay(250);
+        yield();
+    }
+    return false;
+}
+
+void restoreEspNowAfterWifiPhoneTest() {
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+    WiFi.mode(WIFI_MODE_NULL);
+    app.currentTransport = LinkTransport::None;
+    app.transportOverrideActive = true;
+    switchTransportNow(LinkTransport::EspNow);
+    requestEspNowDiscovery(true);
+}
+
+bool runWifiPhoneProvisionTest(const String& controllerApSsid,
+                               const String& homeSsid,
+                               const String& homePassword,
+                               String* message) {
+    if(controllerApSsid.isEmpty() || homeSsid.isEmpty()) {
+        if(message != nullptr) {
+            *message = "usage: wifi phone <controller_ap_ssid> <home_ssid> <home_password>";
+        }
+        return false;
+    }
+
+    stopWebSocketSession();
+    if(remote_wifi_is_active()) {
+        remote_wifi_stop();
+    }
+    stopEspNowSession();
+    app.currentTransport = LinkTransport::None;
+    app.lastLinkActivityAt = 0;
+
+    const bool staOk = waitForPhoneStaConnection(controllerApSsid, "", 22000);
+    String connectDetail = String("ssid=") + controllerApSsid +
+                           " status=" + wifiStatusName(WiFi.status()) +
+                           " ip=" + WiFi.localIP().toString();
+    printWifiPhoneEvent("connect_controller_ap", staOk, 0, 0, connectDetail);
+    if(!staOk) {
+        restoreEspNowAfterWifiPhoneTest();
+        if(message != nullptr) {
+            *message = "controller AP connect failed";
+        }
+        return false;
+    }
+
+    auto ensureControllerApConnected = [&]() -> bool {
+        if(WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0) {
+            return true;
+        }
+        return waitForPhoneStaConnection(controllerApSsid, "", 12000);
+    };
+    auto forceControllerApReconnect = [&]() -> bool {
+        WiFi.disconnect(false, false);
+        delay(800);
+        return waitForPhoneStaConnection(controllerApSsid, "", 12000);
+    };
+
+    struct EndpointProbe {
+        const char* step;
+        const char* path;
+        const char* needle;
+    };
+    const EndpointProbe probes[] = {
+        {"apple_captive", "/hotspot-detect.html", "SG98"},
+    };
+    for(const EndpointProbe& probe : probes) {
+        if(!ensureControllerApConnected()) {
+            restoreEspNowAfterWifiPhoneTest();
+            if(message != nullptr) {
+                *message = String("reconnect failed before ") + probe.step;
+            }
+            return false;
+        }
+        const WifiPhoneHttpResult result = wifiPhoneHttpGet(probe.path);
+        printWifiPhoneEvent(probe.step,
+                            result.ok,
+                            result.code,
+                            result.length,
+                            result.error.length() ? result.error : String(probe.path),
+                            result.body,
+                            probe.needle);
+        if(!result.ok) {
+            restoreEspNowAfterWifiPhoneTest();
+            if(message != nullptr) {
+                *message = String("http failed at ") + probe.step;
+            }
+            return false;
+        }
+    }
+    bool scanComplete = false;
+    bool scanSawHome = false;
+    for(uint8_t attempt = 0; attempt < 8; ++attempt) {
+        if(!ensureControllerApConnected()) {
+            break;
+        }
+        const String path = attempt == 0 ? "/api/wifi_scan?force=1" : "/api/wifi_scan";
+        const WifiPhoneHttpResult scan = wifiPhoneHttpGet(path);
+        scanComplete = scan.ok && scan.body.indexOf("\"scanning\":false") >= 0;
+        scanSawHome = scan.body.indexOf(homeSsid) >= 0;
+        printWifiPhoneEvent("controller_wifi_scan",
+                            scan.ok,
+                            scan.code,
+                            scan.length,
+                            path,
+                            scan.body,
+                            homeSsid);
+        if(!scan.ok) {
+            (void)forceControllerApReconnect();
+        }
+        if(scanComplete) {
+            break;
+        }
+        delay(1400);
+        yield();
+    }
+
+    const String form = String("action=save&ssid=") + urlEncodeFormValue(homeSsid) +
+                        "&password=" + urlEncodeFormValue(homePassword);
+    bool saveOk = false;
+    for(uint8_t attempt = 0; attempt < 5; ++attempt) {
+        if(!ensureControllerApConnected() && !forceControllerApReconnect()) {
+            continue;
+        }
+        const WifiPhoneHttpResult save = wifiPhoneHttpPost("/api/wifi", form);
+        printWifiPhoneEvent("save_home_wifi",
+                            save.ok,
+                            save.code,
+                            save.length,
+                            String("attempt=") + String(static_cast<unsigned>(attempt + 1)) +
+                                " ssid=" + homeSsid,
+                            save.body,
+                            "saved");
+        if(save.ok) {
+            saveOk = true;
+            break;
+        }
+        (void)forceControllerApReconnect();
+        delay(1000);
+        yield();
+    }
+    if(!saveOk) {
+        restoreEspNowAfterWifiPhoneTest();
+        if(message != nullptr) {
+            *message = "save failed";
+        }
+        return false;
+    }
+
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+    delay(250);
+    WiFi.mode(WIFI_MODE_NULL);
+    delay(6500);
+    yield();
+    bool controllerStaConnected = false;
+    for(uint8_t attempt = 0; attempt < 5; ++attempt) {
+        if(!waitForPhoneStaConnection(controllerApSsid, "", 10000)) {
+            printWifiPhoneEvent("controller_wifi_status",
+                                false,
+                                -1,
+                                0,
+                                String("attempt=") + String(static_cast<unsigned>(attempt + 1)) +
+                                    " reconnect failed",
+                                String(),
+                                "\"staConnected\":true");
+            delay(2200);
+            yield();
+            continue;
+        }
+        const WifiPhoneHttpResult status = wifiPhoneHttpGet("/api/wifi");
+        controllerStaConnected = status.ok &&
+                                 status.body.indexOf("\"staConnected\":true") >= 0 &&
+                                 status.body.indexOf(homeSsid) >= 0;
+        printWifiPhoneEvent("controller_wifi_status",
+                            status.ok,
+                            status.code,
+                            status.length,
+                            String("attempt=") + String(static_cast<unsigned>(attempt + 1)),
+                            status.body,
+                            "\"staConnected\":true");
+        if(controllerStaConnected) {
+            delay(1800);
+            yield();
+            break;
+        }
+        WiFi.setAutoReconnect(false);
+        WiFi.disconnect(false, false);
+        delay(2500);
+        yield();
+    }
+
+    restoreEspNowAfterWifiPhoneTest();
+    if(message != nullptr) {
+        *message = controllerStaConnected
+                       ? (scanSawHome ? "phone simulation passed" : "passed; home ssid not seen in scan")
+                       : "saved; controller sta not confirmed";
+    }
+    return controllerStaConnected;
+}
+
+bool runWifiProbeTest(const String& ssid, const String& host, const String& path, String* message) {
+    if(ssid.isEmpty()) {
+        if(message != nullptr) {
+            *message = "usage: wifi probe <ssid> [host] [path]";
+        }
+        return false;
+    }
+
+    stopWebSocketSession();
+    if(remote_wifi_is_active()) {
+        remote_wifi_stop();
+    }
+    stopEspNowSession();
+    app.currentTransport = LinkTransport::None;
+    app.lastLinkActivityAt = 0;
+
+    const bool staOk = waitForPhoneStaConnection(ssid, "", 22000);
+    String connectDetail = String("ssid=") + ssid +
+                           " status=" + wifiStatusName(WiFi.status()) +
+                           " ip=" + WiFi.localIP().toString() +
+                           " gw=" + WiFi.gatewayIP().toString() +
+                           " dns=" + WiFi.dnsIP().toString() +
+                           " mask=" + WiFi.subnetMask().toString();
+    printWifiPhoneEvent("probe_connect", staOk, 0, 0, connectDetail);
+    bool ok = staOk;
+    if(staOk) {
+        const String requestHost = host.length() > 0 ? host : String("captive.apple.com");
+        const String requestPath = path.length() > 0 ? path : String("/hotspot-detect.html");
+        const WifiPhoneHttpResult result = wifiProbeHttpGet(requestHost, requestPath);
+        printWifiPhoneEvent("probe_http",
+                            result.ok,
+                            result.code,
+                            result.length,
+                            requestHost + requestPath,
+                            result.body);
+        ok = result.ok;
+    }
+
+    restoreEspNowAfterWifiPhoneTest();
+    if(message != nullptr) {
+        *message = ok ? "probe passed" : "probe failed";
+    }
+    return ok;
+}
+
+bool runWifiBounceTest(const String& ssid, String* message) {
+    if(ssid.isEmpty()) {
+        if(message != nullptr) {
+            *message = "usage: wifi bounce <ssid>";
+        }
+        return false;
+    }
+
+    stopWebSocketSession();
+    if(remote_wifi_is_active()) {
+        remote_wifi_stop();
+    }
+    stopEspNowSession();
+    app.currentTransport = LinkTransport::None;
+    app.lastLinkActivityAt = 0;
+
+    bool staOk = waitForPhoneStaConnection(ssid, "", 26000);
+    if(!staOk) {
+        delay(1000);
+        staOk = waitForPhoneStaConnection(ssid, "", 26000);
+    }
+    String connectDetail = String("ssid=") + ssid +
+                           " status=" + wifiStatusName(WiFi.status()) +
+                           " ip=" + WiFi.localIP().toString() +
+                           " gw=" + WiFi.gatewayIP().toString();
+    printWifiPhoneEvent("bounce_connect", staOk, 0, 0, connectDetail);
+
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, false);
+    delay(500);
+    WiFi.mode(WIFI_MODE_NULL);
+    app.currentTransport = LinkTransport::None;
+    app.transportOverrideActive = true;
+    if(message != nullptr) {
+        *message = staOk ? "bounce passed" : "bounce failed";
+    }
+    return staOk;
+}
+
 void printRemoteConsoleAck(const String& cmd, bool ok, const String& message) {
     String out;
     out.reserve(256);
@@ -9785,7 +10413,7 @@ void printRemoteConsoleDevice() {
     out += "{\"type\":\"device\",\"protocol\":\"sg98-usb-device-v1\",\"role\":\"remote\",\"target\":\"remote\",\"board\":";
     appendJsonQuoted(out, remote_board_info().name);
     out += ",\"mac\":";
-    appendJsonQuoted(out, WiFi.macAddress());
+    appendJsonQuoted(out, stableRemoteMacAddress());
     out += ",\"transport\":";
     appendJsonQuoted(out, transportName(app.currentTransport));
     out += ",\"apSSID\":";
@@ -9818,6 +10446,9 @@ void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
+    Serial.println("[remote-diag] wifi: wifi phone <controller_ap_ssid> <home_ssid> <home_password>");
+    Serial.println("[remote-diag] wifi: wifi probe <ssid> [host] [path]");
+    Serial.println("[remote-diag] wifi: wifi bounce <ssid>");
     Serial.println("[remote-diag] raw: raw <protocol-frame>");
 }
 
@@ -10259,6 +10890,40 @@ void handleRemoteConsoleLine(const char* rawLine) {
             return;
         }
         printRemoteConsoleAck(line, false, "usage: peer scan|list|lock <MAC>|clear");
+        return;
+    }
+
+    if(cmd == "wifi") {
+        String sub = takeToken(&tail);
+        sub.toLowerCase();
+        if(sub == "phone") {
+            const String controllerApSsid = takeToken(&tail);
+            const String homeSsid = takeToken(&tail);
+            const String homePassword = takeToken(&tail);
+            String message;
+            const bool ok = runWifiPhoneProvisionTest(controllerApSsid, homeSsid, homePassword, &message);
+            printRemoteConsoleAck(line, ok, message);
+            return;
+        }
+        if(sub == "probe") {
+            const String ssid = takeToken(&tail);
+            const String host = takeToken(&tail);
+            const String path = takeToken(&tail);
+            String message;
+            const bool ok = runWifiProbeTest(ssid, host, path, &message);
+            printRemoteConsoleAck(line, ok, message);
+            return;
+        }
+        if(sub == "bounce") {
+            const String ssid = takeToken(&tail);
+            String message;
+            const bool ok = runWifiBounceTest(ssid, &message);
+            printRemoteConsoleAck(line, ok, message);
+            return;
+        }
+        printRemoteConsoleAck(line,
+                              false,
+                              "usage: wifi phone <controller_ap_ssid> <home_ssid> <home_password> | wifi probe <ssid> [host] [path] | wifi bounce <ssid>");
         return;
     }
 

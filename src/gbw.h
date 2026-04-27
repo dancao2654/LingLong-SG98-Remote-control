@@ -32,6 +32,7 @@ enum SCALE_STATUS {SCALE_DISCONNECTED, SCALE_CONNECTED, SCALE_CONNECTING, SCALE_
 extern volatile SCALE_STATUS scaleStatus; 
 
 void scales_init();
+void gbw_set_ble_paused_for_wifi(bool paused);
 void gbwVitals();
 int16_t fakeScale();
 bool scale_connected();

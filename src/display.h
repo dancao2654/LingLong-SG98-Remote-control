@@ -13,6 +13,7 @@ void update_display();
 void display_off();
 void display_on();
 void display_show_motor_probe_splash(const char* motorLabel);
+void display_show_action_feedback(const char* label, unsigned long durationMs = 900);
 
 void drawErrorOverlay();
 void drawIdleScreen();

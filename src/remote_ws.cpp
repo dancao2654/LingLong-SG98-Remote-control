@@ -5,18 +5,21 @@
 #include <WiFi.h>
 
 #include "remote_link.h"
+#include "wifi_ui.h"
 #include <sg98_remote_protocol.h>
 
 namespace {
 
 constexpr uint16_t kRemoteWsPort = 81;
 constexpr uint32_t kMdnsRetryMs = 3000;
+constexpr uint32_t kMdnsMinFreeHeap = 24000;
 
 WebSocketsServer wsServer(kRemoteWsPort);
 bool wsActive = false;
 bool mdnsActive = false;
 String mdnsHostname;
 uint32_t lastMdnsAttemptAt = 0;
+uint32_t mdnsLowHeapSkips = 0;
 
 String buildHostname() {
     const uint64_t chipId = ESP.getEfuseMac();
@@ -39,17 +42,29 @@ void startMdnsIfNeeded() {
     if(!wsActive || mdnsActive || WiFi.status() != WL_CONNECTED) {
         return;
     }
+    if(wifi_ui_web_activity_recent()) {
+        return;
+    }
     if(lastMdnsAttemptAt + kMdnsRetryMs > millis()) {
         return;
     }
 
     lastMdnsAttemptAt = millis();
+    const uint32_t freeHeap = ESP.getFreeHeap();
+    if(freeHeap < kMdnsMinFreeHeap) {
+        if((mdnsLowHeapSkips++ % 20U) == 0U) {
+            Serial.printf("[remote_ws] mdns deferred low_heap=%lu\n",
+                          static_cast<unsigned long>(freeHeap));
+        }
+        return;
+    }
     if(MDNS.begin(mdnsHostname.c_str())) {
         MDNS.addService("sg98", "tcp", kRemoteWsPort);
         MDNS.addServiceTxt("sg98", "tcp", "path", "/");
         MDNS.addServiceTxt("sg98", "tcp", "role", "controller");
         MDNS.addServiceTxt("sg98", "tcp", "transport", "websocket");
         mdnsActive = true;
+        mdnsLowHeapSkips = 0;
         Serial.printf("[remote_ws] mdns=%s.local port=%u\n",
                       mdnsHostname.c_str(),
                       static_cast<unsigned>(kRemoteWsPort));
@@ -164,7 +179,11 @@ void remote_ws_poll() {
 
     wsServer.loop();
     startMdnsIfNeeded();
-    if(mdnsActive && WiFi.status() != WL_CONNECTED) {
+    if(mdnsActive && (WiFi.status() != WL_CONNECTED || wifi_ui_web_activity_recent())) {
         stopMdns();
     }
+}
+
+bool remote_ws_is_active() {
+    return wsActive;
 }

@@ -16,6 +16,10 @@ namespace {
 
 constexpr int kDisplayWidth = 466;
 constexpr int kDisplayHeight = 466;
+constexpr uint8_t kDisplayColumnOffset = 6;
+constexpr uint8_t kDisplayRowOffset = 0;
+constexpr int16_t kUiCenterShiftX = 1;
+constexpr int16_t kUiCenterShiftY = 7;
 constexpr uint8_t kTouchAddress = 0x5A;
 constexpr uint8_t kRtcAddress = 0x51;
 constexpr uint8_t kAudioCodecAddress = 0x18;
@@ -402,14 +406,14 @@ class WaveshareCanvas : public RemoteCanvas {
     void fillRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
         Arduino_GFX* gfx = activeDisplay();
         if(gfx != nullptr) {
-            gfx->fillRect(x, y, w, h, color);
+            gfx->fillRect(shiftX(x), shiftY(y), w, h, color);
         }
     }
 
     void drawRect(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t color) override {
         Arduino_GFX* gfx = activeDisplay();
         if(gfx != nullptr) {
-            gfx->drawRect(x, y, w, h, color);
+            gfx->drawRect(shiftX(x), shiftY(y), w, h, color);
         }
     }
 
@@ -421,7 +425,7 @@ class WaveshareCanvas : public RemoteCanvas {
                        uint16_t color) override {
         Arduino_GFX* gfx = activeDisplay();
         if(gfx != nullptr) {
-            gfx->fillRoundRect(x, y, w, h, radius, color);
+            gfx->fillRoundRect(shiftX(x), shiftY(y), w, h, radius, color);
         }
     }
 
@@ -433,28 +437,28 @@ class WaveshareCanvas : public RemoteCanvas {
                        uint16_t color) override {
         Arduino_GFX* gfx = activeDisplay();
         if(gfx != nullptr) {
-            gfx->drawRoundRect(x, y, w, h, radius, color);
+            gfx->drawRoundRect(shiftX(x), shiftY(y), w, h, radius, color);
         }
     }
 
     void fillCircle(int16_t x, int16_t y, int16_t radius, uint16_t color) override {
         Arduino_GFX* gfx = activeDisplay();
         if(gfx != nullptr) {
-            gfx->fillCircle(x, y, radius, color);
+            gfx->fillCircle(shiftX(x), shiftY(y), radius, color);
         }
     }
 
     void drawCircle(int16_t x, int16_t y, int16_t radius, uint16_t color) override {
         Arduino_GFX* gfx = activeDisplay();
         if(gfx != nullptr) {
-            gfx->drawCircle(x, y, radius, color);
+            gfx->drawCircle(shiftX(x), shiftY(y), radius, color);
         }
     }
 
     void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) override {
         Arduino_GFX* gfx = activeDisplay();
         if(gfx != nullptr) {
-            gfx->drawLine(x0, y0, x1, y1, color);
+            gfx->drawLine(shiftX(x0), shiftY(y0), shiftX(x1), shiftY(y1), color);
         }
     }
 
@@ -474,7 +478,8 @@ class WaveshareCanvas : public RemoteCanvas {
         uint16_t w = 0;
         uint16_t h = 0;
         gfx->getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
-        gfx->setCursor(x - static_cast<int16_t>(w / 2), y - static_cast<int16_t>(h / 2));
+        gfx->setCursor(static_cast<int16_t>(shiftX(x) - static_cast<int16_t>(w / 2)),
+                       static_cast<int16_t>(shiftY(y) - static_cast<int16_t>(h / 2)));
         gfx->print(text);
     }
 
@@ -536,9 +541,9 @@ class WaveshareCanvas : public RemoteCanvas {
                 const float dx = static_cast<float>(col) - pivotX;
                 const float dy = static_cast<float>(row) - pivotY;
                 const int16_t dstX =
-                    static_cast<int16_t>(lroundf(static_cast<float>(x) + (dx * c) - (dy * s)));
+                    static_cast<int16_t>(lroundf(static_cast<float>(shiftX(x)) + (dx * c) - (dy * s)));
                 const int16_t dstY =
-                    static_cast<int16_t>(lroundf(static_cast<float>(y) + (dx * s) + (dy * c)));
+                    static_cast<int16_t>(lroundf(static_cast<float>(shiftY(y)) + (dx * s) + (dy * c)));
                 gfx->drawPixel(dstX, dstY, color);
             }
         }
@@ -555,7 +560,7 @@ class WaveshareCanvas : public RemoteCanvas {
             return;
         }
         configureText(style, textColor, bgColor);
-        gfx->setCursor(x, y + baselineOffset(style));
+        gfx->setCursor(shiftX(x), static_cast<int16_t>(shiftY(y) + baselineOffset(style)));
         gfx->print(text);
     }
 
@@ -575,7 +580,8 @@ class WaveshareCanvas : public RemoteCanvas {
         uint16_t w = 0;
         uint16_t h = 0;
         gfx->getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
-        gfx->setCursor(x - static_cast<int16_t>(w), y + baselineOffset(style));
+        gfx->setCursor(static_cast<int16_t>(shiftX(x) - static_cast<int16_t>(w)),
+                       static_cast<int16_t>(shiftY(y) + baselineOffset(style)));
         gfx->print(text);
     }
 
@@ -592,6 +598,14 @@ class WaveshareCanvas : public RemoteCanvas {
             return nullptr;
         }
         return *display_;
+    }
+
+    int16_t shiftX(int16_t x) const {
+        return static_cast<int16_t>(x + kUiCenterShiftX);
+    }
+
+    int16_t shiftY(int16_t y) const {
+        return static_cast<int16_t>(y + kUiCenterShiftY);
     }
 
     uint8_t sizeForStyle(RemoteTextStyle style) const {
@@ -771,8 +785,8 @@ bool ensureDisplayObjects() {
         0,
         kDisplayWidth,
         kDisplayHeight,
-        6,
-        0,
+        kDisplayColumnOffset,
+        kDisplayRowOffset,
         0,
         0);
     if(g_display == nullptr) {
@@ -1121,6 +1135,19 @@ void mapTouchForDisplayRotation(int16_t* x, int16_t* y) {
     }
 }
 
+void mapTouchForCenteredUi(int16_t* x, int16_t* y) {
+    if(x == nullptr || y == nullptr) {
+        return;
+    }
+
+    *x = static_cast<int16_t>(*x - kUiCenterShiftX);
+    *y = static_cast<int16_t>(*y - kUiCenterShiftY);
+    if(*x < 0) *x = 0;
+    if(*y < 0) *y = 0;
+    if(*x >= kDisplayWidth) *x = static_cast<int16_t>(kDisplayWidth - 1);
+    if(*y >= kDisplayHeight) *y = static_cast<int16_t>(kDisplayHeight - 1);
+}
+
 uint8_t correctedDisplayRotation(uint8_t rotation) {
     return static_cast<uint8_t>((rotation + kDisplayAutoRotateCorrection) & 0x03);
 }
@@ -1266,6 +1293,7 @@ bool readTouchPointSample(int16_t* x, int16_t* y) {
     *x = static_cast<int16_t>(point.x);
     *y = static_cast<int16_t>(point.y);
     mapTouchForDisplayRotation(x, y);
+    mapTouchForCenteredUi(x, y);
     return true;
 }
 

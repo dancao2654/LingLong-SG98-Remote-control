@@ -13,6 +13,7 @@ constexpr uint32_t kNtpSyncMs = 60UL * 60UL * 1000UL;
 constexpr uint32_t kWeatherFetchMs = 15UL * 60UL * 1000UL;
 constexpr uint32_t kWeatherRetryMs = 60UL * 1000UL;
 constexpr uint16_t kWeatherHttpTimeoutMs = 1200;
+constexpr uint32_t kNetworkFetchMinFreeHeap = 30000;
 constexpr const char* kTimezone = "PST8PDT,M3.2.0,M11.1.0";
 constexpr const char* kNtpServer1 = "pool.ntp.org";
 constexpr const char* kNtpServer2 = "time.nist.gov";
@@ -116,6 +117,9 @@ void serviceWeather(uint32_t now) {
     if(!controllerCanFetchWeather()) {
         return;
     }
+    if(wifi_ui_web_activity_recent() || ESP.getFreeHeap() < kNetworkFetchMinFreeHeap) {
+        return;
+    }
     const uint32_t interval = g_environment.weatherValid ? kWeatherFetchMs : kWeatherRetryMs;
     if(g_lastWeatherAttemptAt != 0 && (now - g_lastWeatherAttemptAt) < interval) {
         return;
@@ -152,6 +156,9 @@ void controller_env_poll() {
     const uint32_t now = millis();
     serviceTime(now);
     refreshTimeSnapshot();
+    if(wifi_ui_web_activity_recent()) {
+        return;
+    }
     serviceWeather(now);
 }
 

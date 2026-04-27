@@ -43,6 +43,14 @@ bool encButtonLongPressEvent = false;
 unsigned long encButtonDebounceStartedAt = 0;
 unsigned long encButtonLastStableChangeAt = 0;
 
+void showMenuEntryFeedback(const menuEntry& entry, const char* suffix = " applied", unsigned long durationMs = 900) {
+    const char* name = entry.name != nullptr && entry.name[0] != '\0' ? entry.name : "Setting";
+    const char* tail = suffix != nullptr ? suffix : "";
+    char label[64];
+    snprintf(label, sizeof(label), "%s%s", name, tail);
+    display_show_action_feedback(label, durationMs);
+}
+
 void pollEncoderButton() {
     const ControllerBoardPins& pins = controller_board_pins();
     if(!controller_board_has_encoder_button() || !controller_board_pin_valid(pins.encoderButton)) {
@@ -195,6 +203,7 @@ void applyDriveSelection() {
     commCounter = 0;
     controller_note_activity();
     state = motorSelectReturnState;
+    display_show_action_feedback("Drive applied");
 }
 }
 
@@ -416,7 +425,12 @@ void do_io() {
         if(menu1Selected < 0) menu1Selected = NUM_MENU1_ITEMS - 1;
 
         if(enterMenu == true) { 
-            Menu1[menu1Selected].value += encoder_change() * Menu1[menu1Selected].scalar;
+            const int encoderDelta = encoder_change();
+            if(menu1Selected == Menu1Items::RADIOMODE) {
+                Menu1[menu1Selected].value = radio_mode_next_user_value(Menu1[menu1Selected].value, encoderDelta);
+            } else {
+                Menu1[menu1Selected].value += encoderDelta * Menu1[menu1Selected].scalar;
+            }
             if(Menu1[menu1Selected].value > Menu1[menu1Selected].maxValue) Menu1[menu1Selected].value = Menu1[menu1Selected].maxValue;
             if(Menu1[menu1Selected].value < Menu1[menu1Selected].minValue) Menu1[menu1Selected].value = Menu1[menu1Selected].minValue;
             if(menu1Selected == Menu1Items::SETMAX && Menu1[SETMAX].value < Menu1[SETMIN].value) {
@@ -462,20 +476,27 @@ void do_io() {
                 if(menu1Selected == Menu1Items::RADIOMODE) {
                     if(radio_mode_apply()) {
                         pdata_write(2);
+                        display_show_action_feedback("Wi-Fi applied");
                     } else {
                         Menu1[menu1Selected].value = OriginalValue;
                         disp_updateRequired = true;
                     }
                 } else if(menu1Selected != Menu1Items::RESET && menu1Selected != Menu1Items::RESETNETWORK) {
                     pdata_write(2);
+                    if(menu1Selected != Menu1Items::CALIBRATE) {
+                        showMenuEntryFeedback(Menu1[menu1Selected]);
+                    }
                 }
                 pdata_normalize();
                 if(menu1Selected == Menu1Items::RESETNETWORK && Menu1[menu1Selected].value == 1) {
                     wifi_ui_reset_network_settings();
                     Menu1[menu1Selected].value = 0;
+                    display_show_action_feedback("Network reset");
                     disp_updateRequired = true;
                 }
                 if(menu1Selected == Menu1Items::RESET && Menu1[menu1Selected].value == 1) { 
+                    display_show_action_feedback("Defaults reset", 1000);
+                    delay(650);
                     pdata_write(8);  // Reset the build ID so it resets on boot.
                     motorReset();
                     delay(1000);
@@ -489,6 +510,7 @@ void do_io() {
             error = 0;
             state = CALIBRATING;  
             enterMenu = false;
+            display_show_action_feedback("Calibration started");
             disp_updateRequired = true;
             notReleasedYet = true;
         }
@@ -535,6 +557,7 @@ void do_io() {
                 enterMenu = false;
                 pdata_write(2);
                 pdata_normalize();
+                showMenuEntryFeedback(Menu2[menu2Selected]);
             }
         }
     }
@@ -603,7 +626,11 @@ void do_io() {
                 } else 
                 pdata_write(2);
                 pdata_normalize();
-
+                if(menu3Selected == Menu3Items::SAVE_SCALE) {
+                    display_show_action_feedback(Menu3[SAVE_SCALE].value == 0 ? "Scale reset" : "Scale applied");
+                } else {
+                    showMenuEntryFeedback(Menu3[menu3Selected]);
+                }
             
             }
         } 
@@ -648,7 +675,9 @@ void do_io() {
                     enterMenu = true;
                 }
             } else {
+                enterMenu = false;
                 motor_run_jmc_baud_switch(baudForJmcMenuItem(menu4Selected));
+                display_show_action_feedback("Baud applied");
                 disp_updateRequired = true;
                 update_display();
             }
