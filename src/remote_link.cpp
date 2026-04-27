@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "controller_env.h"
 #include "controller_board.h"
 #include "comm.h"
 #include "diag_console.h"
@@ -263,6 +264,10 @@ String remote_link_build_menu_frame(uint8_t menuNum) {
         out += String(menu[idx].value);
     }
     return out;
+}
+
+String remote_link_build_environment_frame() {
+    return controller_env_build_frame();
 }
 
 bool remote_link_handle_command(const String& rawPayload, String* message, bool* sendStatus, int8_t* menuRefresh) {

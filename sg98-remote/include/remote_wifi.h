@@ -9,6 +9,7 @@ void remote_wifi_poll();
 bool remote_wifi_is_active();
 bool remote_wifi_sta_connected();
 bool remote_wifi_has_saved_network();
+void remote_wifi_apply_network_settings(const String& ssid, const String& password, bool connectNow);
 String remote_wifi_sta_ssid();
 String remote_wifi_sta_ip();
 String remote_wifi_ap_ssid();

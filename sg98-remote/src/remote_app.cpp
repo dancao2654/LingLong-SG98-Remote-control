@@ -13,6 +13,7 @@
 #include <esp_now.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "remote_board.h"
@@ -61,6 +62,8 @@ constexpr uint32_t kLoopTotalWarnUs = 30000;
 constexpr uint32_t kTransportUiYieldMs = 280;
 constexpr uint32_t kHomeTransportQuietMs = 1000;
 constexpr uint32_t kPersistentStateUiQuietMs = 8000;
+constexpr int kMenuEncoderStepDivisor = 2;
+constexpr uint32_t kStaleEspNowLockClearMs = 2500;
 constexpr uint32_t kHomeTransportServiceMs = 450;
 constexpr uint32_t kHomePollingServiceMs = 650;
 constexpr uint32_t kHomeStatusPollIdleMs = 1800;
@@ -69,6 +72,7 @@ constexpr uint32_t kHomeStatusPollActiveMs = 2400;
 constexpr uint32_t kPersistentStateDebounceMs = 1200;
 constexpr uint32_t kValidUnixTime = 1700000000UL;
 constexpr uint32_t kDockWeatherHttpTimeoutMs = 4500;
+constexpr uint32_t kControllerEnvironmentRetryMs = 60000;
 constexpr bool kMotionHomeEnabled = false;
 constexpr uint32_t kMotionHomeConfirmWindowMs = 1500;
 constexpr uint32_t kMotionHomeMinGapMs = 200;
@@ -112,10 +116,18 @@ constexpr uint16_t kPressureProfileSampleCount =
     1;
 constexpr uint32_t kEspNowDiscoveryIntervalMs = 1200;
 constexpr uint32_t kEspNowDiscoveryExpireMs = 5000;
+constexpr uint32_t kWifiRecoveryWindowMs = 18000;
+constexpr uint32_t kAutoRadioRequestMs = 2500;
 constexpr uint32_t kEspNowSendConfirmTimeoutMs = 450;
 constexpr uint32_t kEspNowSendRetryBackoffMs = 80;
 constexpr uint8_t kEspNowReliableSendAttempts = 6;
 constexpr uint8_t kEspNowBroadcastMac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+constexpr uint8_t kEspNowMinChannel = 1;
+constexpr uint8_t kEspNowMaxChannel = 13;
+constexpr int32_t kControllerRadioWeb = 0;
+constexpr int32_t kControllerRadioEspNow = 1;
+constexpr int32_t kControllerRadioOff = 2;
+constexpr int32_t kControllerRadioDual = 3;
 
 struct DiscoveredEspNowPeer {
     bool valid = false;
@@ -304,6 +316,7 @@ struct DockWeatherState {
     int8_t precipitationPercent = -1;
     uint16_t weatherCode = 0;
     uint32_t updatedAt = 0;
+    String location;
 };
 
 struct AppState {
@@ -360,6 +373,9 @@ struct AppState {
     uint32_t lastMenuPollAt[5] = {};
     uint32_t lastMenuRxAt[5] = {};
     uint32_t lastEspNowDiscoveryAt = 0;
+    uint32_t lastAutoRadioRequestAt = 0;
+    uint32_t webRecoveryStartedAt = 0;
+    uint8_t espNowChannel = remote_config::kEspNowChannel;
     bool transportYieldedToUi = false;
     bool transportOverrideActive = false;
     uint32_t dangerArmUntil = 0;
@@ -375,8 +391,10 @@ struct AppState {
     uint32_t dockClockLastRedrawAt = 0;
     uint32_t dockClockLastNtpSyncAt = 0;
     uint32_t dockClockLastWeatherFetchAt = 0;
+    uint32_t lastControllerEnvironmentRequestAt = 0;
     uint32_t homeWheelAnimatedAt = 0;
     uint32_t homeWheelFrameAt = 0;
+    int16_t menuEncoderRemainder = 0;
     int16_t lastTouchTapX = 0;
     int16_t lastTouchTapY = 0;
     RemoteBatteryStatus battery;
@@ -442,6 +460,7 @@ constexpr size_t arrayCount(const SettingItem (&)[N]) {
 }
 
 bool isInvertScrollItem(const SettingItem& item);
+bool isRadioModeItem(const SettingItem& item);
 bool isConfirmActionItem(const SettingItem& item);
 bool usesChoiceEditor(const SettingItem& item);
 bool hasActiveEspNowPeer();
@@ -452,6 +471,8 @@ bool isControllerLinkItem(const SettingItem& item);
 String espNowPeerLabelForItem(const SettingItem& item);
 bool pendingControllerSyncActive();
 void requestWebSocketDiscovery(bool resetSession);
+void switchTransportNow(LinkTransport transport);
+bool setEspNowChannel(uint8_t channel);
 void remoteConsolePoll();
 void remoteConsoleMaybeStream();
 void remoteConsoleTraceFrame(const char* direction, const String& frame);
@@ -502,7 +523,7 @@ constexpr SettingItem kGbwItems[] = {
 };
 
 constexpr SettingItem kNetworkItems[] = {
-    {"Radio mode", ItemKind::Toggle, 1, RADIOMODE, 0, 1, 1, "", nullptr, nullptr},
+    {"Radio mode", ItemKind::Value, 1, RADIOMODE, 0, 3, 1, "", nullptr, nullptr},
     {"Controller link", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "peers"},
     {"Audio diag", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "audio"},
     {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
@@ -598,6 +619,7 @@ void leavePressureProfiler();
 void serviceDockClock(uint32_t now);
 void shortenWaitForDockClock(uint32_t now, uint32_t* waitMs);
 void exitDockClock();
+void requestControllerEnvironment(bool force);
 void markUserActivity(uint32_t now = millis());
 
 uint32_t currentWebSocketLoopIntervalMs() {
@@ -739,7 +761,59 @@ const char* transportName(LinkTransport transport) {
 }
 
 LinkTransport transportFromRadioMode(int32_t radioMode) {
-    return radioMode == 0 ? LinkTransport::WebSocket : LinkTransport::EspNow;
+    return radioMode == kControllerRadioWeb ? LinkTransport::WebSocket : LinkTransport::EspNow;
+}
+
+int32_t sanitizeControllerRadioMode(int32_t value) {
+    if(value == kControllerRadioWeb || value == kControllerRadioEspNow || value == kControllerRadioDual) {
+        return value;
+    }
+    return kControllerRadioDual;
+}
+
+String radioModeValueLabel(int32_t value) {
+    switch(sanitizeControllerRadioMode(value)) {
+        case kControllerRadioWeb:
+            return "WI-FI";
+        case kControllerRadioEspNow:
+            return "ESP-NOW";
+        case kControllerRadioDual:
+        default:
+            return "WEB+ESP";
+    }
+}
+
+float normalizedRadioModeLevel(int32_t value) {
+    switch(sanitizeControllerRadioMode(value)) {
+        case kControllerRadioWeb:
+            return 0.0f;
+        case kControllerRadioEspNow:
+            return 0.5f;
+        case kControllerRadioDual:
+        default:
+            return 1.0f;
+    }
+}
+
+int32_t stepRadioModeValue(int32_t current, int delta) {
+    int32_t value = sanitizeControllerRadioMode(current);
+    const int step = delta > 0 ? 1 : -1;
+    for(int i = 0; i < abs(delta); ++i) {
+        if(step > 0) {
+            if(value == kControllerRadioWeb) {
+                value = kControllerRadioEspNow;
+            } else if(value == kControllerRadioEspNow) {
+                value = kControllerRadioDual;
+            }
+        } else {
+            if(value == kControllerRadioDual) {
+                value = kControllerRadioEspNow;
+            } else if(value == kControllerRadioEspNow) {
+                value = kControllerRadioWeb;
+            }
+        }
+    }
+    return value;
 }
 
 LinkTransport sanitizeTransport(uint8_t raw) {
@@ -789,16 +863,7 @@ bool connectedToControllerAp() {
 }
 
 LinkTransport initialTransport() {
-    if(transportFromRadioMode(app.menuValues[1][RADIOMODE]) == LinkTransport::EspNow) {
-        return LinkTransport::EspNow;
-    }
-    if(remote_wifi_has_saved_network()) {
-        return LinkTransport::WebSocket;
-    }
-    if(hasActiveEspNowPeer()) {
-        return LinkTransport::EspNow;
-    }
-    return LinkTransport::WebSocket;
+    return LinkTransport::EspNow;
 }
 
 int16_t clampI16(int16_t value, int16_t minValue, int16_t maxValue) {
@@ -1127,6 +1192,9 @@ String displayHintForItem(const SettingItem& item) {
 
     if(strcmp(item.label, "Motor direction") == 0) {
         return "NORMAL OR REVERSED";
+    }
+    if(isRadioModeItem(item)) {
+        return "WI-FI / ESP-NOW / WEB+ESP";
     }
     if(isConfirmActionItem(item)) {
         return "CHOOSE NO OR YES";
@@ -1469,6 +1537,7 @@ void armPressureProfiler() {
 void leavePressureProfiler() {
     g_pressureProfiler.armed = false;
     g_pressureProfiler.running = false;
+    remote_pressure_ble_end();
 }
 
 void resetPressureProfilerRun(uint32_t now) {
@@ -1491,7 +1560,7 @@ void startPressureProfilerRun(uint32_t now, uint16_t centiBar) {
 }
 
 void servicePressureProfiler(uint32_t now) {
-    if(app.screen != Screen::Profiler && !remote_pressure_ble_connected()) {
+    if(app.screen != Screen::Profiler) {
         return;
     }
 
@@ -1547,7 +1616,7 @@ void shortenWaitForPressureProfiler(uint32_t now, uint32_t* waitMs) {
     if(waitMs == nullptr) {
         return;
     }
-    if(app.screen != Screen::Profiler && !remote_pressure_ble_connected()) {
+    if(app.screen != Screen::Profiler) {
         return;
     }
     shortenWaitForDeadline(now, g_pressureProfiler.lastSampleAt + remote_config::kPressureProfilerSampleMs, waitMs);
@@ -1666,6 +1735,7 @@ bool updateDockWeatherFromJson(const String& payload) {
     app.dockWeather.precipitationPercent =
         precip >= 0.0f ? static_cast<int8_t>(clampValue(static_cast<int32_t>(lroundf(precip)), 0, 100)) : -1;
     app.dockWeather.updatedAt = millis();
+    app.dockWeather.location = remote_config::kDockClockLocationName;
     return true;
 }
 
@@ -1722,6 +1792,30 @@ void serviceDockClockWeather(uint32_t now) {
         }
     }
     https.end();
+}
+
+void serviceControllerEnvironmentSync(uint32_t now) {
+    if(!isLinkOnline()) {
+        return;
+    }
+
+    struct tm timeInfo = {};
+    const bool needsTime = !localClockTime(&timeInfo);
+    const bool needsWeather = !app.dockWeather.valid ||
+                              (app.dockWeather.updatedAt != 0 &&
+                               (now - app.dockWeather.updatedAt) >= remote_config::kDockClockWeatherFetchMs);
+    if(!needsTime && !needsWeather) {
+        return;
+    }
+
+    const uint32_t interval = needsTime || !app.dockWeather.valid
+                                  ? kControllerEnvironmentRetryMs
+                                  : remote_config::kDockClockWeatherFetchMs;
+    if(app.lastControllerEnvironmentRequestAt != 0 &&
+       (now - app.lastControllerEnvironmentRequestAt) < interval) {
+        return;
+    }
+    requestControllerEnvironment(true);
 }
 
 bool dockClockAllowed() {
@@ -2049,6 +2143,18 @@ bool macAddressEqual(const uint8_t* lhs, const uint8_t* rhs) {
     return lhs != nullptr && rhs != nullptr && memcmp(lhs, rhs, 6) == 0;
 }
 
+bool macAddressIsZero(const uint8_t* mac) {
+    if(mac == nullptr) {
+        return true;
+    }
+    for(uint8_t i = 0; i < 6; ++i) {
+        if(mac[i] != 0) {
+            return false;
+        }
+    }
+    return true;
+}
+
 String formatMacAddress(const uint8_t* mac) {
     if(mac == nullptr) {
         return "--:--:--:--:--:--";
@@ -2119,6 +2225,8 @@ bool lockedEspNowPeerMatches(const uint8_t* mac) {
 void clearLockedEspNowPeer() {
     app.espNowPeerConfigured = false;
     memset(app.espNowPeerMac, 0, sizeof(app.espNowPeerMac));
+    app.lastEspNowDiscoveryAt = 0;
+    (void)setEspNowChannel(remote_config::kEspNowChannel);
 }
 
 void setLockedEspNowPeer(const uint8_t* mac) {
@@ -2129,6 +2237,54 @@ void setLockedEspNowPeer(const uint8_t* mac) {
 
     memcpy(app.espNowPeerMac, mac, sizeof(app.espNowPeerMac));
     app.espNowPeerConfigured = true;
+}
+
+uint8_t normalizeEspNowChannel(int32_t channel) {
+    if(channel < kEspNowMinChannel || channel > kEspNowMaxChannel) {
+        return remote_config::kEspNowChannel;
+    }
+    return static_cast<uint8_t>(channel);
+}
+
+const DiscoveredEspNowPeer* discoveredPeerForMac(const uint8_t* mac) {
+    if(mac == nullptr) {
+        return nullptr;
+    }
+
+    for(uint8_t i = 0; i < kEspNowPeerSlots; ++i) {
+        if(app.espNowPeers[i].valid && macAddressEqual(app.espNowPeers[i].mac, mac)) {
+            return &app.espNowPeers[i];
+        }
+    }
+    return nullptr;
+}
+
+uint8_t activeEspNowPeerChannel() {
+    const DiscoveredEspNowPeer* peer = discoveredPeerForMac(activeEspNowPeerMac());
+    return peer != nullptr ? normalizeEspNowChannel(peer->channel) : 0;
+}
+
+bool setEspNowChannel(uint8_t channel) {
+    channel = normalizeEspNowChannel(channel);
+    if(app.espNowChannel == channel) {
+        return true;
+    }
+
+    if(app.espNowReady &&
+       esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+        return false;
+    }
+
+    app.espNowChannel = channel;
+    return true;
+}
+
+uint8_t nextEspNowDiscoveryChannel() {
+    uint8_t channel = app.espNowChannel;
+    if(channel < kEspNowMinChannel || channel >= kEspNowMaxChannel) {
+        return kEspNowMinChannel;
+    }
+    return static_cast<uint8_t>(channel + 1);
 }
 
 void expireDiscoveredEspNowPeers() {
@@ -2333,8 +2489,7 @@ void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
             snapshot->menuSyncedMask |= static_cast<uint8_t>(1u << menu);
         }
     }
-    const LinkTransport persistedTransport = app.currentTransport == LinkTransport::None ? initialTransport() : app.currentTransport;
-    snapshot->transport = static_cast<uint8_t>(persistedTransport);
+    snapshot->transport = static_cast<uint8_t>(LinkTransport::EspNow);
     snapshot->preferGbw = app.preferGbw;
     snapshot->radioModeKnown = app.radioModeKnown;
     snapshot->espNowPeerConfigured = app.espNowPeerConfigured;
@@ -2376,7 +2531,7 @@ void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTrans
         app.lastStatusAt = millis();
     }
     if(restoredTransport != nullptr) {
-        *restoredTransport = sanitizeTransport(snapshot.transport);
+        *restoredTransport = LinkTransport::EspNow;
     }
     if(toastText != nullptr && toastText[0] != '\0') {
         setToast(toastText, remote_config::kWakeToastMs);
@@ -2720,6 +2875,31 @@ int applyDialDirection(int delta) {
     return -delta;
 }
 
+int conditionHardwareDialForMenu(int delta) {
+    if(delta == 0) {
+        return 0;
+    }
+
+    if(!remote_board_info().hasEncoder || app.screen == Screen::Home || app.editing) {
+        app.menuEncoderRemainder = 0;
+        return delta;
+    }
+
+    if((app.menuEncoderRemainder > 0 && delta < 0) ||
+       (app.menuEncoderRemainder < 0 && delta > 0)) {
+        app.menuEncoderRemainder = 0;
+    }
+
+    app.menuEncoderRemainder =
+        static_cast<int16_t>(app.menuEncoderRemainder + clampValue(delta, -kMenuEncoderStepDivisor, kMenuEncoderStepDivisor));
+    const int steps = app.menuEncoderRemainder / kMenuEncoderStepDivisor;
+    if(steps != 0) {
+        app.menuEncoderRemainder =
+            static_cast<int16_t>(app.menuEncoderRemainder - (steps * kMenuEncoderStepDivisor));
+    }
+    return steps;
+}
+
 bool isVisibleControllerMenuScreen(Screen screen, uint8_t menuNum) {
     switch(menuNum) {
         case 1: return screen == Screen::Main || screen == Screen::Gbw || screen == Screen::Network ||
@@ -2937,6 +3117,9 @@ int32_t displayValueForItem(const SettingItem& item, int32_t value) {
 }
 
 String formatValueLabel(const SettingItem& item, int32_t value) {
+    if(isRadioModeItem(item)) {
+        return radioModeValueLabel(value);
+    }
     if(usesChoiceEditor(item)) {
         return value != 0 ? toggleOnLabel(item) : toggleOffLabel(item);
     }
@@ -3644,11 +3827,11 @@ String batteryIndicatorNumber(const RemoteBatteryStatus& battery) {
     if(battery.batteryPresent && battery.percent >= 0) {
         return String(static_cast<int>(battery.percent)) + "%";
     }
+    if(battery.usbPresent) {
+        return "";
+    }
     if(battery.batteryPresent && battery.millivolts > 0) {
         return compactVoltageNumber(battery.millivolts);
-    }
-    if(battery.usbPresent && battery.vbusMillivolts > 0) {
-        return compactVoltageNumber(battery.vbusMillivolts);
     }
     if(battery.systemMillivolts > 0) {
         return compactVoltageNumber(battery.systemMillivolts);
@@ -3663,7 +3846,7 @@ uint16_t batteryIndicatorAccent(const RemoteBatteryStatus& battery) {
     if(battery.charging) {
         return kColorGood;
     }
-    if(battery.usbPresent && !battery.batteryPresent) {
+    if(battery.usbPresent) {
         return kColorGood;
     }
 
@@ -3673,9 +3856,6 @@ uint16_t batteryIndicatorAccent(const RemoteBatteryStatus& battery) {
     }
     if(level < 50) {
         return kColorWarn;
-    }
-    if(battery.usbPresent) {
-        return kColorGood;
     }
     return kColorGood;
 }
@@ -3875,16 +4055,6 @@ void drawBatteryIndicator(RemoteCanvas& canvas, const Layout& layout, uint16_t b
                      battery.usbPresent,
                      batteryLevelPercent(battery));
 
-    if(battery.usbPresent) {
-        const Rect usbIcon = {
-            static_cast<int16_t>(iconSticker.x - 9),
-            static_cast<int16_t>(icon.y + icon.h / 2 - 7),
-            10,
-            14
-        };
-        drawUsbCIcon(canvas, usbIcon, accent, face, markColor);
-    }
-
     if(number.length() > 0) {
         const int16_t numberW = numberBadge.w;
         const RemoteTextStyle numberStyle =
@@ -3915,6 +4085,14 @@ void drawBatteryIndicator(RemoteCanvas& canvas, const Layout& layout, uint16_t b
                                 numberStyle,
                                 numberText,
                                 backgroundColor);
+    } else if(battery.usbPresent) {
+        const Rect usbBadgeIcon = {
+            static_cast<int16_t>(numberBadge.x + 10),
+            static_cast<int16_t>(numberBadge.y + 2),
+            static_cast<int16_t>(numberBadge.w - 20),
+            static_cast<int16_t>(numberBadge.h - 3)
+        };
+        drawUsbCIcon(canvas, usbBadgeIcon, accent, face, markColor);
     }
 }
 
@@ -4058,27 +4236,6 @@ void drawRoundHomeArcLabels(RemoteCanvas& canvas, const Layout& layout, const Ho
                           palette.background);
     }
 
-    if(useRoundNavigation() && !running) {
-        const String hintSource = "EDGE SWIPE FOR MENU";
-        const int16_t hintRadius = static_cast<int16_t>(layout.homeDialOuterRadius + 62);
-        const float hintSpan = 148.0f;
-        const RemoteTextStyle hintStyle = chooseArcTextStyle(hintSource, hintRadius, hintSpan, false);
-        const String hintLabel = fitTextToArc(hintSource, hintRadius, hintSpan, hintStyle);
-        if(hintLabel.length() > 0) {
-            drawArcTextSimple(canvas,
-                              hintLabel,
-                              layout.homeDialCx,
-                              layout.homeDialCy,
-                              hintRadius,
-                              90.0f,
-                              hintSpan,
-                              true,
-                              hintStyle,
-                              blendColor565(palette.muted, palette.background, 0.38f),
-                              palette.background);
-        }
-    }
-
     const String bottomSource = roundHomeBottomLabel();
     if(bottomSource.length() == 0) {
         return;
@@ -4210,6 +4367,9 @@ float normalizedDisplayedHomeLevel() {
 }
 
 float normalizedItemLevel(const SettingItem& item, int32_t value) {
+    if(isRadioModeItem(item)) {
+        return normalizedRadioModeLevel(value);
+    }
     if(usesChoiceEditor(item)) {
         return value != 0 ? 1.0f : 0.0f;
     }
@@ -5509,10 +5669,21 @@ String dockWeatherLine() {
         }
         return out;
     }
-    return remote_wifi_sta_connected() ? String("Weather sync") : String("WiFi off");
+    return "";
+}
+
+String dockLocationLine() {
+    if(!app.dockWeather.valid) {
+        return "";
+    }
+    return app.dockWeather.location.length() > 0 ? app.dockWeather.location : String(remote_config::kDockClockLocationName);
 }
 
 void drawDockWeatherBackdrop(RemoteCanvas& canvas, const Layout& layout, uint16_t bg, uint16_t accent) {
+    if(!app.dockWeather.valid) {
+        return;
+    }
+
     const int16_t cx = static_cast<int16_t>(layout.width / 2);
     const int16_t cy = static_cast<int16_t>(layout.height / 2);
     const uint16_t haze = blendColor565(bg, accent, 0.13f);
@@ -5556,16 +5727,18 @@ void drawDockWeatherBackdrop(RemoteCanvas& canvas, const Layout& layout, uint16_
         }
     }
 
-    const String weather = dockWeatherLine();
-    canvas.drawCenteredText(fitTextToWidth(weather,
-                                           static_cast<int16_t>(layout.width - layout.pad * 4),
-                                           RemoteTextStyle::Large,
-                                           0),
-                            cx,
-                            static_cast<int16_t>(layout.height - (useRoundNavigation() ? 76 : 54)),
-                            RemoteTextStyle::Large,
-                            blendColor565(hazeLow, accent, 0.24f),
-                            bg);
+    if(!useRoundNavigation()) {
+        const String weather = dockWeatherLine();
+        canvas.drawCenteredText(fitTextToWidth(weather,
+                                               static_cast<int16_t>(layout.width - layout.pad * 4),
+                                               RemoteTextStyle::Large,
+                                               0),
+                                cx,
+                                static_cast<int16_t>(layout.height - 54),
+                                RemoteTextStyle::Large,
+                                blendColor565(hazeLow, accent, 0.24f),
+                                bg);
+    }
 }
 
 void drawClockHand(RemoteCanvas& canvas,
@@ -5584,20 +5757,144 @@ void drawClockHand(RemoteCanvas& canvas,
     }
 }
 
+void drawThickLine(RemoteCanvas& canvas,
+                   int16_t x0,
+                   int16_t y0,
+                   int16_t x1,
+                   int16_t y1,
+                   int16_t halfWidth,
+                   uint16_t color) {
+    if(halfWidth <= 0) {
+        canvas.drawLine(x0, y0, x1, y1, color);
+        return;
+    }
+
+    const float dx = static_cast<float>(x1 - x0);
+    const float dy = static_cast<float>(y1 - y0);
+    const float length = sqrtf(dx * dx + dy * dy);
+    if(length < 0.5f) {
+        canvas.fillCircle(x0, y0, halfWidth, color);
+        return;
+    }
+
+    const float nx = -dy / length;
+    const float ny = dx / length;
+    for(int16_t offset = static_cast<int16_t>(-halfWidth); offset <= halfWidth; ++offset) {
+        const int16_t ox = static_cast<int16_t>(lroundf(nx * static_cast<float>(offset)));
+        const int16_t oy = static_cast<int16_t>(lroundf(ny * static_cast<float>(offset)));
+        canvas.drawLine(static_cast<int16_t>(x0 + ox),
+                        static_cast<int16_t>(y0 + oy),
+                        static_cast<int16_t>(x1 + ox),
+                        static_cast<int16_t>(y1 + oy),
+                        color);
+    }
+}
+
+void drawRadialMarker(RemoteCanvas& canvas,
+                      int16_t cx,
+                      int16_t cy,
+                      int16_t innerRadius,
+                      int16_t outerRadius,
+                      float angle,
+                      int16_t halfWidth,
+                      uint16_t color) {
+    const int16_t x0 = static_cast<int16_t>(cx + lroundf(cosf(angle) * innerRadius));
+    const int16_t y0 = static_cast<int16_t>(cy + lroundf(sinf(angle) * innerRadius));
+    const int16_t x1 = static_cast<int16_t>(cx + lroundf(cosf(angle) * outerRadius));
+    const int16_t y1 = static_cast<int16_t>(cy + lroundf(sinf(angle) * outerRadius));
+    drawThickLine(canvas, x0, y0, x1, y1, halfWidth, color);
+}
+
+void drawWatchHand(RemoteCanvas& canvas,
+                   int16_t cx,
+                   int16_t cy,
+                   int16_t radius,
+                   float angle,
+                   int16_t halfWidth,
+                   uint16_t bodyColor,
+                   uint16_t lumeColor,
+                   int16_t tailRadius) {
+    const int16_t tipX = static_cast<int16_t>(cx + lroundf(cosf(angle) * radius));
+    const int16_t tipY = static_cast<int16_t>(cy + lroundf(sinf(angle) * radius));
+    const int16_t tailX = static_cast<int16_t>(cx - lroundf(cosf(angle) * tailRadius));
+    const int16_t tailY = static_cast<int16_t>(cy - lroundf(sinf(angle) * tailRadius));
+    const int16_t lumeX = static_cast<int16_t>(cx + lroundf(cosf(angle) * (radius - 12)));
+    const int16_t lumeY = static_cast<int16_t>(cy + lroundf(sinf(angle) * (radius - 12)));
+
+    drawThickLine(canvas,
+                  static_cast<int16_t>(tailX + 2),
+                  static_cast<int16_t>(tailY + 2),
+                  static_cast<int16_t>(tipX + 2),
+                  static_cast<int16_t>(tipY + 2),
+                  static_cast<int16_t>(halfWidth + 1),
+                  blendColor565(kColorBlack, bodyColor, 0.18f));
+    drawThickLine(canvas, tailX, tailY, tipX, tipY, halfWidth, bodyColor);
+    drawThickLine(canvas, cx, cy, lumeX, lumeY, max<int16_t>(1, static_cast<int16_t>(halfWidth - 3)), lumeColor);
+}
+
+void drawDockClockInfoSection(RemoteCanvas& canvas,
+                              int16_t centerX,
+                              int16_t centerY,
+                              int16_t width,
+                              int16_t height,
+                              const String& value,
+                              RemoteTextStyle style,
+                              uint16_t accent,
+                              uint16_t faceBase,
+                              uint16_t bg) {
+    const String fitted = fitTextToWidthNoTilde(value,
+                                                static_cast<int16_t>(width - 10),
+                                                style,
+                                                0);
+    const int16_t textW = estimatedTextWidth(fitted, style);
+    const int16_t tightW = clampI16(static_cast<int16_t>(textW + 18),
+                                    static_cast<int16_t>(height + 16),
+                                    width);
+    const int16_t tightH = max<int16_t>(static_cast<int16_t>(height - 4), 28);
+    const int16_t x = static_cast<int16_t>(centerX - tightW / 2);
+    const int16_t y = static_cast<int16_t>(centerY - tightH / 2);
+    const int16_t radius = static_cast<int16_t>(tightH / 2);
+    const uint16_t face = blendColor565(faceBase, accent, 0.045f);
+    const uint16_t border = blendColor565(face, accent, 0.16f);
+    const uint16_t shadow = blendColor565(bg, kColorBlack, 0.10f);
+    const uint16_t valueColor = blendColor565(accent, kColorText, 0.06f);
+
+    canvas.fillRoundRect(x,
+                         static_cast<int16_t>(y + 1),
+                         tightW,
+                         tightH,
+                         radius,
+                         shadow);
+    canvas.fillRoundRect(x, y, tightW, tightH, radius, face);
+    canvas.drawRoundRect(x, y, tightW, tightH, radius, border);
+    canvas.drawCenteredText(fitted,
+                            centerX,
+                            static_cast<int16_t>(centerY + 1),
+                            style,
+                            valueColor,
+                            face);
+}
+
 void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
-    const uint16_t bg = blendColor565(kColorBg, packColor565(0, 18, 28), 0.46f);
+    const bool roundClock = useRoundNavigation();
+    const uint16_t bg = roundClock ? blendColor565(kColorBlack, packColor565(0, 20, 44), 0.58f)
+                                   : blendColor565(kColorBg, packColor565(0, 18, 28), 0.46f);
     const uint16_t accent = dockWeatherAccent();
-    const uint16_t grid = blendColor565(packColor565(74, 210, 164), bg, 0.34f);
-    const uint16_t text = blendColor565(kColorText, accent, 0.12f);
-    const uint16_t muted = blendColor565(kColorMuted, accent, 0.18f);
+    const uint16_t grid = roundClock ? blendColor565(packColor565(132, 180, 210), bg, 0.42f)
+                                     : blendColor565(packColor565(74, 210, 164), bg, 0.34f);
+    const uint16_t text = roundClock ? blendColor565(packColor565(226, 236, 226), accent, 0.08f)
+                                     : blendColor565(kColorText, accent, 0.12f);
+    const uint16_t muted = roundClock ? blendColor565(packColor565(130, 154, 168), accent, 0.10f)
+                                      : blendColor565(kColorMuted, accent, 0.18f);
     canvas.fillScreen(bg);
     drawDockWeatherBackdrop(canvas, layout, bg, accent);
 
     struct tm timeInfo = {};
     const bool hasTime = localClockTime(&timeInfo);
     if(!hasTime) {
-        const time_t uptime = static_cast<time_t>((millis() / 1000UL) % (24UL * 60UL * 60UL));
-        gmtime_r(&uptime, &timeInfo);
+        timeInfo.tm_hour = 12;
+        timeInfo.tm_min = 0;
+        timeInfo.tm_sec = 0;
     }
 
     const int16_t cx = static_cast<int16_t>(layout.width / 2);
@@ -5606,21 +5903,83 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
     const int16_t radius = clampI16(static_cast<int16_t>(shortSide / 2 - (useRoundNavigation() ? 66 : 50)),
                                     92,
                                     static_cast<int16_t>(shortSide / 2 - 28));
-    const uint16_t face = blendColor565(bg, kColorBlack, 0.10f);
-    canvas.fillCircle(cx, cy, radius, face);
-    canvas.drawCircle(cx, cy, radius, blendColor565(grid, accent, 0.18f));
-    canvas.drawCircle(cx, cy, static_cast<int16_t>(radius - 8), blendColor565(grid, bg, 0.16f));
+    const uint16_t face = roundClock ? blendColor565(packColor565(2, 18, 36), kColorBlack, 0.20f)
+                                     : blendColor565(bg, kColorBlack, 0.10f);
+    if(roundClock) {
+        const int16_t bezelOuter = min<int16_t>(static_cast<int16_t>(radius + 22),
+                                                static_cast<int16_t>(shortSide / 2 - 10));
+        const int16_t bezelMid = static_cast<int16_t>(radius + 14);
+        const int16_t bezelInner = static_cast<int16_t>(radius + 5);
+        const uint16_t bezelDark = blendColor565(kColorBlack, packColor565(4, 26, 54), 0.66f);
+        const uint16_t bezelSteel = blendColor565(packColor565(72, 92, 108), packColor565(12, 42, 78), 0.44f);
+        const uint16_t bezelEdge = blendColor565(packColor565(150, 178, 192), bg, 0.32f);
+        const uint16_t lume = blendColor565(packColor565(218, 246, 216), accent, 0.08f);
 
-    for(uint8_t i = 0; i < 60; ++i) {
-        const float angle = static_cast<float>(-PI / 2.0f) + static_cast<float>(i) * static_cast<float>(2.0f * PI / 60.0f);
-        const bool major = (i % 5) == 0;
-        const int16_t outer = static_cast<int16_t>(radius - (major ? 3 : 8));
-        const int16_t inner = static_cast<int16_t>(radius - (major ? 18 : 13));
-        const int16_t x0 = static_cast<int16_t>(cx + lroundf(cosf(angle) * inner));
-        const int16_t y0 = static_cast<int16_t>(cy + lroundf(sinf(angle) * inner));
-        const int16_t x1 = static_cast<int16_t>(cx + lroundf(cosf(angle) * outer));
-        const int16_t y1 = static_cast<int16_t>(cy + lroundf(sinf(angle) * outer));
-        canvas.drawLine(x0, y0, x1, y1, major ? blendColor565(text, accent, 0.18f) : blendColor565(grid, bg, 0.30f));
+        canvas.fillCircle(cx, cy, bezelOuter, blendColor565(kColorBlack, packColor565(0, 12, 24), 0.44f));
+        canvas.drawCircle(cx, cy, bezelOuter, bezelEdge);
+        canvas.fillCircle(cx, cy, bezelMid, bezelSteel);
+        canvas.drawCircle(cx, cy, static_cast<int16_t>(bezelMid - 2), blendColor565(bezelEdge, kColorBlack, 0.18f));
+        canvas.fillCircle(cx, cy, bezelInner, bezelDark);
+        canvas.fillCircle(cx, cy, radius, face);
+        canvas.drawCircle(cx, cy, radius, blendColor565(bezelEdge, accent, 0.08f));
+        canvas.drawCircle(cx, cy, static_cast<int16_t>(radius - 8), blendColor565(grid, face, 0.22f));
+        canvas.drawCircle(cx, cy, static_cast<int16_t>(radius - 38), blendColor565(grid, face, 0.42f));
+
+        for(uint8_t i = 0; i < 60; ++i) {
+            const float angle = static_cast<float>(-PI / 2.0f) +
+                                static_cast<float>(i) * static_cast<float>(2.0f * PI / 60.0f);
+            const bool major = (i % 5) == 0;
+            const uint16_t tickColor = major ? blendColor565(bezelEdge, lume, 0.28f)
+                                             : blendColor565(bezelEdge, bg, 0.26f);
+            drawRadialMarker(canvas,
+                             cx,
+                             cy,
+                             static_cast<int16_t>(radius + (major ? 7 : 10)),
+                             static_cast<int16_t>(radius + (major ? 18 : 16)),
+                             angle,
+                             major ? 1 : 0,
+                             tickColor);
+        }
+
+        for(uint8_t i = 0; i < 12; ++i) {
+            const float angle = static_cast<float>(-PI / 2.0f) +
+                                static_cast<float>(i) * static_cast<float>(2.0f * PI / 12.0f);
+            const bool cardinal = (i % 3) == 0;
+            const int16_t inner = static_cast<int16_t>(radius - (cardinal ? 42 : 34));
+            const int16_t outer = static_cast<int16_t>(radius - 13);
+            drawRadialMarker(canvas,
+                             cx,
+                             cy,
+                             inner,
+                             outer,
+                             angle,
+                             cardinal ? 4 : 3,
+                             blendColor565(lume, kColorText, cardinal ? 0.16f : 0.06f));
+            drawRadialMarker(canvas,
+                             cx,
+                             cy,
+                             static_cast<int16_t>(inner + 4),
+                             static_cast<int16_t>(outer - 4),
+                             angle,
+                             cardinal ? 2 : 1,
+                             blendColor565(packColor565(82, 126, 146), lume, 0.36f));
+        }
+    } else {
+        canvas.fillCircle(cx, cy, radius, face);
+        canvas.drawCircle(cx, cy, radius, blendColor565(grid, accent, 0.18f));
+        canvas.drawCircle(cx, cy, static_cast<int16_t>(radius - 8), blendColor565(grid, bg, 0.16f));
+
+        for(uint8_t i = 0; i < 60; ++i) {
+            const float angle = static_cast<float>(-PI / 2.0f) + static_cast<float>(i) * static_cast<float>(2.0f * PI / 60.0f);
+            const bool major = (i % 5) == 0;
+            const int16_t outer = static_cast<int16_t>(radius - (major ? 3 : 8));
+            const int16_t inner = static_cast<int16_t>(radius - (major ? 18 : 13));
+            const int16_t x0 = static_cast<int16_t>(cx + lroundf(cosf(angle) * inner));
+            const int16_t y0 = static_cast<int16_t>(cy + lroundf(sinf(angle) * inner));
+            const int16_t x1 = static_cast<int16_t>(cx + lroundf(cosf(angle) * outer));
+            const int16_t y1 = static_cast<int16_t>(cy + lroundf(sinf(angle) * outer));
+            canvas.drawLine(x0, y0, x1, y1, major ? blendColor565(text, accent, 0.18f) : blendColor565(grid, bg, 0.30f));
+        }
     }
 
     const float secondAngle = static_cast<float>(-PI / 2.0f) +
@@ -5632,55 +5991,160 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
                             (static_cast<float>(timeInfo.tm_hour % 12) + static_cast<float>(timeInfo.tm_min) / 60.0f) *
                                 static_cast<float>(2.0f * PI / 12.0f);
 
-    drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.48f), hourAngle, text, true);
-    drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.72f), minuteAngle, blendColor565(text, accent, 0.12f), true);
-    drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.82f), secondAngle, accent, false);
-    canvas.fillCircle(cx, cy, 7, blendColor565(accent, kColorText, 0.20f));
-    canvas.drawCircle(cx, cy, 12, blendColor565(grid, accent, 0.16f));
+    if(!roundClock) {
+        drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.48f), hourAngle, text, true);
+        drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.72f), minuteAngle, blendColor565(text, accent, 0.12f), true);
+        drawClockHand(canvas, cx, cy, static_cast<int16_t>(radius * 0.82f), secondAngle, accent, false);
+        canvas.fillCircle(cx, cy, 7, blendColor565(accent, kColorText, 0.20f));
+        canvas.drawCircle(cx, cy, 12, blendColor565(grid, accent, 0.16f));
+    }
 
     char timeText[12] = {};
     char dateText[24] = {};
+    char shortDateText[8] = {};
     if(hasTime) {
         strftime(timeText, sizeof(timeText), "%I:%M", &timeInfo);
         if(timeText[0] == '0') {
             memmove(timeText, timeText + 1, strlen(timeText));
         }
         strftime(dateText, sizeof(dateText), "%a %b %d", &timeInfo);
+        strftime(shortDateText, sizeof(shortDateText), "%m/%d", &timeInfo);
     } else {
         copyStringToBuffer(String("SYNC"), timeText);
-        copyStringToBuffer(String("Time setup"), dateText);
+        dateText[0] = '\0';
+        shortDateText[0] = '\0';
     }
 
-    canvas.drawCenteredText(remote_config::kDockClockLocationName,
-                            cx,
-                            static_cast<int16_t>(layout.pad + 14),
-                            RemoteTextStyle::Small,
-                            muted,
-                            bg);
-    canvas.drawCenteredText(timeText,
-                            cx,
-                            static_cast<int16_t>(cy + radius + (useRoundNavigation() ? 30 : 24)),
-                            RemoteTextStyle::Medium,
-                            text,
-                            bg);
-    canvas.drawCenteredText(dateText,
-                            cx,
-                            static_cast<int16_t>(cy + radius + (useRoundNavigation() ? 56 : 44)),
-                            tinyTextStyle(),
-                            muted,
-                            bg);
-
+    const String location = dockLocationLine();
+    if(!useRoundNavigation() && location.length() > 0) {
+        canvas.drawCenteredText(location,
+                                cx,
+                                static_cast<int16_t>(layout.pad + 14),
+                                RemoteTextStyle::Small,
+                                muted,
+                                bg);
+    }
     const String weather = dockWeatherLine();
-    canvas.drawCenteredText(fitTextToWidth(weather,
-                                           static_cast<int16_t>(layout.width - layout.pad * 5),
-                                           tinyTextStyle(),
-                                           0),
-                            cx,
-                            static_cast<int16_t>(layout.height - layout.pad - 12),
-                            tinyTextStyle(),
-                            blendColor565(text, accent, 0.22f),
-                            bg);
-    drawBatteryIndicator(canvas, layout, bg);
+    if(useRoundNavigation()) {
+        const uint16_t timeAccent = blendColor565(packColor565(255, 196, 82), accent, 0.18f);
+        const uint16_t dateAccent = blendColor565(packColor565(96, 236, 174), accent, 0.14f);
+        const uint16_t weatherAccent = blendColor565(packColor565(88, 190, 255), accent, 0.20f);
+        const uint16_t placeAccent = blendColor565(packColor565(178, 160, 255), accent, 0.12f);
+        const uint16_t sectionFace = blendColor565(face, bg, 0.18f);
+        const int16_t sideOffsetX = static_cast<int16_t>(radius * 0.54f);
+        const int16_t verticalOffsetY = static_cast<int16_t>(radius * 0.58f);
+        const int16_t topY = static_cast<int16_t>(cy - verticalOffsetY);
+        const int16_t bottomY = static_cast<int16_t>(cy + verticalOffsetY);
+        const int16_t sideY = cy;
+        const int16_t weatherW = clampI16(static_cast<int16_t>(radius * 2 - 54), 198, 258);
+        const int16_t timeW = clampI16(static_cast<int16_t>(radius + 30), 142, 184);
+        const int16_t infoW = clampI16(static_cast<int16_t>(radius - 24), 112, 146);
+
+        if(weather.length() > 0) {
+            drawDockClockInfoSection(canvas,
+                                     cx,
+                                     topY,
+                                     weatherW,
+                                     34,
+                                     weather,
+                                     tinyTextStyle(),
+                                     weatherAccent,
+                                     sectionFace,
+                                     bg);
+        }
+        if(location.length() > 0) {
+            drawDockClockInfoSection(canvas,
+                                     static_cast<int16_t>(cx - sideOffsetX),
+                                     sideY,
+                                     infoW,
+                                     34,
+                                     location,
+                                     tinyTextStyle(),
+                                     placeAccent,
+                                     sectionFace,
+                                     bg);
+        }
+        if(hasTime) {
+            drawDockClockInfoSection(canvas,
+                                     static_cast<int16_t>(cx + sideOffsetX),
+                                     sideY,
+                                     infoW,
+                                     34,
+                                     shortDateText,
+                                     tinyTextStyle(),
+                                     dateAccent,
+                                     sectionFace,
+                                     bg);
+        }
+        drawDockClockInfoSection(canvas,
+                                 cx,
+                                 bottomY,
+                                 timeW,
+                                 38,
+                                 timeText,
+                                 RemoteTextStyle::Medium,
+                                 timeAccent,
+                                 sectionFace,
+                                 bg);
+        const uint16_t handBody = blendColor565(packColor565(182, 198, 205), kColorText, 0.20f);
+        const uint16_t handLume = blendColor565(packColor565(196, 246, 218), accent, 0.08f);
+        const uint16_t minuteBody = blendColor565(handBody, packColor565(92, 116, 132), 0.20f);
+        const uint16_t secondRed = packColor565(255, 48, 42);
+        drawWatchHand(canvas,
+                      cx,
+                      cy,
+                      static_cast<int16_t>(radius * 0.48f),
+                      hourAngle,
+                      5,
+                      handBody,
+                      handLume,
+                      18);
+        drawWatchHand(canvas,
+                      cx,
+                      cy,
+                      static_cast<int16_t>(radius * 0.72f),
+                      minuteAngle,
+                      4,
+                      minuteBody,
+                      handLume,
+                      24);
+        drawThickLine(canvas,
+                      static_cast<int16_t>(cx - lroundf(cosf(secondAngle) * radius * 0.18f)),
+                      static_cast<int16_t>(cy - lroundf(sinf(secondAngle) * radius * 0.18f)),
+                      static_cast<int16_t>(cx + lroundf(cosf(secondAngle) * radius * 0.82f)),
+                      static_cast<int16_t>(cy + lroundf(sinf(secondAngle) * radius * 0.82f)),
+                      1,
+                      secondRed);
+        canvas.fillCircle(cx, cy, 8, blendColor565(handBody, kColorText, 0.16f));
+        canvas.fillCircle(cx, cy, 4, secondRed);
+        canvas.drawCircle(cx, cy, 13, blendColor565(secondRed, kColorText, 0.12f));
+    } else {
+        canvas.drawCenteredText(timeText,
+                                cx,
+                                static_cast<int16_t>(cy + radius + 24),
+                                RemoteTextStyle::Medium,
+                                text,
+                                bg);
+        if(hasTime) {
+            canvas.drawCenteredText(dateText,
+                                    cx,
+                                    static_cast<int16_t>(cy + radius + 44),
+                                    tinyTextStyle(),
+                                    muted,
+                                    bg);
+        }
+        if(weather.length() > 0) {
+            canvas.drawCenteredText(fitTextToWidth(weather,
+                                                   static_cast<int16_t>(layout.width - layout.pad * 5),
+                                                   tinyTextStyle(),
+                                                   0),
+                                    cx,
+                                    static_cast<int16_t>(layout.height - layout.pad - 12),
+                                    tinyTextStyle(),
+                                    blendColor565(text, accent, 0.22f),
+                                    bg);
+        }
+    }
 }
 
 void drawPressureProfiler(RemoteCanvas& canvas, const Layout& layout) {
@@ -6439,7 +6903,7 @@ bool ensureEspNowPeer(const uint8_t* mac) {
 
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, mac, sizeof(peer.peer_addr));
-    peer.channel = remote_config::kEspNowChannel;
+    peer.channel = 0;
     peer.ifidx = WIFI_IF_STA;
     peer.encrypt = false;
     return esp_now_add_peer(&peer) == ESP_OK;
@@ -6534,8 +6998,29 @@ void requestEspNowDiscovery(bool force) {
     if(!force && (now - app.lastEspNowDiscoveryAt) < kEspNowDiscoveryIntervalMs) {
         return;
     }
+
+    const uint8_t lockedChannel = activeEspNowPeerChannel();
+    if(lockedChannel != 0 && app.espNowChannel != lockedChannel) {
+        (void)setEspNowChannel(lockedChannel);
+    } else if(force && (!hasActiveEspNowPeer() || !isLinkOnline())) {
+        (void)setEspNowChannel(remote_config::kEspNowChannel);
+    } else if((app.screen == Screen::EspNowPeers || !hasActiveEspNowPeer() || !isLinkOnline()) &&
+              app.lastEspNowDiscoveryAt != 0) {
+        (void)setEspNowChannel(nextEspNowDiscoveryChannel());
+    }
     app.lastEspNowDiscoveryAt = now;
     sendEspNowFrame(kEspNowBroadcastMac, sg98_protocol::discoverRequest());
+}
+
+void clearOfflineEspNowLockForSearch(uint32_t now) {
+    if(!app.espNowPeerConfigured || isLinkOnline() ||
+       (now - app.lastTransportSwitchAt) < kStaleEspNowLockClearMs) {
+        return;
+    }
+
+    clearLockedEspNowPeer();
+    clearPollSchedule();
+    setToast("Searching controller", 900);
 }
 
 bool sendWebSocketRaw(const String& command) {
@@ -6569,6 +7054,17 @@ void requestStatus() {
     sendRaw(sg98_protocol::kCmdGetStatus);
 }
 
+void requestControllerEnvironment(bool force) {
+    const uint32_t now = millis();
+    if(!force && app.lastControllerEnvironmentRequestAt != 0 &&
+       (now - app.lastControllerEnvironmentRequestAt) < kControllerEnvironmentRetryMs) {
+        return;
+    }
+    if(sendRaw(sg98_protocol::kCmdGetEnvironment)) {
+        app.lastControllerEnvironmentRequestAt = now;
+    }
+}
+
 void serviceSafetyHeartbeat() {
     if(!isRunningState()) {
         return;
@@ -6600,6 +7096,7 @@ void requestAllMenus() {
 void requestFullControllerRefresh() {
     requestStatus();
     requestAllMenus();
+    requestControllerEnvironment(true);
 }
 
 void requestFullControllerRefreshOnLinkOnline(bool wasOnline) {
@@ -6758,6 +7255,9 @@ int32_t normalizeTargetValue(bool weightMode, int32_t requestedValue) {
 int32_t normalizeMenuValueForController(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue) {
     switch(menuNum) {
         case 1:
+            if(itemIdx == RADIOMODE) {
+                return sanitizeControllerRadioMode(requestedValue);
+            }
             if(itemIdx == SETMAX) {
                 const int32_t minValue = app.menuValues[1][SETMIN];
                 return max<int32_t>(requestedValue, minValue);
@@ -7053,6 +7553,87 @@ void servicePendingControllerSync() {
     }
 }
 
+bool pendingRadioModeWriteActive(int32_t* targetOut = nullptr) {
+    for(const PendingMenuWrite& pending : app.pendingMenuWrites) {
+        if(pending.active && pending.menuNum == 1 && pending.itemIdx == RADIOMODE) {
+            if(targetOut != nullptr) {
+                *targetOut = pending.value;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool requestControllerRadioMode(int32_t mode) {
+    mode = sanitizeControllerRadioMode(mode);
+    int32_t pendingTarget = 0;
+    if(pendingRadioModeWriteActive(&pendingTarget)) {
+        return pendingTarget == mode;
+    }
+
+    const uint32_t now = millis();
+    if(now - app.lastAutoRadioRequestAt < kAutoRadioRequestMs) {
+        return false;
+    }
+
+    app.menuValues[1][RADIOMODE] = mode;
+    app.radioModeKnown = true;
+    PendingMenuWrite* pending = stagePendingMenuWrite(1, RADIOMODE, mode);
+    if(pending == nullptr) {
+        return false;
+    }
+
+    app.lastAutoRadioRequestAt = now;
+    (void)trySendPendingMenuWrite(pending, true);
+    app.lastMenuPollAt[1] = 0;
+    markPersistentStateDirty();
+    return true;
+}
+
+void serviceEspNowFirstPolicy() {
+    if(app.transportOverrideActive && app.currentTransport == LinkTransport::WebSocket) {
+        return;
+    }
+
+    if(app.currentTransport == LinkTransport::WebSocket) {
+        if(app.wsConnected && app.radioModeKnown) {
+            const int32_t mode = sanitizeControllerRadioMode(app.menuValues[1][RADIOMODE]);
+            if(mode == kControllerRadioWeb) {
+                if(requestControllerRadioMode(kControllerRadioDual)) {
+                    setToast("Preparing ESP-NOW", 1000);
+                }
+                return;
+            }
+            if(mode == kControllerRadioDual || mode == kControllerRadioEspNow) {
+                scheduleTransportSwitch(LinkTransport::EspNow, remote_config::kTransportSwitchDelayMs);
+                return;
+            }
+        }
+
+        if(!app.wsConnected &&
+           app.webRecoveryStartedAt != 0 &&
+           millis() - app.webRecoveryStartedAt >= kWifiRecoveryWindowMs) {
+            switchTransportNow(LinkTransport::EspNow);
+        }
+        return;
+    }
+
+    if(app.currentTransport != LinkTransport::EspNow ||
+       !isLinkOnline() ||
+       !hasActiveEspNowPeer() ||
+       !app.radioModeKnown) {
+        return;
+    }
+
+    const int32_t mode = sanitizeControllerRadioMode(app.menuValues[1][RADIOMODE]);
+    if(mode == kControllerRadioDual || mode == kControllerRadioWeb) {
+        if(requestControllerRadioMode(kControllerRadioEspNow)) {
+            setToast("ESP-NOW linked", 900);
+        }
+    }
+}
+
 void switchTransportNow(LinkTransport transport) {
     if(kDisableTransportPerfTest) {
         (void)transport;
@@ -7079,6 +7660,7 @@ void switchTransportNow(LinkTransport transport) {
         if(!remote_wifi_is_active()) {
             remote_wifi_start();
         }
+        app.webRecoveryStartedAt = millis();
         app.wsStaConnected = remote_wifi_sta_connected();
         app.wsDiscoveryPending = remote_wifi_has_saved_network();
         if(remote_wifi_has_saved_network()) {
@@ -7091,6 +7673,14 @@ void switchTransportNow(LinkTransport transport) {
         if(remote_wifi_is_active()) {
             remote_wifi_stop();
         }
+        const uint8_t peerChannel = activeEspNowPeerChannel();
+        if(peerChannel != 0) {
+            app.espNowChannel = peerChannel;
+        } else if(!hasActiveEspNowPeer() || !isLinkOnline()) {
+            app.espNowChannel = remote_config::kEspNowChannel;
+            app.lastEspNowDiscoveryAt = 0;
+        }
+        app.webRecoveryStartedAt = 0;
         app.wsDiscoveryPending = false;
         app.wsStaConnected = false;
         if(initEspNow()) {
@@ -7141,10 +7731,10 @@ LinkTransport alternateTransport() {
     }
 
     if(app.currentTransport == LinkTransport::EspNow) {
-        if(app.screen == Screen::EspNowPeers || !hasActiveEspNowPeer()) {
+        if(app.screen == Screen::EspNowPeers) {
             return app.currentTransport;
         }
-        if(webSocketCandidateAvailable()) {
+        if((!hasActiveEspNowPeer() || !isLinkOnline()) && webSocketCandidateAvailable()) {
             return LinkTransport::WebSocket;
         }
         return app.currentTransport;
@@ -7238,7 +7828,7 @@ void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
 
 void upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
     uint8_t mac[6] = {};
-    if(!parseMacAddress(frame.mac, mac)) {
+    if(!parseMacAddress(frame.mac, mac) || macAddressIsZero(mac)) {
         return;
     }
 
@@ -7272,6 +7862,22 @@ void upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
     peer.seenAt = millis();
     peer.name = frame.name;
     peer.target = frame.target;
+    const bool staleLockedPeer = app.espNowPeerConfigured &&
+                                 !lockedEspNowPeerMatches(peer.mac) &&
+                                 !isLinkOnline();
+    const bool shouldAutoLock = !hasActiveEspNowPeer() || staleLockedPeer;
+    if(lockedEspNowPeerMatches(peer.mac) || shouldAutoLock) {
+        (void)setEspNowChannel(peer.channel);
+    }
+    if(shouldAutoLock) {
+        setLockedEspNowPeer(peer.mac);
+        if(app.espNowReady) {
+            ensureEspNowPeer(peer.mac);
+        }
+        clearPollSchedule();
+        markPersistentStateDirty();
+        setToast(String(staleLockedPeer ? "Relocked " : "Locked ") + espNowPeerName(peer), 1000);
+    }
     sanitizeSelections();
     app.redraw = app.redraw || app.screen == Screen::EspNowPeers;
 }
@@ -7280,6 +7886,40 @@ void consumePeerFrame(const sg98_protocol::PeerFrame& frame) {
     clearRecoveredSendFailureToast();
     app.lastLinkActivityAt = millis();
     upsertDiscoveredEspNowPeer(frame);
+}
+
+void consumeEnvironmentFrame(const sg98_protocol::EnvironmentFrame& frame) {
+    clearRecoveredSendFailureToast();
+    const uint32_t now = millis();
+    app.lastLinkActivityAt = now;
+
+    bool changed = false;
+    struct tm existingTime = {};
+    if(frame.timeValid && frame.unixTime >= kValidUnixTime && !localClockTime(&existingTime)) {
+        setenv("TZ", remote_config::kDockClockTimezone, 1);
+        tzset();
+        timeval tv = {};
+        tv.tv_sec = static_cast<time_t>(frame.unixTime);
+        settimeofday(&tv, nullptr);
+        app.dockClockTimeConfigured = true;
+        app.dockClockLastNtpSyncAt = now;
+        changed = true;
+    }
+
+    if(frame.weatherValid) {
+        app.dockWeather.valid = true;
+        app.dockWeather.temperatureF = frame.temperatureF;
+        app.dockWeather.weatherCode = frame.weatherCode;
+        app.dockWeather.precipitationPercent = frame.precipitationPercent;
+        app.dockWeather.location = frame.location;
+        app.dockWeather.updatedAt = now;
+        app.dockClockLastWeatherFetchAt = now;
+        changed = true;
+    }
+
+    if(changed) {
+        app.redraw = true;
+    }
 }
 
 void consumeProtocolFrame(const String& frame) {
@@ -7299,6 +7939,22 @@ void consumeProtocolFrame(const String& frame) {
     sg98_protocol::PeerFrame peerFrame;
     if(sg98_protocol::parsePeerFrame(frame, &peerFrame)) {
         consumePeerFrame(peerFrame);
+        return;
+    }
+
+    sg98_protocol::EnvironmentFrame environmentFrame;
+    if(sg98_protocol::parseEnvironmentFrame(frame, &environmentFrame)) {
+        consumeEnvironmentFrame(environmentFrame);
+        return;
+    }
+
+    sg98_protocol::WifiConfigFrame wifiFrame;
+    if(sg98_protocol::parseWifiConfigFrame(frame, &wifiFrame)) {
+        clearRecoveredSendFailureToast();
+        app.lastLinkActivityAt = millis();
+        remote_wifi_apply_network_settings(wifiFrame.ssid, wifiFrame.password, true);
+        setToast(String("Wi-Fi synced: ") + wifiFrame.ssid, 1600);
+        app.redraw = true;
         return;
     }
 
@@ -7391,10 +8047,18 @@ bool initEspNow() {
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(!remote_config::kDisableWifiModemSleepForTesting);
 
-    if(esp_wifi_set_channel(remote_config::kEspNowChannel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+    const uint8_t peerChannel = activeEspNowPeerChannel();
+    if(peerChannel != 0) {
+        app.espNowChannel = peerChannel;
+    } else if(!hasActiveEspNowPeer() || !isLinkOnline()) {
+        app.espNowChannel = remote_config::kEspNowChannel;
+    }
+    const uint8_t channel = normalizeEspNowChannel(app.espNowChannel);
+    if(esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
         setToast("Channel setup failed");
         return false;
     }
+    app.espNowChannel = channel;
 
     if(esp_now_init() != ESP_OK) {
         setToast("ESP-NOW init failed");
@@ -7501,7 +8165,8 @@ void manageTransport() {
             remote_wifi_stop();
         }
         initEspNow();
-        if(app.screen == Screen::EspNowPeers || !hasActiveEspNowPeer()) {
+        clearOfflineEspNowLockForSearch(now);
+        if(app.screen == Screen::EspNowPeers || !hasActiveEspNowPeer() || !isLinkOnline()) {
             requestEspNowDiscovery(false);
         }
     }
@@ -7594,6 +8259,7 @@ void cancelEditing() {
 
 void lockEspNowPeer(const DiscoveredEspNowPeer& peer) {
     setLockedEspNowPeer(peer.mac);
+    (void)setEspNowChannel(peer.channel);
     if(app.espNowReady) {
         ensureEspNowPeer(peer.mac);
     }
@@ -7849,6 +8515,7 @@ void setScreen(Screen screen) {
     const Screen previousScreen = app.screen;
     app.screen = screen;
     app.menuRollOffset = 0.0f;
+    app.menuEncoderRemainder = 0;
     app.editing = false;
     app.redraw = true;
     requestVisibleMenuIfNeeded(true);
@@ -7946,7 +8613,9 @@ void handleDialDelta(int delta) {
 
     const SettingItem& item = items[selectionFor(app.screen)];
     if(app.editing && item.kind == ItemKind::Value) {
-        app.draftValue = clampValue(app.draftValue + delta * item.step, item.minValue, item.maxValue);
+        app.draftValue = isRadioModeItem(item)
+                             ? stepRadioModeValue(app.draftValue, delta)
+                             : clampValue(app.draftValue + delta * item.step, item.minValue, item.maxValue);
         applyLocalMenuPreview(item, app.draftValue);
         app.redraw = true;
         return;
@@ -8097,7 +8766,7 @@ bool idleSleepAllowed() {
         return false;
     }
     if(app.editing || app.targetDirty || isRunningState() ||
-       app.screen == Screen::Profiler || remote_pressure_ble_connected()) {
+       (app.screen != Screen::Profiler && remote_pressure_ble_connected())) {
         return false;
     }
     if(!remote_board_support_present(remote_board_feature_map().power.deepSleep)) {
@@ -8208,7 +8877,9 @@ void enterIdleSleepIfNeeded() {
 
     const LinkTransport resumeTransport = app.currentTransport == LinkTransport::None ? initialTransport() : app.currentTransport;
     const uint64_t wakeMask =
-        idleDeepSleepSupported() && !touchWakeNeedsLightSleep() ? deepSleepWakeMask() : 0;
+        app.screen != Screen::Profiler && idleDeepSleepSupported() && !touchWakeNeedsLightSleep()
+            ? deepSleepWakeMask()
+            : 0;
     if(wakeMask != 0 && enterIdleDeepSleep(wakeMask)) {
         return;
     }
@@ -8218,6 +8889,10 @@ void enterIdleSleepIfNeeded() {
 
 void handlePrimaryLongPress() {
     if(useRoundNavigation() && app.screen == Screen::Home && !app.editing) {
+        if(isRunningState()) {
+            setToast("Stop first", 900);
+            return;
+        }
         setScreen(Screen::Profiler);
         return;
     }
@@ -8232,6 +8907,10 @@ void handlePrimaryLongPress() {
     }
 
     if(app.screen == Screen::Home) {
+        if(isRunningState()) {
+            setToast("Stop first", 900);
+            return;
+        }
         setScreen(Screen::Profiler);
     }
 }
@@ -9003,6 +9682,8 @@ void appendRemoteStatusJson(String& out) {
     out += app.wsConnected ? "true" : "false";
     out += ",\"espNowReady\":";
     out += app.espNowReady ? "true" : "false";
+    out += ",\"espNowChannel\":";
+    out += String(static_cast<unsigned>(app.espNowChannel));
     out += ",\"radioMode\":";
     appendJsonQuoted(out, formatValueLabel(kNetworkItems[0], app.menuValues[1][RADIOMODE]));
     out += ",\"radioModeKnown\":";
@@ -9567,6 +10248,10 @@ void handleRemoteConsoleLine(const char* rawLine) {
             uint8_t mac[6] = {};
             if(parseMacAddress(tail, mac)) {
                 setLockedEspNowPeer(mac);
+                const uint8_t channel = activeEspNowPeerChannel();
+                if(channel != 0) {
+                    (void)setEspNowChannel(channel);
+                }
                 if(app.espNowReady) {
                     ensureEspNowPeer(mac);
                 }
@@ -9793,7 +10478,7 @@ void remote_app_loop() {
 
     handleTouchInput(input.touch);
     sectionStartUs = traceLoopStep("touch", sectionStartUs, loopStartUs, input);
-    handleDialDelta(applyDialDirection(input.dialDelta));
+    handleDialDelta(conditionHardwareDialForMenu(applyDialDirection(input.dialDelta)));
     sectionStartUs = traceLoopStep("dial", sectionStartUs, loopStartUs, input);
     commitTargetIfDue();
     sectionStartUs = traceLoopStep("target_commit", sectionStartUs, loopStartUs, input);
@@ -9803,6 +10488,10 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("heartbeat", sectionStartUs, loopStartUs, input);
     servicePressureProfiler(now);
     sectionStartUs = traceLoopStep("pressure", sectionStartUs, loopStartUs, input);
+    serviceControllerEnvironmentSync(now);
+    sectionStartUs = traceLoopStep("env_sync", sectionStartUs, loopStartUs, input);
+    serviceDockClockTime(now);
+    sectionStartUs = traceLoopStep("clock_sync", sectionStartUs, loopStartUs, input);
     serviceDockClock(now);
     sectionStartUs = traceLoopStep("dock_clock", sectionStartUs, loopStartUs, input);
     const bool yieldTransport = shouldYieldTransportToUi();
@@ -9819,6 +10508,8 @@ void remote_app_loop() {
             sectionStartUs = traceLoopStep("manage_transport", sectionStartUs, loopStartUs, input);
             servicePendingControllerSync();
             sectionStartUs = traceLoopStep("pending_sync", sectionStartUs, loopStartUs, input);
+            serviceEspNowFirstPolicy();
+            sectionStartUs = traceLoopStep("espnow_policy", sectionStartUs, loopStartUs, input);
             handleSendCompletion();
             sectionStartUs = traceLoopStep("send_completion", sectionStartUs, loopStartUs, input);
             updateSyncFromStatusFallback();

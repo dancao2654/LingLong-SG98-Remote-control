@@ -175,16 +175,17 @@ void openDriveSelector(States returnState) {
 void applyDriveSelection() {
     switch(motorSelectSelected) {
         case MOTOR_SELECT_JMC:
-            motor_force_drive_type(DRIVE_TYPE_JMC, false);
+            motor_force_drive_type(DRIVE_TYPE_JMC, true);
             break;
         case MOTOR_SELECT_RT:
-            motor_force_drive_type(DRIVE_TYPE_RT, false);
+            motor_force_drive_type(DRIVE_TYPE_RT, true);
             break;
         case MOTOR_SELECT_KRS_130ST_M07725:
-            motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, false);
+            motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, true);
             break;
         case MOTOR_SELECT_AUTO:
         default:
+            pdata_write_drive_type(DRIVE_TYPE_UNKNOWN);
             motor_redetect_drive(false);
             break;
     }

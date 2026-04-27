@@ -16,7 +16,7 @@ endobj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
 endobj
 6 0 obj
-<< /Length 7061 >>
+<< /Length 8044 >>
 stream
 1.000 1.000 1.000 rg
 0.00 0.00 612.00 792.00 re f
@@ -141,35 +141,58 @@ BT /F2 8.0 Tf 292.00 438.00 Td (OUT -> pin 2) Tj ET
 434.80 362.00 m 434.80 364.10 433.10 365.80 431.00 365.80 c 428.90 365.80 427.20 364.10 427.20 362.00 c 427.20 359.90 428.90 358.20 431.00 358.20 c 433.10 358.20 434.80 359.90 434.80 362.00 c f
 0.120 0.130 0.150 rg
 BT /F2 8.0 Tf 436.00 418.00 Td (GND -> pin 7) Tj ET
+0.910 0.960 1.000 RG
+0.910 0.960 1.000 rg
+324.00 548.00 226.00 92.00 re B
+0.120 0.130 0.150 rg
+BT /F2 12.0 Tf 338.00 618.00 Td (Battery Charging Input) Tj ET
+BT /F1 9.0 Tf 338.00 600.00 Td (Use a regulated 5V source:) Tj ET
+0.820 0.100 0.100 rg
+BT /F2 9.0 Tf 346.00 584.00 Td (+5V -> H2 pin 8 / VBUS) Tj ET
+0.120 0.130 0.150 rg
+BT /F2 9.0 Tf 346.00 570.00 Td (GND -> H2 pin 7 / GND) Tj ET
+BT /F1 8.0 Tf 338.00 556.00 Td (MX1.25 battery stays on battery connector.) Tj ET
 0.120 0.130 0.150 rg
 BT /F2 14.0 Tf 62.00 242.00 Td (Connections) Tj ET
 0.930 0.950 0.970 RG
 0.930 0.950 0.970 rg
-62.00 154.00 488.00 78.00 re B
+62.00 132.00 488.00 100.00 re B
 0.120 0.130 0.150 rg
-BT /F2 10.0 Tf 76.00 208.00 Td (Sensor SUP / +5V) Tj ET
-BT /F1 10.0 Tf 240.00 208.00 Td (H2 pin 8) Tj ET
-BT /F1 10.0 Tf 354.00 208.00 Td (VBUS / 5V power) Tj ET
+BT /F2 9.0 Tf 76.00 210.00 Td (Sensor SUP / +5V) Tj ET
+BT /F1 9.0 Tf 240.00 210.00 Td (H2 pin 8) Tj ET
+BT /F1 9.0 Tf 354.00 210.00 Td (VBUS / 5V power) Tj ET
 0.740 0.770 0.820 RG
-62.00 202.00 m 550.00 202.00 l S
+62.00 205.00 m 550.00 205.00 l S
 0.120 0.130 0.150 rg
-BT /F2 10.0 Tf 76.00 186.00 Td (Sensor OUT) Tj ET
-BT /F1 10.0 Tf 240.00 186.00 Td (H2 pin 2) Tj ET
-BT /F1 10.0 Tf 354.00 186.00 Td (IO17 ADC input, firmware pressure signal) Tj ET
+BT /F2 9.0 Tf 76.00 192.00 Td (Sensor OUT) Tj ET
+BT /F1 9.0 Tf 240.00 192.00 Td (H2 pin 2) Tj ET
+BT /F1 9.0 Tf 354.00 192.00 Td (IO17 ADC input, firmware pressure signal) Tj ET
 0.740 0.770 0.820 RG
-62.00 180.00 m 550.00 180.00 l S
+62.00 187.00 m 550.00 187.00 l S
 0.120 0.130 0.150 rg
-BT /F2 10.0 Tf 76.00 164.00 Td (Sensor GND) Tj ET
-BT /F1 10.0 Tf 240.00 164.00 Td (H2 pin 7) Tj ET
-BT /F1 10.0 Tf 354.00 164.00 Td (GND, common with remote) Tj ET
+BT /F2 9.0 Tf 76.00 174.00 Td (Sensor GND) Tj ET
+BT /F1 9.0 Tf 240.00 174.00 Td (H2 pin 7) Tj ET
+BT /F1 9.0 Tf 354.00 174.00 Td (GND, common with remote) Tj ET
+0.740 0.770 0.820 RG
+62.00 169.00 m 550.00 169.00 l S
+0.120 0.130 0.150 rg
+BT /F2 9.0 Tf 76.00 156.00 Td (External 5V charger +) Tj ET
+BT /F1 9.0 Tf 240.00 156.00 Td (H2 pin 8) Tj ET
+BT /F1 9.0 Tf 354.00 156.00 Td (VBUS / PMIC charge input) Tj ET
+0.740 0.770 0.820 RG
+62.00 151.00 m 550.00 151.00 l S
+0.120 0.130 0.150 rg
+BT /F2 9.0 Tf 76.00 138.00 Td (External 5V charger -) Tj ET
+BT /F1 9.0 Tf 240.00 138.00 Td (H2 pin 7) Tj ET
+BT /F1 9.0 Tf 354.00 138.00 Td (GND, common with battery charger) Tj ET
 0.990 0.930 0.800 RG
 0.990 0.930 0.800 rg
 62.00 70.00 488.00 54.00 re B
 0.120 0.130 0.150 rg
 BT /F2 11.0 Tf 76.00 104.00 Td (Notes) Tj ET
-BT /F1 9.0 Tf 76.00 90.00 Td (Do not feed 5V into IO17. Sensor OUT must stay in the 0.4-2.4V range.) Tj ET
-BT /F1 9.0 Tf 76.00 77.00 Td (VBUS is 5V from USB-C. For battery-only profiling, use a small 5V boost supply for the sensor.) Tj ET
-BT /F1 9.0 Tf 76.00 64.00 Td (If your cable colors differ, follow the sensor labels: SUP, OUT, and GND.) Tj ET
+BT /F1 8.0 Tf 76.00 90.00 Td (Do not feed 5V into IO17 or any GPIO. Sensor OUT must stay in the 0.4-2.4V range.) Tj ET
+BT /F1 8.0 Tf 76.00 77.00 Td (To charge the MX1.25 battery, feed regulated 5V only into H2 pin 8 and GND into H2 pin 7.) Tj ET
+BT /F1 8.0 Tf 76.00 64.00 Td (Do not connect the LiPo battery to H2. It must stay on the MX1.25 battery connector.) Tj ET
 0.420 0.450 0.500 rg
 BT /F1 8.0 Tf 46.00 42.00 Td (Generated from firmware setting: kPressureSensorAdcPin = GPIO17.) Tj ET
 BT /F1 8.0 Tf 46.00 30.00 Td (Source pinout: Waveshare ESP32-S3-Touch-AMOLED-1.75 documentation and schematic.) Tj ET
@@ -187,5 +210,5 @@ xref
 trailer
 << /Size 7 /Root 1 0 R >>
 startxref
-7515
+8498
 %%EOF

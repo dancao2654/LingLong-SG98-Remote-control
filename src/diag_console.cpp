@@ -15,6 +15,7 @@
 #include "motor_hal.h"
 #include "pdata.h"
 #include "radio_mode.h"
+#include "wifi_ui.h"
 
 namespace {
 bool streamEnabled = false;
@@ -469,6 +470,8 @@ void apiPrintStatus() {
     jsonPrintQuoted(radio_mode_label(radio_mode_desired()));
     Serial.print(",\"radioStatus\":");
     jsonPrintQuoted(radio_mode_status_text());
+    Serial.print(",\"apStations\":");
+    Serial.print(static_cast<unsigned>(WiFi.softAPgetStationNum()));
     Serial.print(",\"radioRecovery\":");
     Serial.print(radio_mode_web_recovery_active() ? "true" : "false");
     Serial.print(",\"radioRecoveryMs\":");
@@ -828,13 +831,14 @@ bool apiActionDrive(const char* mode, const char** message) {
     }
 
     if(strcmp(mode, "auto") == 0) {
+        pdata_write_drive_type(DRIVE_TYPE_UNKNOWN);
         motor_redetect_drive(false);
     } else if(strcmp(mode, "jmc") == 0) {
-        motor_force_drive_type(DRIVE_TYPE_JMC, false);
+        motor_force_drive_type(DRIVE_TYPE_JMC, true);
     } else if(strcmp(mode, "rt") == 0) {
-        motor_force_drive_type(DRIVE_TYPE_RT, false);
+        motor_force_drive_type(DRIVE_TYPE_RT, true);
     } else if(strcmp(mode, "krs") == 0 || strcmp(mode, "krs130st-m07725") == 0) {
-        motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, false);
+        motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, true);
     } else {
         *message = "invalid drive mode";
         return false;
@@ -875,6 +879,14 @@ bool apiActionResetDefaults(const char* confirmToken, const char** message) {
     else ESP.restart();
 
     *message = "rebooting";
+    return true;
+}
+
+bool apiActionResetNetwork(const char** message) {
+    wifi_ui_reset_network_settings();
+    controller_note_activity();
+    disp_updateRequired = true;
+    *message = "ok";
     return true;
 }
 
@@ -936,6 +948,8 @@ void appendStatusJson(String& out) {
     appendJsonQuoted(out, radio_mode_label(radio_mode_desired()));
     out += ",\"radioStatus\":";
     appendJsonQuoted(out, radio_mode_status_text());
+    out += ",\"apStations\":";
+    out += String(static_cast<unsigned>(WiFi.softAPgetStationNum()));
     out += ",\"radioRecovery\":";
     out += radio_mode_web_recovery_active() ? "true" : "false";
     out += ",\"radioRecoveryMs\":";
@@ -1058,7 +1072,7 @@ void printHelp() {
     Serial.println("[diag] raw: mr <j|r> <slave> <reg> <count> | mw <j|r> <slave> <reg> <value>");
     Serial.println("[diag] raw-uart: mru <baud> <8N1|8N2|8E1|8E2|8O1|8O2> <slave> <reg> <count> | mwu <baud> <mode> <slave> <reg> <value>");
     Serial.println("[diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_defaults confirm>");
+    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm>");
 }
 
 void printStatus() {
@@ -1621,6 +1635,8 @@ void handleLineCommand(char* line) {
                 ok = motor_run_jmc_baud_switch(baud);
                 message = motor_get_jmc_baud_trial_status_text();
                 disp_updateRequired = true;
+            } else if(strcmp(action, "reset_network") == 0) {
+                ok = apiActionResetNetwork(&message);
             } else if(strcmp(action, "reset_defaults") == 0) {
                 ok = apiActionResetDefaults(strtok_r(nullptr, " \t", &savePtr), &message);
             } else {
@@ -1893,25 +1909,26 @@ void handleSerialCommand(char cmd) {
             break;
         case 'a':
         case 'A':
+            pdata_write_drive_type(DRIVE_TYPE_UNKNOWN);
             motor_redetect_drive(false);
             Serial.println("[diag] redetect complete");
             printStatus();
             break;
         case 'j':
         case 'J':
-            motor_force_drive_type(DRIVE_TYPE_JMC, false);
+            motor_force_drive_type(DRIVE_TYPE_JMC, true);
             Serial.println("[diag] forced drive=JMC");
             printStatus();
             break;
         case 'r':
         case 'R':
-            motor_force_drive_type(DRIVE_TYPE_RT, false);
+            motor_force_drive_type(DRIVE_TYPE_RT, true);
             Serial.println("[diag] forced drive=RT");
             printStatus();
             break;
         case 'k':
         case 'K':
-            motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, false);
+            motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, true);
             Serial.println("[diag] forced drive=KRS");
             printStatus();
             break;
@@ -2013,6 +2030,8 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
             rawMessage = motor_get_jmc_baud_trial_status_text();
             disp_updateRequired = true;
         }
+    } else if(strcmp(action, "reset_network") == 0) {
+        ok = apiActionResetNetwork(&rawMessage);
     } else if(strcmp(action, "reset_defaults") == 0) {
         ok = apiActionResetDefaults(arg0, &rawMessage);
     } else if(strcmp(action, "stream") == 0) {

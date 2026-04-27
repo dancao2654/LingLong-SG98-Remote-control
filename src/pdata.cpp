@@ -1,4 +1,5 @@
 #include <nvs_flash.h>
+#include <string.h>
 #include "pdata.h"
 #include "gbw.h"
 #include "main.h"
@@ -11,6 +12,7 @@ Preferences preferences;
 
 namespace {
 constexpr uint32_t DEFAULT_JMC_BAUD = 9600;
+constexpr int16_t DEFAULT_DRIVE_TYPE = DRIVE_TYPE_UNKNOWN;
 
 bool clamp_menu_entry(menuEntry& entry) {
     int16_t original = entry.value;
@@ -31,6 +33,21 @@ uint32_t sanitize_jmc_baud(uint32_t baud_rate) {
             return DEFAULT_JMC_BAUD;
     }
 }
+
+int16_t sanitize_drive_type(int16_t drive_type) {
+    switch(drive_type) {
+        case DRIVE_TYPE_UNKNOWN:
+        case DRIVE_TYPE_JMC:
+        case DRIVE_TYPE_RT:
+        case DRIVE_TYPE_KRS_130ST_M07725:
+            return drive_type;
+        default:
+            return DEFAULT_DRIVE_TYPE;
+    }
+}
+
+constexpr const char* SMART_PURGE_LOAD_KEY = "SPLOAD";
+constexpr const char* SMART_PURGE_CONF_KEY = "SPCONF";
 }
 
 void pdata_init() { 
@@ -181,9 +198,12 @@ void pdata_write(uint8_t what) { // 0 = ALL SETTIGNS , 1 = Calibration array, 2 
         preferences.putULong("setWeight", default_setWeight);
         preferences.putFloat("speedModifier", speedModifier);
         preferences.putULong("jmcBaud", DEFAULT_JMC_BAUD);
+        preferences.putShort("driveType", DEFAULT_DRIVE_TYPE);
 
         preferences.putString("SCALE_NAME", "");
         preferences.putString("SCALE_MAC", "");
+        preferences.remove(SMART_PURGE_LOAD_KEY);
+        preferences.remove(SMART_PURGE_CONF_KEY);
 
         String currentBuildID = BUILD_ID;
         preferences.putString("build_id", currentBuildID);
@@ -225,6 +245,8 @@ void pdata_write(uint8_t what) { // 0 = ALL SETTIGNS , 1 = Calibration array, 2 
     if(what == 4) { 
         if(state == GRINDING_GBW) preferences.putShort(Menu3[GBW_SPEEDMOD].prefUID, Menu3[GBW_SPEEDMOD].value);
         if(state == GRINDING_GBW) preferences.putShort(Menu3[GBW_OFFSET].prefUID, Menu3[GBW_OFFSET].value);  
+        if(state == GRINDING_GBW) preferences.putShort(Menu3[GBW_SLOW_MG].prefUID, Menu3[GBW_SLOW_MG].value);
+        if(state == GRINDING_GBW) preferences.putShort(Menu3[GBW_SLOW_RPM].prefUID, Menu3[GBW_SLOW_RPM].value);
         #ifdef DEBUG
             Serial.println("Stored 4");
         #endif
@@ -268,4 +290,42 @@ uint32_t pdata_read_jmc_baud() {
 
 void pdata_write_jmc_baud(uint32_t baud_rate) {
     preferences.putULong("jmcBaud", sanitize_jmc_baud(baud_rate));
+}
+
+int16_t pdata_read_drive_type() {
+    return sanitize_drive_type(preferences.getShort("driveType", DEFAULT_DRIVE_TYPE));
+}
+
+void pdata_write_drive_type(int16_t drive_type) {
+    preferences.putShort("driveType", sanitize_drive_type(drive_type));
+}
+
+void pdata_read_smart_purge_learning(uint16_t* learnedLoad, uint16_t* confidence, size_t count) {
+    if(learnedLoad == nullptr || confidence == nullptr || count == 0) return;
+
+    const size_t bytes = count * sizeof(uint16_t);
+    memset(learnedLoad, 0, bytes);
+    memset(confidence, 0, bytes);
+
+    if(preferences.isKey(SMART_PURGE_LOAD_KEY)) {
+        const size_t loadBytes = preferences.getBytes(SMART_PURGE_LOAD_KEY, learnedLoad, bytes);
+        if(loadBytes != bytes) {
+            memset(learnedLoad, 0, bytes);
+        }
+    }
+
+    if(preferences.isKey(SMART_PURGE_CONF_KEY)) {
+        const size_t confidenceBytes = preferences.getBytes(SMART_PURGE_CONF_KEY, confidence, bytes);
+        if(confidenceBytes != bytes) {
+            memset(confidence, 0, bytes);
+        }
+    }
+}
+
+void pdata_write_smart_purge_learning(const uint16_t* learnedLoad, const uint16_t* confidence, size_t count) {
+    if(learnedLoad == nullptr || confidence == nullptr || count == 0) return;
+
+    const size_t bytes = count * sizeof(uint16_t);
+    preferences.putBytes(SMART_PURGE_LOAD_KEY, learnedLoad, bytes);
+    preferences.putBytes(SMART_PURGE_CONF_KEY, confidence, bytes);
 }

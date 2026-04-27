@@ -2,6 +2,7 @@
 import argparse
 import glob
 import json
+import math
 import sys
 import time
 from collections import deque
@@ -28,6 +29,7 @@ class SerialConsole:
         self.port = port
         self.ser = serial.Serial(port, baudrate, timeout=timeout)
         self.log = deque(maxlen=200)
+        self.timings = []
 
     def close(self):
         self.ser.close()
@@ -66,6 +68,7 @@ class SerialConsole:
 
     def request_json(self, command, type_name, timeout=8.0):
         self.drain(0.1)
+        start = time.perf_counter()
         self.send(command)
         end = time.time() + timeout
         while time.time() < end:
@@ -77,11 +80,13 @@ class SerialConsole:
             except json.JSONDecodeError:
                 continue
             if payload.get("type") == type_name:
+                self.timings.append((command, (time.perf_counter() - start) * 1000.0))
                 return payload
         raise TestFailure(f"{self.label}: timeout waiting for {type_name} after `{command}`")
 
     def request_controller_snapshot(self, timeout=10.0):
         self.drain(0.1)
+        start = time.perf_counter()
         self.send("api snapshot")
         end = time.time() + timeout
         snapshot = {"menus": {}}
@@ -99,6 +104,7 @@ class SerialConsole:
                 in_snapshot = True
                 continue
             if msg_type == "snapshot_end":
+                self.timings.append(("api snapshot", (time.perf_counter() - start) * 1000.0))
                 return snapshot
             if not in_snapshot:
                 continue
@@ -113,15 +119,30 @@ class SerialConsole:
                 menu_num = payload["menu"]
                 snapshot["menus"].setdefault(menu_num, {"meta": {"menu": menu_num}, "items": {}})
                 snapshot["menus"][menu_num]["items"][payload["index"]] = payload
+        self.timings.append(("api snapshot", (time.perf_counter() - start) * 1000.0))
         raise TestFailure(f"{self.label}: timeout waiting for controller snapshot")
+
+    def timing_summary(self):
+        values = sorted(duration for _, duration in self.timings)
+        if not values:
+            return {"count": 0, "avg_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0}
+        p95_index = min(len(values) - 1, max(0, math.ceil(len(values) * 0.95) - 1))
+        return {
+            "count": len(values),
+            "avg_ms": sum(values) / len(values),
+            "p95_ms": values[p95_index],
+            "max_ms": values[-1],
+        }
 
 
 class DualBoardRegression:
-    def __init__(self, remote_port, controller_port, controller_mac):
+    def __init__(self, remote_port, controller_port, controller_mac, skip_websocket=False, factory_network_reset=False):
         self.remote = SerialConsole("remote", remote_port)
         self.controller = SerialConsole("controller", controller_port)
         self.controller_mac = controller_mac
         self.original = {}
+        self.skip_websocket = skip_websocket
+        self.factory_network_reset = factory_network_reset
 
     def close(self):
         self.remote.close()
@@ -186,6 +207,13 @@ class DualBoardRegression:
                     f"controller command failed: {command} -> {payload}")
         return payload
 
+    def controller_command_expect_fail(self, command, ack_cmd=None):
+        expected_cmd = ack_cmd or command.split()[1]
+        payload = self.controller.request_json(command, "ack")
+        self.expect(payload.get("cmd") == expected_cmd and payload.get("ok") is False,
+                    f"controller command unexpectedly succeeded: {command} -> {payload}")
+        return payload
+
     def remote_command_ok(self, command, expected_cmd=None):
         payload = self.remote.request_json(command, "ack")
         want = expected_cmd or command
@@ -224,6 +252,31 @@ class DualBoardRegression:
         else:
             self.remote_command_ok("peer lock " + self.controller_mac)
             self.remote_command_ok("transport espnow")
+
+    def reset_network_for_factory_test(self):
+        print("== Factory/no-info reset ==")
+        self.remote_command_ok("api action reset_network")
+        self.remote_command_ok("peer clear")
+        self.controller_command_ok("api action reset_network", ack_cmd="action")
+        self.controller_command_ok("api action idle", ack_cmd="action")
+        self.controller_command_ok("api set 1 4 3")
+        self.remote_command_ok("transport espnow")
+
+    def fresh_discovery_suite(self):
+        print("== Fresh no-info discovery suite ==")
+        self.controller_command_ok("api set 1 4 3")
+        self.remote_command_ok("api action reset_network")
+        self.remote_command_ok("peer clear")
+        self.remote_command_ok("transport espnow")
+        status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=35.0)
+        self.expect(status["lockedPeerConfigured"] is True and status["lockedPeer"],
+                    f"fresh ESP-NOW discovery did not lock a controller peer: {status}")
+        self.expect(status["wifi"]["staSaved"] is False,
+                    f"fresh remote should not have saved Wi-Fi during no-info test: {status}")
+        controller_status = self.controller_status()
+        self.expect(controller_status["radioMode"] in ("WEB+ESP", "DUAL", "ESP-NOW"),
+                    f"fresh controller should remain reachable through ESP-NOW/dual: {controller_status}")
+        self.load_probe("Fresh ESP-NOW discovery")
 
     def wait_remote_transport(self, expected_transport, require_online=False, timeout=20.0):
         def check():
@@ -355,6 +408,7 @@ class DualBoardRegression:
             status = self.remote_status()
             self.expect(status["transport"] == "ESP-NOW" and status["linkOnline"],
                         f"ESP-NOW soak lost link on iteration {index}: {status}")
+        self.load_probe("ESP-NOW")
 
     def websocket_suite(self):
         print("== WebSocket suite ==")
@@ -398,14 +452,72 @@ class DualBoardRegression:
             status = self.remote_status()
             self.expect(status["transport"] == "WebSocket" and status["linkOnline"] and status["wsConnected"],
                         f"WebSocket soak lost link on iteration {index}: {status}")
+        self.load_probe("WebSocket")
+
+    def headless_guard_suite(self):
+        status = self.controller_status()
+        if not status.get("remoteRecoveryRequired"):
+            print("== Headless guard suite skipped: full-size local UI available ==")
+            return
+
+        print("== Headless guard suite ==")
+        payload = self.controller_command_expect_fail("api set 1 4 2", ack_cmd="set")
+        self.expect("headless" in payload.get("message", "").lower(),
+                    f"headless OFF rejection message was unexpected: {payload}")
+        status = self.controller_status()
+        self.expect(status["radioDesiredMode"] != "OFF" and status["remoteRecoveryRequired"] is True,
+                    f"headless controller should reject OFF and require remote recovery: {status}")
+        self.load_probe("Headless guard")
+
+    def load_probe(self, label, samples=12):
+        print(f"== Load probe: {label} ==")
+        remote_before = len(self.remote.timings)
+        controller_before = len(self.controller.timings)
+        relock_recoveries = 0
+        for _ in range(samples):
+            remote_status = self.remote_status()
+            controller_status = self.controller_status()
+            if not remote_status["linkOnline"]:
+                relock_recoveries += 1
+                remote_status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=10.0)
+            self.expect(controller_status["state"] in ("IDLE", "IDLE_GBW", "GRINDING", "GRINDING_GBW", "PURGING"),
+                        f"unexpected controller state during {label} load probe: {controller_status}")
+            time.sleep(0.15)
+
+        remote_samples = self.remote.timings[remote_before:]
+        controller_samples = self.controller.timings[controller_before:]
+        for side, samples_ in (("remote", remote_samples), ("controller", controller_samples)):
+            if not samples_:
+                continue
+            max_ms = max(duration for _, duration in samples_)
+            avg_ms = sum(duration for _, duration in samples_) / len(samples_)
+            print(f"   {side}: n={len(samples_)} avg={avg_ms:.1f}ms max={max_ms:.1f}ms")
+            self.expect(max_ms < 1500.0, f"{side} serial/API latency too high during {label}: max={max_ms:.1f}ms")
+        if relock_recoveries:
+            print(f"   relock recoveries={relock_recoveries}")
 
     def run(self):
+        if self.factory_network_reset:
+            self.reset_network_for_factory_test()
         self.capture_original_state()
         try:
+            if self.factory_network_reset:
+                self.fresh_discovery_suite()
+            self.headless_guard_suite()
             self.espnow_suite()
-            self.websocket_suite()
+            if self.skip_websocket:
+                print("== WebSocket suite skipped: factory/no-info mode has no saved Wi-Fi ==")
+            else:
+                self.websocket_suite()
         finally:
             self.restore_original_state()
+            for console in (self.remote, self.controller):
+                summary = console.timing_summary()
+                print(
+                    f"TIMING_SUMMARY {console.label} "
+                    f"count={summary['count']} avg_ms={summary['avg_ms']:.1f} "
+                    f"p95_ms={summary['p95_ms']:.1f} max_ms={summary['max_ms']:.1f}"
+                )
 
 
 def candidate_serial_ports():
@@ -508,6 +620,8 @@ def main():
     parser.add_argument("--remote-port", default=DEFAULT_REMOTE_PORT)
     parser.add_argument("--controller-port", default=DEFAULT_CONTROLLER_PORT)
     parser.add_argument("--controller-mac", default=DEFAULT_CONTROLLER_MAC)
+    parser.add_argument("--skip-websocket", action="store_true")
+    parser.add_argument("--factory-network-reset", action="store_true")
     args = parser.parse_args()
 
     remote_port = args.remote_port
@@ -529,7 +643,11 @@ def main():
             controller_mac = controller_mac_from_detection(discovered)
         print(f"Using remote={remote_port} controller={controller_port} controller_mac={controller_mac}")
 
-    rig = DualBoardRegression(remote_port, controller_port, controller_mac)
+    rig = DualBoardRegression(remote_port,
+                              controller_port,
+                              controller_mac,
+                              skip_websocket=args.skip_websocket,
+                              factory_network_reset=args.factory_network_reset)
     try:
         rig.run()
     except TestFailure as exc:

@@ -45,6 +45,22 @@ constexpr ControllerBoardInfo kAdafruitBoard = {
     kAdafruitPins,
 };
 
+constexpr ControllerBoardFeatures kHeadlessSimFeatures = {
+    false,
+    false,
+    false,
+    false,
+    false,
+};
+
+constexpr ControllerBoardInfo kAdafruitHeadlessSimBoard = {
+    ControllerBoardId::AdafruitFeather,
+    "controller_box_headless_sim",
+    "Adafruit Feather Headless Simulation",
+    kHeadlessSimFeatures,
+    kAdafruitPins,
+};
+
 constexpr ControllerBoardFeatures kWaveshareFeatures = {
     false,
     false,
@@ -108,7 +124,9 @@ uint32_t detectFlashSizeBytes() {
 }
 
 const ControllerBoardInfo* detectBoard() {
-#if defined(SG98_CONTROLLER_FORCE_ADAFRUIT_FEATHER)
+#if defined(SG98_CONTROLLER_SIMULATE_HEADLESS)
+    return &kAdafruitHeadlessSimBoard;
+#elif defined(SG98_CONTROLLER_FORCE_ADAFRUIT_FEATHER)
     return &kAdafruitBoard;
 #elif defined(SG98_CONTROLLER_FORCE_WAVESHARE_RS485_CAN)
     return &kWaveshareBoard;

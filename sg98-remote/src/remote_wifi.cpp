@@ -644,6 +644,26 @@ bool remote_wifi_has_saved_network() {
     return staEnabled && !staSsid.isEmpty();
 }
 
+void remote_wifi_apply_network_settings(const String& ssid, const String& password, bool connectNow) {
+    if(ssid.isEmpty()) {
+        return;
+    }
+
+    staSsid = ssid;
+    staPassword = password;
+    staEnabled = true;
+    setupDone = true;
+    saveStaConfig();
+    lastStaAttemptAt = 0;
+
+    if(connectNow && wifiActive) {
+        beginStaConnect(true);
+    }
+    Serial.printf("[remote_wifi] synced ssid=%s connect=%s\n",
+                  staSsid.c_str(),
+                  connectNow && wifiActive ? "now" : "deferred");
+}
+
 String remote_wifi_sta_ssid() {
     return staSsid;
 }

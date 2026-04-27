@@ -6,6 +6,7 @@
 #include <WiFi.h>
 
 #include "diag_console.h"
+#include "espnow_control.h"
 #include "remote_link.h"
 #include "remote_ws.h"
 
@@ -28,7 +29,7 @@ bool serverStarted = false;
 
 constexpr uint32_t STA_RETRY_MS = 15000;
 constexpr uint16_t DNS_PORT = 53;
-constexpr bool kDisableWifiModemSleepForTesting = false;
+constexpr bool kDisableWifiModemSleepForTesting = true;
 
 const char kPage[] PROGMEM = R"HTML(
 <!doctype html>
@@ -798,8 +799,117 @@ const char kPage[] PROGMEM = R"HTML(
     renderView();
     renderPages();
     refresh().catch((error) => log(`[startup] ${error.message}`));
-    refreshScan(true).catch((error) => log(`[scan] ${error.message}`));
+    setTimeout(() => refreshScan(true).catch((error) => log(`[scan] ${error.message}`)), 2200);
     state.pollTimer = setInterval(() => refresh().catch((error) => log(`[poll] ${error.message}`)), 1200);
+  </script>
+</body>
+</html>
+)HTML";
+
+const char kWifiSetupPage[] PROGMEM = R"HTML(
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SG98 WiFi Setup</title>
+  <style>
+    :root{
+      --bg:#09111a;--panel:#102033;--line:rgba(107,185,255,.22);
+      --text:#eef6ff;--muted:#97afc5;--blue:#5bc3ff;--green:#55de95;
+      --font-body:"Avenir Next","Segoe UI",sans-serif;--font-display:"DIN Condensed","Avenir Next Condensed","Arial Narrow",sans-serif;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;color:var(--text);font-family:var(--font-body);background:
+      radial-gradient(circle at top left,rgba(40,144,255,.22),transparent 34%),
+      linear-gradient(160deg,#08111b 0%,#0f2236 42%,#08111a 100%)}
+    .shell{width:min(720px,calc(100vw - 20px));margin:0 auto;padding:18px 0 32px}
+    .panel{padding:18px;border-radius:22px;background:rgba(13,24,40,.94);border:1px solid var(--line);box-shadow:0 24px 54px rgba(0,0,0,.32)}
+    .eyebrow{margin:0 0 6px;color:var(--blue);letter-spacing:.22em;text-transform:uppercase;font-size:.78rem}
+    h1{margin:0 0 10px;font-family:var(--font-display);font-size:clamp(2rem,7vw,3.2rem);line-height:.9;letter-spacing:.05em}
+    p{margin:0 0 14px;color:var(--muted);line-height:1.55}
+    .status-grid,.scan-list{display:grid;gap:10px}
+    .status-grid{grid-template-columns:repeat(auto-fit,minmax(180px,1fr));margin:18px 0}
+    .card,.net{padding:14px;border-radius:18px;background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.08)}
+    .label{display:block;color:var(--muted);letter-spacing:.14em;text-transform:uppercase;font-size:.72rem;margin-bottom:6px}
+    .value{font-size:1rem;word-break:break-word}
+    .field{display:grid;gap:8px;margin-bottom:14px}
+    input,button{font:inherit}
+    input{width:100%;min-height:46px;padding:0 14px;border-radius:14px;border:1px solid rgba(134,186,234,.22);background:rgba(255,255,255,.05);color:var(--text)}
+    .actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:16px 0}
+    button{border:0;border-radius:14px;min-height:46px;padding:0 14px;background:var(--blue);color:#04121d;font-weight:800;cursor:pointer}
+    button.secondary{background:rgba(255,255,255,.08);color:var(--text);border:1px solid rgba(134,186,234,.18)}
+    .net-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
+    .net-title{font-size:1rem}.net-meta{color:var(--muted);font-size:.86rem}
+    .hint{padding:12px 14px;border-radius:16px;background:rgba(91,195,255,.08);border:1px solid rgba(91,195,255,.16);color:var(--text)}
+    @media (max-width:620px){.shell{width:min(100vw - 12px,720px);padding:10px 0 24px}.panel{padding:14px;border-radius:16px}.actions{grid-template-columns:1fr}}
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <section class="panel">
+      <div class="eyebrow">Controller Setup</div>
+      <h1>SG98 Controller WiFi</h1>
+      <p>Join the controller to your home WiFi. Once it is on your network, use the controller URL shown below for normal control.</p>
+      <div class="hint">This captive page is only for network setup.</div>
+      <div class="status-grid">
+        <div class="card"><span class="label">Controller AP</span><div id="apInfo" class="value">--</div></div>
+        <div class="card"><span class="label">Home WiFi</span><div id="staInfo" class="value">--</div></div>
+        <div class="card"><span class="label">Status</span><div id="statusInfo" class="value">--</div></div>
+      </div>
+      <div class="field"><label class="label" for="ssid">Home SSID</label><input id="ssid" type="text" autocomplete="off"></div>
+      <div class="field"><label class="label" for="password">Home Password</label><input id="password" type="password" autocomplete="new-password"></div>
+      <div class="actions">
+        <button id="saveButton">Save + Connect</button>
+        <button id="apOnlyButton" class="secondary">Use AP Only</button>
+        <button id="forgetButton" class="secondary">Forget Saved</button>
+        <button id="scanButton" class="secondary">Scan Networks</button>
+      </div>
+      <div id="scanState" class="hint">No scan yet.</div>
+      <div id="scanResults" class="scan-list"></div>
+    </section>
+  </div>
+  <script>
+    const el=(id)=>document.getElementById(id);
+    let formEditUntil=0;
+    function markFormEditing(ms=6000){formEditUntil=Date.now()+ms}
+    function formEditingActive(){const active=document.activeElement;return Date.now()<formEditUntil||active===el('ssid')||active===el('password')}
+    async function getJson(url){const response=await fetch(url,{cache:'no-store'});if(!response.ok)throw new Error(`${response.status} ${response.statusText}`);return response.json()}
+    async function postForm(url,body){const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:new URLSearchParams(body)});if(!response.ok)throw new Error(`${response.status} ${response.statusText}`);return response.json()}
+    function renderStatus(status){
+      el('apInfo').textContent=`${status.apSsid} @ ${status.apIp}`;
+      el('staInfo').textContent=status.staConnected?`${status.staSsid} @ ${status.staIp}`:(status.staEnabled?`${status.staSsid} (${status.staStatus})`:'Not configured');
+      el('statusInfo').textContent=status.staConnected?`Connected: http://${status.staIp}/`:(status.setupDone?'Saved, waiting for LAN link':'Onboarding');
+      if(!formEditingActive())el('ssid').value=status.staSsid||'';
+    }
+    function renderScan(scan){
+      el('scanState').textContent=scan.scanning?'Scanning nearby networks...':`${scan.count||0} network${scan.count===1?'':'s'} found`;
+      const results=el('scanResults');
+      const networks=scan.networks||[];
+      results.innerHTML=networks.length?networks.map((net)=>`
+        <div class="net">
+          <div class="net-head"><strong class="net-title">${net.ssid||'(hidden)'}</strong><span class="net-meta">RSSI ${net.rssi} dBm</span></div>
+          <div class="net-meta">CH ${net.channel} / ${net.auth}</div>
+          <div class="actions"><button data-ssid="${net.ssid||''}">Use This SSID</button></div>
+        </div>`).join(''):'<div class="card">No scan results yet.</div>';
+      results.querySelectorAll('[data-ssid]').forEach((button)=>{
+        button.onclick=()=>{el('ssid').value=button.dataset.ssid||'';el('password').focus()}
+      });
+      if(scan.scanning)setTimeout(()=>refreshScan(false).catch(()=>{}),1400);
+    }
+    async function refreshStatus(){renderStatus(await getJson('/api/wifi'))}
+    async function refreshScan(force){renderScan(await getJson(`/api/wifi_scan${force?'?force=1':''}`))}
+    async function saveWifi(){markFormEditing(0);await postForm('/api/wifi',{action:'save',ssid:el('ssid').value||'',password:el('password').value||''});el('password').value='';await refreshStatus()}
+    async function useApOnly(){markFormEditing(0);await postForm('/api/wifi',{action:'ap_only'});el('password').value='';await refreshStatus()}
+    async function forgetWifi(){markFormEditing(0);await postForm('/api/wifi',{action:'forget'});el('ssid').value='';el('password').value='';await refreshStatus()}
+    ['ssid','password'].forEach((id)=>{el(id).addEventListener('focus',()=>markFormEditing());el(id).addEventListener('input',()=>markFormEditing());el(id).addEventListener('keydown',()=>markFormEditing())});
+    el('saveButton').onclick=()=>saveWifi().catch(()=>{});
+    el('apOnlyButton').onclick=()=>useApOnly().catch(()=>{});
+    el('forgetButton').onclick=()=>forgetWifi().catch(()=>{});
+    el('scanButton').onclick=()=>refreshScan(true).catch(()=>{});
+    refreshStatus().catch(()=>{});
+    refreshScan(true).catch(()=>{});
+    setInterval(()=>refreshStatus().catch(()=>{}),1500);
   </script>
 </body>
 </html>
@@ -884,7 +994,9 @@ String wifiJson() {
     out += jsonEscape(apSsid);
     out += "\",\"apIp\":\"";
     out += jsonEscape(apIpString());
-    out += "\",\"staEnabled\":";
+    out += "\",\"apStations\":";
+    out += String(WiFi.softAPgetStationNum());
+    out += ",\"staEnabled\":";
     out += (staEnabled ? "true" : "false");
     out += ",\"setupDone\":";
     out += (setupDone ? "true" : "false");
@@ -1020,12 +1132,34 @@ void servePortalPage() {
     server.send_P(200, "text/html; charset=utf-8", kPage);
 }
 
-void serveCaptiveAwarePage() {
-    if(setupDone) {
-        serveCaptiveSuccess();
+void serveWifiSetupPage() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send_P(200, "text/html; charset=utf-8", kWifiSetupPage);
+}
+
+void serveRootPage() {
+    if(!setupDone) {
+        serveWifiSetupPage();
         return;
     }
     servePortalPage();
+}
+
+void serveCaptivePortalPage() {
+    server.sendHeader("Cache-Control", "no-store");
+    server.send_P(200, "text/html; charset=utf-8", kWifiSetupPage);
+}
+
+bool shouldServeCaptivePortal() {
+    return !setupDone;
+}
+
+void serveCaptiveAwarePage() {
+    if(!shouldServeCaptivePortal()) {
+        serveCaptiveSuccess();
+        return;
+    }
+    serveCaptivePortalPage();
 }
 
 void handleStatus() {
@@ -1087,6 +1221,7 @@ void handleWifi() {
         saveStaConfig();
         if(staEnabled) {
             beginStaConnect(true);
+            espnow_control_broadcast_wifi_config(staSsid, staPassword);
             sendAck(true, "saved and connecting");
         } else {
             stopSta();
@@ -1129,16 +1264,16 @@ void configureRoutes() {
         return;
     }
 
-    server.on("/", HTTP_GET, servePortalPage);
+    server.on("/", HTTP_GET, serveRootPage);
     server.on("/hotspot-detect.html", HTTP_GET, serveCaptiveAwarePage);
     server.on("/library/test/success.html", HTTP_GET, serveCaptiveAwarePage);
-    server.on("/generate_204", HTTP_GET, []() { if(setupDone) serveAndroidSuccess(); else servePortalPage(); });
-    server.on("/gen_204", HTTP_GET, []() { if(setupDone) serveAndroidSuccess(); else servePortalPage(); });
-    server.on("/connecttest.txt", HTTP_GET, []() { if(setupDone) serveCaptiveSuccess(); else servePortalPage(); });
+    server.on("/generate_204", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveAndroidSuccess(); });
+    server.on("/gen_204", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveAndroidSuccess(); });
+    server.on("/connecttest.txt", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveCaptiveSuccess(); });
     server.on("/redirect", HTTP_GET, serveCaptiveAwarePage);
     server.on("/canonical.html", HTTP_GET, serveCaptiveAwarePage);
-    server.on("/ncsi.txt", HTTP_GET, []() { if(setupDone) serveNcsiSuccess(); else servePortalPage(); });
-    server.on("/success.txt", HTTP_GET, []() { if(setupDone) serveCaptiveSuccess(); else servePortalPage(); });
+    server.on("/ncsi.txt", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveNcsiSuccess(); });
+    server.on("/success.txt", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveCaptiveSuccess(); });
     server.on("/api/status", HTTP_GET, handleStatus);
     server.on("/api/snapshot", HTTP_GET, handleSnapshot);
     server.on("/api/set", HTTP_POST, handleSet);
@@ -1152,7 +1287,7 @@ void configureRoutes() {
             sendAck(false, "not found");
             return;
         }
-        servePortalPage();
+        serveRootPage();
     });
     wifiUiRoutesConfigured = true;
 }
@@ -1213,9 +1348,6 @@ bool wifi_ui_start() {
     WiFi.setSleep(!kDisableWifiModemSleepForTesting);
     startAccessPoint();
     beginStaConnect(true);
-    if(!staEnabled || staSsid.isEmpty()) {
-        startWifiScan(true);
-    }
     if(!serverStarted) {
         server.begin();
         serverStarted = true;
@@ -1310,8 +1442,5 @@ void wifi_ui_reset_network_settings() {
     saveStaConfig();
     stopSta();
     lastStaAttemptAt = 0;
-    if(wifiUiActive) {
-        startWifiScan(true);
-    }
     Serial.println("[wifi] network settings reset to onboarding defaults");
 }

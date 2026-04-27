@@ -1,6 +1,7 @@
 #include "espnow_control.h"
 
 #include <cstring>
+#include <strings.h>
 
 #include <WiFi.h>
 #include <esp_now.h>
@@ -19,6 +20,7 @@
 namespace {
 constexpr size_t ESPNOW_COMMAND_LEN = 64;
 constexpr uint8_t ESPNOW_RX_QUEUE_LEN = 16;
+constexpr uint8_t ESPNOW_BROADCAST_MAC[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 struct EspNowEvent {
     uint8_t mac[ESP_NOW_ETH_ALEN];
@@ -33,7 +35,9 @@ struct LatestEspNowEvent {
 
 QueueHandle_t espnowQueue = nullptr;
 bool espnowActive = false;
+bool espnowCoexistActive = false;
 uint8_t espnowChannelValue = default_espnow_channel;
+wifi_interface_t espnowInterface = WIFI_IF_STA;
 unsigned long lastRxAt = 0;
 unsigned long lastCommandRxAt = 0;
 uint32_t rxCount = 0;
@@ -45,8 +49,35 @@ portMUX_TYPE espnowIngressMux = portMUX_INITIALIZER_UNLOCKED;
 
 bool sendFrame(const uint8_t* mac_addr, const String& frame);
 
+uint8_t currentWifiPrimaryChannel() {
+    uint8_t primary = 0;
+    wifi_second_chan_t secondary = WIFI_SECOND_CHAN_NONE;
+    if(esp_wifi_get_channel(&primary, &secondary) != ESP_OK) {
+        return 0;
+    }
+    return primary;
+}
+
+void refreshCoexistChannel() {
+    if(!espnowActive || !espnowCoexistActive) {
+        return;
+    }
+
+    const uint8_t primary = currentWifiPrimaryChannel();
+    if(primary == 0 || primary == espnowChannelValue) {
+        return;
+    }
+
+    espnowChannelValue = primary;
+    Serial.printf("[espnow] channel follow wifi=%u\n", static_cast<unsigned>(espnowChannelValue));
+}
+
 bool isGetStatusCommand(const char* payload) {
     return payload != nullptr && strcmp(payload, sg98_protocol::kCmdGetStatus) == 0;
+}
+
+bool isGetEnvironmentCommand(const char* payload) {
+    return payload != nullptr && strcasecmp(payload, sg98_protocol::kCmdGetEnvironment) == 0;
 }
 
 bool isTargetUpdateCommand(const char* payload) {
@@ -70,9 +101,29 @@ String controllerDiscoveryName() {
     return out;
 }
 
+String espNowInterfaceMacAddress() {
+    uint8_t mac[ESP_NOW_ETH_ALEN] = {};
+    if(esp_wifi_get_mac(espnowInterface, mac) != ESP_OK) {
+        return WiFi.macAddress();
+    }
+
+    char out[18];
+    snprintf(out,
+             sizeof(out),
+             "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0],
+             mac[1],
+             mac[2],
+             mac[3],
+             mac[4],
+             mac[5]);
+    return String(out);
+}
+
 String controllerDiscoveryFrame() {
+    refreshCoexistChannel();
     return sg98_protocol::peer(controllerDiscoveryName(),
-                               WiFi.macAddress(),
+                               espNowInterfaceMacAddress(),
                                controller_board_target_name(),
                                espnowChannelValue);
 }
@@ -114,6 +165,11 @@ void processEvent(const EspNowEvent& event) {
 
     if(isDiscoverCommand(event.payload)) {
         sendFrame(event.mac, controllerDiscoveryFrame());
+        return;
+    }
+
+    if(isGetEnvironmentCommand(event.payload)) {
+        sendFrame(event.mac, remote_link_build_environment_frame());
         return;
     }
 
@@ -189,8 +245,10 @@ bool ensurePeer(const uint8_t* mac_addr) {
 
     esp_now_peer_info_t peer = {};
     memcpy(peer.peer_addr, mac_addr, sizeof(peer.peer_addr));
-    peer.channel = espnowChannelValue;
-    peer.ifidx = WIFI_IF_STA;
+    // Channel 0 tracks the current WiFi channel, which keeps ESP-NOW usable
+    // when AP+STA coexistence moves the radio to a home-router channel.
+    peer.channel = 0;
+    peer.ifidx = espnowInterface;
     peer.encrypt = false;
     return esp_now_add_peer(&peer) == ESP_OK;
 }
@@ -212,7 +270,7 @@ bool sendFrame(const uint8_t* mac_addr, const String& frame) {
 }
 }
 
-bool espnow_control_start() {
+bool espnow_control_start(bool coexistWithWifi) {
     if(espnowActive) {
         return true;
     }
@@ -226,12 +284,28 @@ bool espnow_control_start() {
         xQueueReset(espnowQueue);
     }
 
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(true);
-
-    espnowChannelValue = default_espnow_channel;
-    if(esp_wifi_set_channel(espnowChannelValue, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
-        return false;
+    const wifi_mode_t wifiMode = WiFi.getMode();
+    if(coexistWithWifi) {
+        if(wifiMode == WIFI_MODE_NULL) {
+            WiFi.mode(WIFI_STA);
+        }
+        espnowInterface = (wifiMode == WIFI_MODE_AP) ? WIFI_IF_AP : WIFI_IF_STA;
+        WiFi.setSleep(false);
+        espnowChannelValue = currentWifiPrimaryChannel();
+        if(espnowChannelValue == 0) {
+            espnowChannelValue = default_espnow_channel;
+            if(esp_wifi_set_channel(espnowChannelValue, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+                return false;
+            }
+        }
+    } else {
+        WiFi.mode(WIFI_STA);
+        WiFi.setSleep(true);
+        espnowInterface = WIFI_IF_STA;
+        espnowChannelValue = default_espnow_channel;
+        if(esp_wifi_set_channel(espnowChannelValue, WIFI_SECOND_CHAN_NONE) != ESP_OK) {
+            return false;
+        }
     }
 
     if(esp_now_init() != ESP_OK) {
@@ -248,7 +322,11 @@ bool espnow_control_start() {
     rxCount = 0;
     lastCommand[0] = '\0';
     espnowActive = true;
-    Serial.printf("[espnow] started channel=%u modem_sleep=on\n", static_cast<unsigned>(espnowChannelValue));
+    espnowCoexistActive = coexistWithWifi;
+    Serial.printf("[espnow] started channel=%u modem_sleep=%s coexist=%s\n",
+                  static_cast<unsigned>(espnowChannelValue),
+                  coexistWithWifi ? "off" : "on",
+                  coexistWithWifi ? "true" : "false");
     return true;
 }
 
@@ -264,6 +342,7 @@ void espnow_control_stop() {
     }
     WiFi.mode(WIFI_MODE_NULL);
     espnowActive = false;
+    espnowCoexistActive = false;
     Serial.println("[espnow] stopped");
 }
 
@@ -271,6 +350,8 @@ void espnow_control_poll() {
     if(!espnowActive || espnowQueue == nullptr) {
         return;
     }
+
+    refreshCoexistChannel();
 
     EspNowEvent event = {};
     const uint8_t queueBudget = controller_is_menu_state(state) ? 1 : ESPNOW_RX_QUEUE_LEN;
@@ -287,6 +368,19 @@ void espnow_control_poll() {
     if(takeLatestEvent(&pendingStatusEvent, &event)) {
         processEvent(event);
     }
+}
+
+bool espnow_control_broadcast_wifi_config(const String& ssid, const String& password) {
+    if(!espnowActive || ssid.length() == 0) {
+        return false;
+    }
+
+    const String frame = sg98_protocol::wifiConfig(ssid, password);
+    const bool ok = sendFrame(ESPNOW_BROADCAST_MAC, frame);
+    Serial.printf("[espnow] wifi_config broadcast=%s ssid=%s\n",
+                  ok ? "ok" : "fail",
+                  ssid.c_str());
+    return ok;
 }
 
 bool espnow_control_is_active() {

@@ -221,36 +221,54 @@ def main() -> None:
         pdf.color(0.12, 0.13, 0.15, fill=True, stroke=False)
         pdf.text(label_pos[0], label_pos[1], label, 8, "F2")
 
+    # Optional external 5V charging input for the battery connector.
+    charge_x = 324
+    charge_y = 548
+    charge_w = 226
+    charge_h = 92
+    pdf.color(0.91, 0.96, 1.00, fill=True, stroke=True)
+    pdf.rect(charge_x, charge_y, charge_w, charge_h, fill=True, stroke=True)
+    pdf.color(0.12, 0.13, 0.15, fill=True, stroke=False)
+    pdf.text(charge_x + 14, charge_y + 70, "Battery Charging Input", 12, "F2")
+    pdf.text(charge_x + 14, charge_y + 52, "Use a regulated 5V source:", 9)
+    pdf.color(0.82, 0.10, 0.10, fill=True, stroke=False)
+    pdf.text(charge_x + 22, charge_y + 36, "+5V -> H2 pin 8 / VBUS", 9, "F2")
+    pdf.color(0.12, 0.13, 0.15, fill=True, stroke=False)
+    pdf.text(charge_x + 22, charge_y + 22, "GND -> H2 pin 7 / GND", 9, "F2")
+    pdf.text(charge_x + 14, charge_y + 8, "MX1.25 battery stays on battery connector.", 8)
+
     # Connection table.
     table_x = 62
-    table_y = 154
+    table_y = 132
     pdf.color(0.12, 0.13, 0.15, fill=True, stroke=False)
-    pdf.text(table_x, table_y + 88, "Connections", 14, "F2")
+    pdf.text(table_x, table_y + 110, "Connections", 14, "F2")
     pdf.color(0.93, 0.95, 0.97, fill=True, stroke=True)
-    pdf.rect(table_x, table_y, 488, 78, fill=True, stroke=True)
+    pdf.rect(table_x, table_y, 488, 100, fill=True, stroke=True)
     rows = [
         ("Sensor SUP / +5V", "H2 pin 8", "VBUS / 5V power"),
         ("Sensor OUT", "H2 pin 2", "IO17 ADC input, firmware pressure signal"),
         ("Sensor GND", "H2 pin 7", "GND, common with remote"),
+        ("External 5V charger +", "H2 pin 8", "VBUS / PMIC charge input"),
+        ("External 5V charger -", "H2 pin 7", "GND, common with battery charger"),
     ]
     for idx, row in enumerate(rows):
-        y = table_y + 54 - idx * 22
+        y = table_y + 78 - idx * 18
         if idx:
             pdf.color(0.74, 0.77, 0.82, stroke=True)
-            pdf.line(table_x, y + 16, table_x + 488, y + 16)
+            pdf.line(table_x, y + 13, table_x + 488, y + 13)
         pdf.color(0.12, 0.13, 0.15, fill=True, stroke=False)
-        pdf.text(table_x + 14, y, row[0], 10, "F2")
-        pdf.text(table_x + 178, y, row[1], 10)
-        pdf.text(table_x + 292, y, row[2], 10)
+        pdf.text(table_x + 14, y, row[0], 9, "F2")
+        pdf.text(table_x + 178, y, row[1], 9)
+        pdf.text(table_x + 292, y, row[2], 9)
 
     # Safety notes.
     pdf.color(0.99, 0.93, 0.80, fill=True, stroke=True)
     pdf.rect(62, 70, 488, 54, fill=True, stroke=True)
     pdf.color(0.12, 0.13, 0.15, fill=True, stroke=False)
     pdf.text(76, 104, "Notes", 11, "F2")
-    pdf.text(76, 90, "Do not feed 5V into IO17. Sensor OUT must stay in the 0.4-2.4V range.", 9)
-    pdf.text(76, 77, "VBUS is 5V from USB-C. For battery-only profiling, use a small 5V boost supply for the sensor.", 9)
-    pdf.text(76, 64, "If your cable colors differ, follow the sensor labels: SUP, OUT, and GND.", 9)
+    pdf.text(76, 90, "Do not feed 5V into IO17 or any GPIO. Sensor OUT must stay in the 0.4-2.4V range.", 8)
+    pdf.text(76, 77, "To charge the MX1.25 battery, feed regulated 5V only into H2 pin 8 and GND into H2 pin 7.", 8)
+    pdf.text(76, 64, "Do not connect the LiPo battery to H2. It must stay on the MX1.25 battery connector.", 8)
 
     pdf.color(0.42, 0.45, 0.50, fill=True, stroke=False)
     pdf.text(46, 42, "Generated from firmware setting: kPressureSensorAdcPin = GPIO17.", 8)

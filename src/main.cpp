@@ -1,6 +1,7 @@
 #include <driver/rtc_io.h>
 #include "esp_task_wdt.h"
 #include "controller_board.h"
+#include "controller_env.h"
 #include "display.h"
 #include "main.h"
 #include "gbw.h"
@@ -14,6 +15,7 @@
 #include "wifi_ui.h"
 #include "radio_mode.h"
 #include "remote_link.h"
+#include "smart_purge_learning.h"
 
 States state = IDLE;
 int8_t menu1Selected = EXITMENU;
@@ -30,7 +32,7 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Purge Settings", 0, 0, 0, 0, "PURGESETT", ""},           // 1
     {"GbW Settings", 0, 0, 0, 0, "GBWSETT", ""},               // 2
     {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 3
-    {"Radio mode", default_radio_mode, 0, 2, 1, "RADIOMODE", ""}, // 4
+    {"Radio mode", default_radio_mode, 0, 3, 1, "RADIOMODE", ""}, // 4
     {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 5
     {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 6
     {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 7
@@ -156,6 +158,44 @@ bool shouldPollTrafficNow(bool menuMode) {
     return false;
 }
 
+uint16_t purgeCalibrationIndexForRpm(int16_t rpm) {
+    int32_t rpmAbs = rpm;
+    if(rpmAbs < 0) rpmAbs = -rpmAbs;
+
+    uint16_t index = rpm_scalar == 0 ? 0 : static_cast<uint16_t>(rpmAbs / rpm_scalar);
+    const uint16_t maxIndex = (SIZEOFCALIBRATEARRAY / sizeof(uint16_t)) - 1;
+    if(index > maxIndex) index = maxIndex;
+    return index;
+}
+
+uint16_t purgeBaselineTorqueForRpm(int16_t rpm) {
+    const int16_t raw = calibrateArray[purgeCalibrationIndexForRpm(rpm)];
+    return raw > 0 ? static_cast<uint16_t>(raw) : 0;
+}
+
+int16_t purgeScalarForRpm(int16_t rpm) {
+    int32_t rpmAbs = rpm;
+    if(rpmAbs < 0) rpmAbs = -rpmAbs;
+    return rpmAbs > 500 ? Menu2[SETPURGEPRCTHIGH].value : Menu2[SETPURGEPRCTLOW].value;
+}
+
+uint16_t purgeManualThresholdForRpm(int16_t rpm, uint16_t baselineTorque) {
+    const uint16_t scalar = static_cast<uint16_t>(purgeScalarForRpm(rpm));
+    return static_cast<uint16_t>((static_cast<uint32_t>(baselineTorque) * scalar) / 100U);
+}
+
+void smartPurgeLearnFromMotor(int16_t targetRpm) {
+    if(Menu2[AUTO_PURGE_ENABLED].value != true || newData != true || targetRpm == 0) return;
+
+    const uint16_t baselineTorque = purgeBaselineTorqueForRpm(targetRpm);
+    const uint16_t manualThreshold = purgeManualThresholdForRpm(targetRpm, baselineTorque);
+    smart_purge_learning_note_sample(targetRpm,
+                                     motor_currentRPM,
+                                     motor_currentTorque,
+                                     baselineTorque,
+                                     manualThreshold);
+}
+
 void printWakeSummary() {
     Serial.print("Wakeup cause: ");
     Serial.println(esp_sleep_get_wakeup_cause());
@@ -182,6 +222,7 @@ bool controller_is_menu_state(States currentState) {
 }
 
 void purge_prepare_for_grinding() {
+    smart_purge_learning_reset_runtime();
     purgeFrameCounter = 0;
     purgeLastSetRPM = setRPM;
     purgeStartTime = millis();
@@ -190,6 +231,7 @@ void purge_prepare_for_grinding() {
 }
 
 void purge_cancel_pending() {
+    smart_purge_learning_reset_runtime();
     purgeFrameCounter = 0;
     purgeLastSetRPM = setRPM;
     purgeStartTime = millis();
@@ -202,6 +244,7 @@ void purge_cancel_pending() {
 }
 
 void purge_mark_started() {
+    smart_purge_learning_reset_runtime();
     purgeFrameCounter = 0;
     purgeLastSetRPM = setRPM;
     purgeStartTime = millis();
@@ -288,6 +331,7 @@ void setup() {
     Serial.println("motor_init");
     diag_console_init();
     radio_mode_init();
+    smart_purge_learning_init();
     vitals_init();
     lastActivity = millis();
 }
@@ -305,6 +349,7 @@ void loop() {
     if(shouldPollTrafficNow(menuMode)) {
         radio_mode_poll();
     }
+    controller_env_poll();
     sleepTimeCheck();
     if(idleSleepActive && !controllerCanIdleSleep()) {
         controller_exit_idle_sleep();
@@ -335,6 +380,7 @@ void loop() {
     if(state == GRINDING_GBW)
     { 
         do_gbw();
+        smartPurgeLearnFromMotor(motor_setRPM);
         lastActivity = millis();
     }
 
@@ -367,6 +413,8 @@ void loop() {
     if(state == MOTOR_SELECT) {
         motor_setRPM = 0;
     }
+
+    smart_purge_learning_service_persist(controllerCanIdleSleep(), lastActivity);
 
    // newData = false;
 }
@@ -408,11 +456,6 @@ void checkPurge() {
     if(Menu2[AUTO_PURGE_ENABLED].value == true && purgeStartTime + Menu2[SETPURGESTABILTIME].value < millis() && lastActivity + 1000 < millis() && newData == true) 
     { 
 
-    //the torque defined during calibration
-      if(rpm_scalar != 0) purgeTestTorque = calibrateArray[((setRPM + absolute_min_rpm)/rpm_scalar)];
-      #ifdef DEBUG_CALIB
-        Serial.print("torque: "), Serial.print(motor_currentTorque), Serial.print(" test: "), Serial.println(purgeTestTorque);
-      #endif
       if(setRPM > 500) { //High values
         purgeTestScalar = Menu2[SETPURGEPRCTHIGH].value;
         purgeFrames = Menu2[SETPURGEFRAMESHIGH].value;
@@ -421,8 +464,26 @@ void checkPurge() {
         purgeFrames = Menu2[SETPURGEFRAMESLOW].value;
       }
 
+      const uint16_t baselineTorque = purgeBaselineTorqueForRpm(setRPM);
+      purgeTestTorque = baselineTorque;
+      const uint16_t manualThreshold = purgeManualThresholdForRpm(setRPM, baselineTorque);
+      smart_purge_learning_note_sample(setRPM,
+                                       motor_currentRPM,
+                                       motor_currentTorque,
+                                       baselineTorque,
+                                       manualThreshold);
+      const uint16_t effectiveThreshold = smart_purge_learning_threshold(setRPM,
+                                                                         baselineTorque,
+                                                                         manualThreshold);
+      #ifdef DEBUG_CALIB
+        Serial.print("torque: "), Serial.print(motor_currentTorque);
+        Serial.print(" base: "), Serial.print(purgeTestTorque);
+        Serial.print(" manual: "), Serial.print(manualThreshold);
+        Serial.print(" smart: "), Serial.println(effectiveThreshold);
+      #endif
+
       ///if the actual torque is greater than the calibrated torque*scalar we count up frames (note only when newData = true)
-      if(motor_currentTorque > (purgeTestTorque*purgeTestScalar)/100.f) { 
+      if(motor_currentTorque > effectiveThreshold) {
         purgeFrameCounter++;
         #ifdef DEBUG_CALIB
           Serial.print("frame counter: "), Serial.println(purgeFrameCounter);
@@ -519,13 +580,10 @@ void do_purge() {
 
 
 void vitals_init() { 
-  const esp_task_wdt_config_t wdt_config = {
-      .timeout_ms = 3000,
-      .idle_core_mask = 0,
-      .trigger_panic = false,
-  };
-  esp_task_wdt_init(&wdt_config);
-  esp_task_wdt_add(NULL); // Add current task (loop task)
+  esp_err_t status = esp_task_wdt_status(NULL);
+  if(status == ESP_OK) {
+      esp_task_wdt_delete(NULL);
+  }
 }
 
 bool controller_idle_sleep_active() {
@@ -652,8 +710,6 @@ void sleep_release() {
 
 
 void doVitals() { 
-    esp_task_wdt_reset();
-
     #ifdef DEBUG
     unsigned long currentMicros = micros(); // or use millis() for ms accuracy
     unsigned long looptime = currentMicros - lastLoopTime;

@@ -356,6 +356,7 @@ const char* getErrorChar(uint8_t errorCode) {
 }
 
 String headerLinkLabel() {
+    if(radio_mode_is_dual()) return "WEB+ESP";
     if(radio_mode_is_espnow()) return "ESP-NOW";
     if(!wifi_ui_is_active()) return "WEB / OFF";
     return wifi_ui_sta_connected() ? "WEB / LAN" : "WEB / AP";
@@ -542,7 +543,7 @@ String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
     }
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Hold encoder to start";
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Writes drive baud for next boot";
-    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Off sleeps from idle; wake locally";
+    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Web+ESP keeps both links active";
     if(menuNum == 1 && (selectedIdx == Menu1Items::RESET || selectedIdx == Menu1Items::RESETNETWORK)) return "Reset needs encoder confirm";
     if(item.minValue == 0 && item.maxValue == 1 && item.scalar == 1) return "Rotate to choose";
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) return "Encoder opens";

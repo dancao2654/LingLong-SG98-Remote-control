@@ -1,0 +1,1309 @@
+%PDF-1.4
+%‚„œ”
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 4 0 R 5 0 R 6 0 R 7 0 R 8 0 R] /Count 6 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 9 0 R /F2 10 0 R >> >> /Contents 11 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 9 0 R /F2 10 0 R >> >> /Contents 12 0 R >>
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 9 0 R /F2 10 0 R >> >> /Contents 13 0 R >>
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 9 0 R /F2 10 0 R >> >> /Contents 14 0 R >>
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 9 0 R /F2 10 0 R >> >> /Contents 15 0 R >>
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /Resources << /Font << /F1 9 0 R /F2 10 0 R >> >> /Contents 16 0 R >>
+endobj
+9 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+10 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+11 0 obj
+<< /Length 4842 >>
+stream
+1.000 1.000 1.000 rg
+0.00 0.00 792.00 612.00 re f
+0.100 0.120 0.150 rg
+BT /F2 22.0 Tf 36.00 568.00 Td (SG98 Remote / Controller Connection Matrix) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 10.0 Tf 36.00 548.00 Td (Bench run date: 2026-04-26 17:43 PDT) Tj ET
+0.100 0.120 0.150 rg
+BT /F2 10.5 Tf 36.00 532.00 Td (Primary goal: no factory-fresh remote/controller pair should strand a headless controller.) Tj ET
+0.100 0.120 0.150 rg
+36.00 480.00 700.00 24.00 re f
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 42.00 488.00 Td (Area) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 152.00 488.00 Td (Observed / Build) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 382.00 488.00 Td (Meaning) Tj ET
+0.965 0.975 0.985 rg
+36.00 454.00 700.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 454.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 472.00 Td (Live remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 152.00 472.00 Td (Waveshare AMOLED 1.75 / /dev/cu.usbmodem21101) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 382.00 472.00 Td (Factory/no-info reset before each pass: no saved Wi-Fi and no locked ESP-) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 382.00 462.50 Td (NOW peer.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 428.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 446.00 Td (Full-size pass) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 152.00 446.00 Td (Adafruit Feather Controller / controller_box) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 382.00 446.00 Td (Same physical controller with screen, buttons, and encoder enabled. OFF) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 382.00 436.50 Td (remains allowed because local recovery exists.) Tj ET
+0.965 0.975 0.985 rg
+36.00 402.00 700.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 402.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 420.00 Td (Headless-sim pass) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 152.00 420.00 Td (controller_box_headless_sim) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 382.00 420.00 Td (Same physical controller with board features reporting no screen, no) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 382.00 410.50 Td (buttons, no encoder, no encoder button.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 376.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 394.00 Td (Steady state) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 152.00 394.00 Td (ESP-NOW channel 1) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 382.00 394.00 Td (Both passes ended with remote online over ESP-NOW, remote Wi-Fi off, and no) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 382.00 384.50 Td (saved home Wi-Fi credentials.) Tj ET
+0.100 0.120 0.150 rg
+36.00 292.00 700.00 24.00 re f
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 42.00 300.00 Td (Build Target) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 272.00 300.00 Td (Result) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 342.00 300.00 Td (Notes) Tj ET
+0.965 0.975 0.985 rg
+36.00 276.00 700.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 276.00 700.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 284.00 Td (remote-waveshare-175) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 284.00 Td (PASS) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 342.00 284.00 Td (Built and flashed to the bench remote.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 260.00 700.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 268.00 Td (controller-universal-s3) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 268.00 Td (PASS) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 342.00 268.00 Td (Built and flashed for the live full-size controller pass.) Tj ET
+0.965 0.975 0.985 rg
+36.00 244.00 700.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 244.00 700.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 252.00 Td (controller-universal-s3-headless-sim) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 252.00 Td (PASS) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 342.00 252.00 Td (Built and flashed for live headless simulation on the same physical controller.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 218.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 236.00 Td (waveshare_esp32_s3_rs485_can) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 236.00 Td (PASS) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 342.00 236.00 Td (Real headless target build still passes; behavior matched by headless simulation) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 342.00 226.50 Td (feature flags.) Tj ET
+0.965 0.975 0.985 rg
+36.00 202.00 700.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 202.00 700.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 210.00 Td (remote-crowpanel-21 / remote-crowpanel-128) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 210.00 Td (PASS) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 342.00 210.00 Td (Encoder remote builds previously passed with softened menu encoder path.) Tj ET
+endstream
+endobj
+12 0 obj
+<< /Length 5450 >>
+stream
+1.000 1.000 1.000 rg
+0.00 0.00 792.00 612.00 re f
+0.100 0.120 0.150 rg
+BT /F2 22.0 Tf 36.00 568.00 Td (Live Connection Matrix Results) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 9.0 Tf 36.00 548.00 Td (Both passes used the same physical controller; headless mode was simulated by disabling local UI features in board capabilities.) Tj ET
+0.100 0.120 0.150 rg
+36.00 496.00 700.00 24.00 re f
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 42.00 504.00 Td (Case) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 217.00 504.00 Td (Expected) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 377.00 504.00 Td (Verification) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 652.00 504.00 Td (Result) Tj ET
+0.965 0.975 0.985 rg
+36.00 470.00 700.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 470.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 488.00 Td (Full-size factory reset) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 488.00 Td (No saved SSID, no saved peer.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 488.00 Td (Remote reset network + peer clear; controller reset) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 478.50 Td (network. Remote discovered controller from scratch.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 652.00 488.00 Td (PASS live) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 444.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 462.00 Td (Full-size fresh discovery) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 462.00 Td (ESP-NOW link first, Wi-Fi off.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 462.00 Td (Remote locked controller and stayed online with remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 452.50 Td (Wi-Fi inactive and staSaved=false.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 652.00 462.00 Td (PASS live) Tj ET
+0.965 0.975 0.985 rg
+36.00 418.00 700.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 418.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 436.00 Td (Full-size command matrix) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 436.00 Td (Remote/controller sync in both) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 426.50 Td (directions.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 436.00 Td (RPM, weight, menu writes, mode toggles, and soak loop) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 426.50 Td (completed over ESP-NOW.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 652.00 436.00 Td (PASS live) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 392.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 410.00 Td (Headless-sim factory reset) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 410.00 Td (No saved SSID, no saved peer.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 410.00 Td (Remote reset network + peer clear; simulated headless) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 400.50 Td (controller reset network and remained recoverable.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 652.00 410.00 Td (PASS live) Tj ET
+0.965 0.975 0.985 rg
+36.00 366.00 700.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 366.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 384.00 Td (Headless-sim fresh discovery) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 384.00 Td (Remote must find controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 374.50 Td (without Wi-Fi credentials.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 384.00 Td (Remote locked dual FE:01:2C:D6:38:BC, requested ESP-NOW-) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 374.50 Td (only, then settled on FC:01:2C:D6:38:BC.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 652.00 384.00 Td (PASS live) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 340.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 358.00 Td (Headless-sim OFF guard) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 358.00 Td (OFF must be refused when local UI) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 348.50 Td (is disabled.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 358.00 Td (API rejected radio OFF with remoteRecoveryRequired=true;) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 348.50 Td (controller stayed recoverable.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 652.00 358.00 Td (PASS live) Tj ET
+0.965 0.975 0.985 rg
+36.00 314.00 700.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 314.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 332.00 Td (Headless-sim command matrix) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 332.00 Td (ESP-NOW remains primary under no-) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 322.50 Td (info setup.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 332.00 Td (RPM, weight, menu writes, mode toggles, and soak loop) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 322.50 Td (completed over ESP-NOW.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 652.00 332.00 Td (PASS live) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 288.00 700.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 306.00 Td (WebSocket in no-info mode) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 306.00 Td (Do not require Wi-Fi) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 296.50 Td (provisioning.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 306.00 Td (Skipped by design: a factory-fresh remote has no SSID and) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 377.00 296.50 Td (should not depend on WebSocket to recover.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 652.00 306.00 Td (N/A) Tj ET
+endstream
+endobj
+13 0 obj
+<< /Length 9234 >>
+stream
+1.000 1.000 1.000 rg
+0.00 0.00 792.00 612.00 re f
+0.100 0.120 0.150 rg
+BT /F2 22.0 Tf 36.00 568.00 Td (Detailed Test Cases: Full-Size Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 9.0 Tf 36.00 548.00 Td (Normal Adafruit Feather controller build with local screen, buttons, encoder, and encoder button enabled.) Tj ET
+0.100 0.120 0.150 rg
+28.00 496.00 752.00 24.00 re f
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 34.00 504.00 Td (ID) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 66.00 504.00 Td (Case) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 161.00 504.00 Td (Stimulus) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 351.00 504.00 Td (Expected) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 556.00 504.00 Td (Observed) Tj ET
+0.965 0.975 0.985 rg
+28.00 460.00 752.00 36.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 460.00 752.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 488.00 Td (F1) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 488.00 Td (Factory/no-info) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 478.50 Td (reset) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 488.00 Td (Remote reset_network + peer clear.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 478.50 Td (Controller reset_network + idle.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 469.00 Td (Controller radio set to WEB+ESP.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 488.00 Td (No saved home SSID on either recovery path) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 478.50 Td (and no pre-locked ESP-NOW peer.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 488.00 Td (PASS: remote staSaved=false; controller stayed) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 478.50 Td (recoverable on ESP-NOW channel 1.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 424.00 752.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 452.00 Td (F2) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 452.00 Td (Fresh ESP-NOW) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 442.50 Td (discovery) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 452.00 Td (Remote set to transport espnow after) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 442.50 Td (peer clear.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 452.00 Td (Remote should find the controller without) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 442.50 Td (Wi-Fi credentials, lock the peer, and) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 433.00 Td (report linkOnline.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 452.00 Td (PASS: remote locked FC:01:2C:D6:38:BC and) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 442.50 Td (linkOnline=true.) Tj ET
+0.965 0.975 0.985 rg
+28.00 398.00 752.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 398.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 416.00 Td (F3) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 416.00 Td (Low-resource steady) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 406.50 Td (state) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 416.00 Td (Let controller settle after discovery.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 416.00 Td (Once ESP-NOW is effective, Wi-Fi should) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 406.50 Td (not be required by the remote.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 416.00 Td (PASS: remote Wi-Fi inactive, staSaved=false,) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 406.50 Td (ESP-NOW online.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 372.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 390.00 Td (F4) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 390.00 Td (Menu pull) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 390.00 Td (Remote raw GET_MENU=4.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 390.00 Td (Remote can request and mirror controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 380.50 Td (menu data over ESP-NOW.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 390.00 Td (PASS: remote menu 4 data became visible; menu) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 380.50 Td (item check succeeded.) Tj ET
+0.965 0.975 0.985 rg
+28.00 346.00 752.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 346.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 364.00 Td (F5) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 364.00 Td (Controller to) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 354.50 Td (remote RPM) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 364.00 Td (Controller api setrpm 650.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 364.00 Td (Remote status should update) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 354.50 Td (controller.setRPM and manualRPM.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 364.00 Td (PASS: remote observed 650 RPM.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 320.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 338.00 Td (F6) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 338.00 Td (Remote to) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 328.50 Td (controller RPM) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 338.00 Td (Remote api setrpm 775.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 338.00 Td (Controller setRPM should update and remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 328.50 Td (should reflect it back.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 338.00 Td (PASS: controller and remote both observed 775) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 328.50 Td (RPM.) Tj ET
+0.965 0.975 0.985 rg
+28.00 294.00 752.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 294.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 312.00 Td (F7) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 312.00 Td (Weight sync both) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 302.50 Td (ways) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 312.00 Td (Controller setweight 19000, then remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 302.50 Td (setweight 21000.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 312.00 Td (Both sides should converge on the latest) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 302.50 Td (target weight in mg.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 312.00 Td (PASS: controller and remote target weight) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 302.50 Td (values matched.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 268.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 286.00 Td (F8) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 286.00 Td (Menu writes) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 286.00 Td (Remote changed sleep timer, purge auto,) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 276.50 Td (and GBW RPM menu values.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 286.00 Td (Controller menu and remote menu mirrors) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 276.50 Td (should both converge.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 286.00 Td (PASS: all three menu writes were verified on) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 276.50 Td (controller and remote.) Tj ET
+0.965 0.975 0.985 rg
+28.00 232.00 752.00 36.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 232.00 752.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 260.00 Td (F9) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 260.00 Td (State transitions) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 260.00 Td (Remote action idle_gbw, then action) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 250.50 Td (idle.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 260.00 Td (Controller state should follow remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 250.50 Td (commands and remote status should mirror) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 241.00 Td (state.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 260.00 Td (PASS: IDLE_GBW then IDLE were both observed.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 206.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 224.00 Td (F10) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 224.00 Td (ESP-NOW soak) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 224.00 Td (10 iterations of remote RPM writes plus) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 214.50 Td (controller weight writes.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 224.00 Td (Link should remain ESP-NOW and linkOnline) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 214.50 Td (through repeated updates.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 224.00 Td (PASS: no link loss during soak.) Tj ET
+0.965 0.975 0.985 rg
+28.00 180.00 752.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 180.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 198.00 Td (F11) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 198.00 Td (WebSocket under no-) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 188.50 Td (info) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 198.00 Td (Skipped in factory/no-info run.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 198.00 Td (Fresh devices have no saved Wi-Fi;) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 188.50 Td (recovery must not depend on WebSocket.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 198.00 Td (N/A by design for this matrix.) Tj ET
+endstream
+endobj
+14 0 obj
+<< /Length 9811 >>
+stream
+1.000 1.000 1.000 rg
+0.00 0.00 792.00 612.00 re f
+0.100 0.120 0.150 rg
+BT /F2 22.0 Tf 36.00 568.00 Td (Detailed Test Cases: Headless-Sim Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 9.0 Tf 36.00 548.00 Td (Same physical controller flashed with controller_box_headless_sim, reporting no local screen/buttons/encoder.) Tj ET
+0.100 0.120 0.150 rg
+28.00 496.00 752.00 24.00 re f
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 34.00 504.00 Td (ID) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 66.00 504.00 Td (Case) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 161.00 504.00 Td (Stimulus) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 351.00 504.00 Td (Expected) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 556.00 504.00 Td (Observed) Tj ET
+0.965 0.975 0.985 rg
+28.00 460.00 752.00 36.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 460.00 752.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 488.00 Td (H1) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 488.00 Td (Headless feature) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 478.50 Td (profile) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 488.00 Td (Flash controller-universal-s3-headless-) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 478.50 Td (sim.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 488.00 Td (Controller target should report headless) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 478.50 Td (simulation so recovery rules treat local) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 469.00 Td (UI as unavailable.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 488.00 Td (PASS: target controller_box_headless_sim during) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 478.50 Td (test pass.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 424.00 752.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 452.00 Td (H2) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 452.00 Td (Factory/no-info) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 442.50 Td (reset) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 452.00 Td (Remote reset_network + peer clear.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 442.50 Td (Controller reset_network + idle.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 433.00 Td (Controller radio set to WEB+ESP.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 452.00 Td (Controller must remain remotely) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 442.50 Td (recoverable because there is no local UI) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 433.00 Td (fallback.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 452.00 Td (PASS: controller remained recoverable and) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 442.50 Td (remote had no saved Wi-Fi.) Tj ET
+0.965 0.975 0.985 rg
+28.00 398.00 752.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 398.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 416.00 Td (H3) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 416.00 Td (Fresh ESP-NOW) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 406.50 Td (discovery) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 416.00 Td (Remote set to transport espnow after) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 406.50 Td (peer clear.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 416.00 Td (Remote should find the headless controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 406.50 Td (without any saved Wi-Fi and lock the peer.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 416.00 Td (PASS: remote discovered the controller and came) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 406.50 Td (online over ESP-NOW.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 362.00 752.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 390.00 Td (H4) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 390.00 Td (Dual to ESP-NOW) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 380.50 Td (settle) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 390.00 Td (Controller moved from recovery/dual) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 380.50 Td (advertisement toward ESP-NOW-only) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 371.00 Td (steady state.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 390.00 Td (Remote may see the temporary) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 380.50 Td (FE:01:2C:D6:38:BC dual MAC, then settle on) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 371.00 Td (FC:01:2C:D6:38:BC.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 390.00 Td (PASS: final locked peer was FC:01:2C:D6:38:BC) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 380.50 Td (and linkOnline=true.) Tj ET
+0.965 0.975 0.985 rg
+28.00 336.00 752.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 336.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 354.00 Td (H5) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 354.00 Td (OFF guard) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 354.00 Td (Controller api set 1 4 2 while) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 344.50 Td (remoteRecoveryRequired=true.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 354.00 Td (Radio OFF must be rejected so a headless) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 344.50 Td (controller is not stranded.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 354.00 Td (PASS: command returned ok=false with headless) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 344.50 Td (rejection; desired mode stayed non-OFF.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 310.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 328.00 Td (H6) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 328.00 Td (Menu pull) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 328.00 Td (Remote raw GET_MENU=4.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 328.00 Td (Remote can request controller menu data) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 318.50 Td (over ESP-NOW after headless recovery.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 328.00 Td (PASS: remote menu data check succeeded.) Tj ET
+0.965 0.975 0.985 rg
+28.00 274.00 752.00 36.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 274.00 752.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 302.00 Td (H7) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 302.00 Td (RPM and weight sync) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 302.00 Td (Same controller-to-remote and remote-) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 292.50 Td (to-controller RPM/weight checks as) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 283.00 Td (full-size.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 302.00 Td (Both sides should converge without) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 292.50 Td (WebSocket and without local UI.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 302.00 Td (PASS: setRPM and setWeight paths worked both) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 292.50 Td (directions.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 248.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 266.00 Td (H8) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 266.00 Td (Menu writes) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 266.00 Td (Remote changed sleep timer, purge auto,) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 256.50 Td (and GBW RPM menu values.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 266.00 Td (Controller and remote menu mirrors should) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 256.50 Td (both converge in headless mode.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 266.00 Td (PASS: all menu writes were verified.) Tj ET
+0.965 0.975 0.985 rg
+28.00 222.00 752.00 26.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 222.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 240.00 Td (H9) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 240.00 Td (State transitions) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 240.00 Td (Remote action idle_gbw, then action) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 230.50 Td (idle.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 240.00 Td (Headless controller should still follow) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 230.50 Td (state commands over ESP-NOW.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 240.00 Td (PASS: IDLE_GBW then IDLE were both observed.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+28.00 196.00 752.00 26.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 214.00 Td (H10) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 214.00 Td (ESP-NOW soak) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 214.00 Td (10 iterations of remote RPM writes plus) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 204.50 Td (controller weight writes.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 214.00 Td (Link should remain ESP-NOW and linkOnline) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 204.50 Td (through repeated updates.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 214.00 Td (PASS: no persistent link loss during soak.) Tj ET
+0.965 0.975 0.985 rg
+28.00 160.00 752.00 36.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+28.00 160.00 752.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 34.00 188.00 Td (H11) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 66.00 188.00 Td (Restore bench unit) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 188.00 Td (Reflash controller-universal-s3 after) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 161.00 178.50 Td (headless-sim pass.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 188.00 Td (Physical controller should return to) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 351.00 178.50 Td (normal full-size firmware.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 188.00 Td (PASS: target controller_box, board Adafruit) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 178.50 Td (Feather Controller,) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 556.00 169.00 Td (remoteRecoveryRequired=false.) Tj ET
+endstream
+endobj
+15 0 obj
+<< /Length 7028 >>
+stream
+1.000 1.000 1.000 rg
+0.00 0.00 792.00 612.00 re f
+0.100 0.120 0.150 rg
+BT /F2 22.0 Tf 36.00 568.00 Td (Recovery Paths And Issue Notes) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 9.0 Tf 36.00 548.00 Td (This page records what should happen when a case hits a fault or ambiguous transition.) Tj ET
+0.100 0.120 0.150 rg
+36.00 496.00 700.00 24.00 re f
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 42.00 504.00 Td (Scenario) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 217.00 504.00 Td (Trigger) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 427.00 504.00 Td (Recovery Path) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 637.00 504.00 Td (Bench Result) Tj ET
+0.965 0.975 0.985 rg
+36.00 460.00 700.00 36.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 460.00 700.00 36.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 488.00 Td (Factory no saved Wi-Fi / no saved) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 478.50 Td (peer) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 488.00 Td (Controller starts WEB+ESP recovery. Remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 478.50 Td (starts ESP-NOW scan with no locked peer.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 488.00 Td (Remote discovers controller, locks peer,) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 478.50 Td (establishes ESP-NOW, and final state can) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 469.00 Td (drop remote Wi-Fi use.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 488.00 Td (Verified in full-size) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 478.50 Td (and headless-sim) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 469.00 Td (passes.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 414.00 700.00 46.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 452.00 Td (Remote does not find ESP-NOW) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 442.50 Td (controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 452.00 Td (Remote has no established ESP-NOW) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 442.50 Td (controller. If Wi-Fi is configured, it may) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 433.00 Td (try Wi-Fi discovery; with no Wi-Fi it stays) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 423.50 Td (idle and waits for scan/setup.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 452.00 Td (Controller must not turn itself into an) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 442.50 Td (unrecoverable OFF state while waiting.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 452.00 Td (Factory/no-info run) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 442.50 Td (verified the no-Wi-Fi) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 433.00 Td (branch does not) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 423.50 Td (require WebSocket.) Tj ET
+0.965 0.975 0.985 rg
+36.00 368.00 700.00 46.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 368.00 700.00 46.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 406.00 Td (Headless controller receives radio) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 396.50 Td (OFF request) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 406.00 Td (API/menu request tries to set radio mode) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 396.50 Td (OFF while remoteRecoveryRequired=true.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 406.00 Td (Reject OFF, keep desired mode recoverable,) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 396.50 Td (and keep ESP-NOW/recovery path alive.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 406.00 Td (Verified: api set 1 4) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 396.50 Td (2 returned ok=false) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 387.00 Td (and desired mode) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 377.50 Td (stayed non-OFF.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 302.00 700.00 66.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 360.00 Td (Full-size controller receives radio) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 350.50 Td (OFF request) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 360.00 Td (Local screen/buttons/encoder are present.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 360.00 Td (OFF may remain allowed because the user has) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 350.50 Td (a local recovery path on the controller.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 360.00 Td (Not part of no-strand) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 350.50 Td (headless failure) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 341.00 Td (path; guard) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 331.50 Td (intentionally only) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 322.00 Td (applies when local UI) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 312.50 Td (is disabled.) Tj ET
+0.965 0.975 0.985 rg
+36.00 236.00 700.00 66.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 236.00 700.00 66.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 294.00 Td (Dual MAC to ESP-NOW MAC transition) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 294.00 Td (During headless recovery, remote can first) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 284.50 Td (observe FE:01:2C:D6:38:BC and then settle) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 275.00 Td (to FC:01:2C:D6:38:BC.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 294.00 Td (A transient offline sample should trigger a) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 284.50 Td (bounded relock wait rather than marking the) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 275.00 Td (controller stranded.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 294.00 Td (Observed once in) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 284.50 Td (early headless load) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 275.00 Td (probe; harness) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 265.50 Td (updated to wait up to) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 256.00 Td (10s and final rerun) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 246.50 Td (passed.) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 190.00 700.00 46.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 228.00 Td (Earlier WebSocket failure) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 228.00 Td (One obsolete run mixed a controller with no) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 218.50 Td (saved STA and a remote with a saved home) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 217.00 209.00 Td (SSID.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 228.00 Td (Reset both devices for a real factory/no-) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 218.50 Td (info test and skip WebSocket because no) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 209.00 Td (saved Wi-Fi exists.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 228.00 Td (Resolved by factory) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 218.50 Td (reset path; not) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 209.00 Td (counted as a product) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 637.00 199.50 Td (failure.) Tj ET
+endstream
+endobj
+16 0 obj
+<< /Length 8998 >>
+stream
+1.000 1.000 1.000 rg
+0.00 0.00 792.00 612.00 re f
+0.100 0.120 0.150 rg
+BT /F2 22.0 Tf 36.00 568.00 Td (Load / Hogging Check) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 9.0 Tf 36.00 548.00 Td (Serial/API round-trip timings during the live matrix. Max threshold used by the harness: 1500 ms.) Tj ET
+0.100 0.120 0.150 rg
+36.00 496.00 620.00 24.00 re f
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 42.00 504.00 Td (Probe) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 287.00 504.00 Td (Side) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 372.00 504.00 Td (N) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 427.00 504.00 Td (Avg) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 512.00 504.00 Td (Max) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 597.00 504.00 Td (Result) Tj ET
+0.965 0.975 0.985 rg
+36.00 480.00 620.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 480.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 488.00 Td (Full-size fresh ESP-NOW discovery) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 488.00 Td (Remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 488.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 488.00 Td (32.1 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 488.00 Td (130.9 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 488.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 464.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 472.00 Td (Full-size fresh ESP-NOW discovery) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 472.00 Td (Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 472.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 472.00 Td (141.1 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 472.00 Td (325.5 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 472.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+36.00 448.00 620.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 448.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 456.00 Td (Full-size ESP-NOW command suite) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 456.00 Td (Remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 456.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 456.00 Td (17.5 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 456.00 Td (133.7 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 456.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 432.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 440.00 Td (Full-size ESP-NOW command suite) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 440.00 Td (Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 440.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 440.00 Td (119.7 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 440.00 Td (293.4 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 440.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+36.00 416.00 620.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 416.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 424.00 Td (Headless-sim fresh ESP-NOW discovery) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 424.00 Td (Remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 424.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 424.00 Td (24.9 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 424.00 Td (110.8 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 424.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 400.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 408.00 Td (Headless-sim fresh ESP-NOW discovery) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 408.00 Td (Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 408.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 408.00 Td (97.3 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 408.00 Td (165.4 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 408.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+36.00 384.00 620.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 384.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 392.00 Td (Headless-sim OFF guard) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 392.00 Td (Remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 392.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 392.00 Td (9.4 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 392.00 Td (40.5 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 392.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 368.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 376.00 Td (Headless-sim OFF guard) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 376.00 Td (Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 376.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 376.00 Td (93.2 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 376.00 Td (135.6 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 376.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+36.00 352.00 620.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 352.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 360.00 Td (Headless-sim ESP-NOW command suite) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 360.00 Td (Remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 360.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 360.00 Td (21.3 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 360.00 Td (107.7 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 360.00 Td (PASS) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 336.00 620.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 344.00 Td (Headless-sim ESP-NOW command suite) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 287.00 344.00 Td (Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 372.00 344.00 Td (12) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 344.00 Td (81.6 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 512.00 344.00 Td (151.0 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 597.00 344.00 Td (PASS) Tj ET
+0.100 0.120 0.150 rg
+36.00 210.00 670.00 24.00 re f
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 42.00 218.00 Td (Overall Pass) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 272.00 218.00 Td (Side) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 357.00 218.00 Td (Count) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 427.00 218.00 Td (Avg) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 522.00 218.00 Td (P95) Tj ET
+1.000 1.000 1.000 rg
+BT /F2 8.0 Tf 617.00 218.00 Td (Max) Tj ET
+0.965 0.975 0.985 rg
+36.00 194.00 670.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 194.00 670.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 202.00 Td (Full-size no-info pass) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 202.00 Td (Remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 357.00 202.00 Td (114) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 202.00 Td (18.9 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 522.00 202.00 Td (113.5 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 617.00 202.00 Td (133.7 ms) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 178.00 670.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 186.00 Td (Full-size no-info pass) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 186.00 Td (Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 357.00 186.00 Td (78) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 186.00 Td (145.5 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 522.00 186.00 Td (335.7 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 617.00 186.00 Td (343.1 ms) Tj ET
+0.965 0.975 0.985 rg
+36.00 162.00 670.00 16.00 re f
+0.780 0.800 0.840 RG
+0.40 w
+36.00 162.00 670.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 170.00 Td (Headless-sim no-info pass) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 170.00 Td (Remote) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 357.00 170.00 Td (141) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 170.00 Td (13.8 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 522.00 170.00 Td (88.5 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 617.00 170.00 Td (111.8 ms) Tj ET
+0.965 0.975 0.985 rg
+0.780 0.800 0.840 RG
+0.40 w
+36.00 146.00 670.00 16.00 re S
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 42.00 154.00 Td (Headless-sim no-info pass) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 272.00 154.00 Td (Controller) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 357.00 154.00 Td (83) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 427.00 154.00 Td (101.0 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 522.00 154.00 Td (222.0 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 7.5 Tf 617.00 154.00 Td (290.0 ms) Tj ET
+0.100 0.120 0.150 rg
+BT /F2 10.0 Tf 36.00 72.00 Td (Result:) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 8.5 Tf 36.00 56.00 Td (1. No load probe exceeded the 1500 ms guard threshold; no periodic hogging was observed in this matrix.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 8.5 Tf 36.00 42.00 Td (2. Factory/no-info WebSocket was intentionally skipped; recovery must not depend on saved Wi-Fi.) Tj ET
+0.100 0.120 0.150 rg
+BT /F1 8.5 Tf 36.00 28.00 Td (3. Follow-up UI notes captured separately: remote centering across screens and clock temperature suffix.) Tj ET
+endstream
+endobj
+xref
+0 17
+0000000000 65535 f 
+0000000015 00000 n 
+0000000064 00000 n 
+0000000151 00000 n 
+0000000289 00000 n 
+0000000427 00000 n 
+0000000565 00000 n 
+0000000703 00000 n 
+0000000841 00000 n 
+0000000979 00000 n 
+0000001049 00000 n 
+0000001125 00000 n 
+0000006020 00000 n 
+0000011523 00000 n 
+0000020810 00000 n 
+0000030674 00000 n 
+0000037755 00000 n 
+trailer
+<< /Size 17 /Root 1 0 R >>
+startxref
+46806
+%%EOF

@@ -54,7 +54,7 @@
 #define default_minRPM 100
 #define default_motor_torque 100
 #define default_led_brightness 100
-#define default_radio_mode 2 // controller default: radio off until user enables Web UI or ESP-NOW
+#define default_radio_mode 3 // controller default: Web/AP + ESP-NOW
 #define default_espnow_channel 1
 
 #define default_motor_ramp 1

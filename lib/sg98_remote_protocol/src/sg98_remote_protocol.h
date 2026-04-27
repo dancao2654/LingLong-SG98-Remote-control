@@ -11,12 +11,15 @@ constexpr const char* kFrameAck = "ACK";
 constexpr const char* kFrameStatus = "STAT";
 constexpr const char* kFrameMenu = "MENU";
 constexpr const char* kFramePeer = "PEER";
+constexpr const char* kFrameEnvironment = "ENV";
+constexpr const char* kFrameWifiConfig = "WIFI";
 
 constexpr const char* kCmdStart = "START";
 constexpr const char* kCmdStop = "STOP";
 constexpr const char* kCmdIdle = "IDLE";
 constexpr const char* kCmdIdleGbw = "IDLE_GBW";
 constexpr const char* kCmdGetStatus = "GET_STATUS";
+constexpr const char* kCmdGetEnvironment = "GET_ENV";
 constexpr const char* kCmdDiscover = "DISCOVER";
 constexpr const char* kCmdHeartbeat = "HEARTBEAT";
 
@@ -57,6 +60,21 @@ struct PeerFrame {
   String mac;
   String target;
   int32_t channel = 0;
+};
+
+struct EnvironmentFrame {
+  bool timeValid = false;
+  uint32_t unixTime = 0;
+  bool weatherValid = false;
+  int16_t temperatureF = 0;
+  uint16_t weatherCode = 0;
+  int8_t precipitationPercent = -1;
+  String location;
+};
+
+struct WifiConfigFrame {
+  String ssid;
+  String password;
 };
 
 inline String setRpm(int32_t rpm) {
@@ -118,6 +136,87 @@ inline String peer(const String& name, const String& mac, const String& target, 
   out += target;
   out += kFrameSeparator;
   out += String(channel);
+  return out;
+}
+
+inline String environment(const EnvironmentFrame& frame) {
+  String out;
+  out.reserve(frame.location.length() + 48);
+  out += kFrameEnvironment;
+  out += kFrameSeparator;
+  out += frame.timeValid ? '1' : '0';
+  out += kFrameSeparator;
+  out += String(static_cast<unsigned long>(frame.unixTime));
+  out += kFrameSeparator;
+  out += frame.weatherValid ? '1' : '0';
+  out += kFrameSeparator;
+  out += String(static_cast<int>(frame.temperatureF));
+  out += kFrameSeparator;
+  out += String(static_cast<unsigned>(frame.weatherCode));
+  out += kFrameSeparator;
+  out += String(static_cast<int>(frame.precipitationPercent));
+  out += kFrameSeparator;
+  String location = frame.location;
+  location.replace(String(kFrameSeparator), String(' '));
+  location.replace(String(kListSeparator), String(' '));
+  out += location;
+  return out;
+}
+
+namespace detail {
+
+inline char hexNibble(uint8_t value) {
+  value &= 0x0F;
+  return value < 10 ? static_cast<char>('0' + value)
+                    : static_cast<char>('A' + value - 10);
+}
+
+inline int hexValue(char ch) {
+  if(ch >= '0' && ch <= '9') return ch - '0';
+  if(ch >= 'a' && ch <= 'f') return ch - 'a' + 10;
+  if(ch >= 'A' && ch <= 'F') return ch - 'A' + 10;
+  return -1;
+}
+
+inline String hexEncode(const String& value) {
+  String out;
+  out.reserve(value.length() * 2);
+  for(size_t i = 0; i < value.length(); ++i) {
+    const uint8_t ch = static_cast<uint8_t>(value.charAt(i));
+    out += hexNibble(ch >> 4);
+    out += hexNibble(ch);
+  }
+  return out;
+}
+
+inline bool hexDecode(const String& value, String* out) {
+  if(out == nullptr || (value.length() % 2) != 0) {
+    return false;
+  }
+  String decoded;
+  decoded.reserve(value.length() / 2);
+  for(size_t i = 0; i < value.length(); i += 2) {
+    const int high = hexValue(value.charAt(i));
+    const int low = hexValue(value.charAt(i + 1));
+    if(high < 0 || low < 0) {
+      return false;
+    }
+    decoded += static_cast<char>((high << 4) | low);
+  }
+  *out = decoded;
+  return true;
+}
+
+}  // namespace detail
+
+inline String wifiConfig(const String& ssid, const String& password) {
+  String out;
+  out.reserve(ssid.length() * 2 + password.length() * 2 + 8);
+  out += kFrameWifiConfig;
+  out += kFrameSeparator;
+  out += detail::hexEncode(ssid);
+  out += kFrameSeparator;
+  out += detail::hexEncode(password);
   return out;
 }
 
@@ -265,6 +364,47 @@ inline bool parsePeerFrame(const String& frame, PeerFrame* out) {
   }
   out->channel = parsed;
   return true;
+}
+
+inline bool parseEnvironmentFrame(const String& frame, EnvironmentFrame* out) {
+  if(out == nullptr || !frame.startsWith(String(kFrameEnvironment) + kFrameSeparator)) {
+    return false;
+  }
+
+  int start = String(kFrameEnvironment).length() + 1;
+  String token;
+  int32_t parsed = 0;
+
+  if(!detail::nextToken(frame, start, kFrameSeparator, &token) || !detail::parseIntToken(token, &parsed)) return false;
+  out->timeValid = parsed != 0;
+  if(!detail::nextToken(frame, start, kFrameSeparator, &token) || !detail::parseIntToken(token, &parsed)) return false;
+  out->unixTime = static_cast<uint32_t>(parsed);
+  if(!detail::nextToken(frame, start, kFrameSeparator, &token) || !detail::parseIntToken(token, &parsed)) return false;
+  out->weatherValid = parsed != 0;
+  if(!detail::nextToken(frame, start, kFrameSeparator, &token) || !detail::parseIntToken(token, &parsed)) return false;
+  out->temperatureF = static_cast<int16_t>(parsed);
+  if(!detail::nextToken(frame, start, kFrameSeparator, &token) || !detail::parseIntToken(token, &parsed)) return false;
+  out->weatherCode = static_cast<uint16_t>(parsed);
+  if(!detail::nextToken(frame, start, kFrameSeparator, &token) || !detail::parseIntToken(token, &parsed)) return false;
+  out->precipitationPercent = static_cast<int8_t>(parsed);
+  out->location = "";
+  detail::nextToken(frame, start, kFrameSeparator, &out->location);
+  return true;
+}
+
+inline bool parseWifiConfigFrame(const String& frame, WifiConfigFrame* out) {
+  if(out == nullptr || !frame.startsWith(String(kFrameWifiConfig) + kFrameSeparator)) {
+    return false;
+  }
+
+  int start = String(kFrameWifiConfig).length() + 1;
+  String ssidToken;
+  String passwordToken;
+  if(!detail::nextToken(frame, start, kFrameSeparator, &ssidToken)) return false;
+  if(!detail::nextToken(frame, start, kFrameSeparator, &passwordToken)) passwordToken = "";
+  if(!detail::hexDecode(ssidToken, &out->ssid)) return false;
+  if(!detail::hexDecode(passwordToken, &out->password)) return false;
+  return out->ssid.length() > 0;
 }
 
 }  // namespace sg98_protocol

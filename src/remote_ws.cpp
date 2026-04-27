@@ -64,6 +64,14 @@ void handleTextFrame(uint8_t clientNum, const uint8_t* payload, size_t length) {
     for(size_t i = 0; i < length; ++i) {
         command += static_cast<char>(payload[i]);
     }
+    command.trim();
+
+    if(command.equalsIgnoreCase(sg98_protocol::kCmdGetEnvironment)) {
+        String frame = remote_link_build_environment_frame();
+        wsServer.sendTXT(clientNum, frame);
+        Serial.println("[remote_ws] env");
+        return;
+    }
 
     String message;
     bool sendStatus = false;

@@ -902,6 +902,54 @@ bool readPmicH5L8(uint8_t highReg, uint8_t lowReg, uint16_t* value) {
     return true;
 }
 
+struct BatteryCurvePoint {
+    int32_t millivolts;
+    int8_t percent;
+};
+
+int8_t estimateBatteryPercentFromMillivolts(int32_t millivolts) {
+    if(millivolts <= 0) {
+        return -1;
+    }
+
+    constexpr BatteryCurvePoint kBatteryCurve[] = {
+        {3300, 0},
+        {3500, 5},
+        {3600, 10},
+        {3650, 20},
+        {3700, 30},
+        {3740, 40},
+        {3790, 50},
+        {3850, 60},
+        {3920, 70},
+        {4000, 80},
+        {4100, 90},
+        {4200, 100},
+    };
+
+    if(millivolts <= kBatteryCurve[0].millivolts) {
+        return kBatteryCurve[0].percent;
+    }
+
+    constexpr size_t pointCount = sizeof(kBatteryCurve) / sizeof(kBatteryCurve[0]);
+    for(size_t i = 1; i < pointCount; ++i) {
+        const BatteryCurvePoint& lower = kBatteryCurve[i - 1];
+        const BatteryCurvePoint& upper = kBatteryCurve[i];
+        if(millivolts <= upper.millivolts) {
+            const int32_t spanMv = upper.millivolts - lower.millivolts;
+            const int32_t spanPercent = upper.percent - lower.percent;
+            return static_cast<int8_t>(
+                lower.percent + ((millivolts - lower.millivolts) * spanPercent + (spanMv / 2)) / spanMv);
+        }
+    }
+
+    return kBatteryCurve[pointCount - 1].percent;
+}
+
+bool looksLikeLiPoVoltage(int32_t millivolts) {
+    return millivolts >= 3200 && millivolts <= 4300;
+}
+
 bool readIoExpanderRegister(uint8_t reg, uint8_t* value) {
     return readI2cRegister(kIoExpanderAddress, reg, value);
 }
@@ -2063,32 +2111,32 @@ RemoteBatteryStatus waveshare_battery_status() {
     }
 
     const uint8_t chargeState = static_cast<uint8_t>(status2 >> 5);
-    status.batteryPresent = (status1 & 0x08) != 0;
+    const bool pmicBatteryPresent = (status1 & 0x08) != 0;
+    status.batteryPresent = pmicBatteryPresent || g_pmicBatteryCache.batteryPresent;
     status.usbPresent = (status1 & 0x20) != 0 && (status2 & 0x08) == 0;
     status.charging = chargeState == 0x01;
     status.discharging = chargeState == 0x02;
     status.standby = chargeState == 0x00;
 
-    status.percent = status.batteryPresent ? g_pmicBatteryCache.percent : -1;
-    status.millivolts = status.batteryPresent ? g_pmicBatteryCache.millivolts : -1;
+    status.percent = g_pmicBatteryCache.percent;
+    status.millivolts = g_pmicBatteryCache.millivolts;
     status.vbusMillivolts = status.usbPresent ? g_pmicBatteryCache.vbusMillivolts : -1;
     status.systemMillivolts = g_pmicBatteryCache.systemMillivolts;
 
     const uint32_t now = millis();
-    const bool powerPathChanged =
-        status.batteryPresent != g_pmicBatteryCache.batteryPresent ||
-        status.usbPresent != g_pmicBatteryCache.usbPresent;
+    const bool powerPathChanged = status.usbPresent != g_pmicBatteryCache.usbPresent;
     const bool levelDue = g_pmicLastBatteryLevelAt == 0 ||
                           static_cast<uint32_t>(now - g_pmicLastBatteryLevelAt) >= remote_config::kBatteryPollMs ||
                           powerPathChanged;
     if(levelDue) {
+        status.batteryPresent = pmicBatteryPresent;
         status.percent = -1;
         status.millivolts = -1;
         status.vbusMillivolts = -1;
         status.systemMillivolts = -1;
 
         uint16_t raw = 0;
-        if(status.batteryPresent &&
+        if(pmicBatteryPresent &&
            readPmicH5L8(kPmicBattVoltageHighReg, kPmicBattVoltageLowReg, &raw)) {
             status.millivolts = static_cast<int32_t>(raw);
         }
@@ -2100,12 +2148,19 @@ RemoteBatteryStatus waveshare_battery_status() {
             status.systemMillivolts = static_cast<int32_t>(raw);
         }
 
+        int8_t pmicPercent = -1;
         uint8_t percent = 0;
-        if(status.batteryPresent &&
+        if(pmicBatteryPresent &&
            readI2cRegister(kPmicAddress, kPmicBatteryPercentReg, &percent) &&
            percent <= 100) {
-            status.percent = static_cast<int8_t>(percent);
+            pmicPercent = static_cast<int8_t>(percent);
         }
+        if(!status.usbPresent && status.millivolts <= 0 && looksLikeLiPoVoltage(status.systemMillivolts)) {
+            status.millivolts = status.systemMillivolts;
+            status.batteryPresent = true;
+        }
+        const int8_t voltagePercent = estimateBatteryPercentFromMillivolts(status.millivolts);
+        status.percent = status.usbPresent ? pmicPercent : (voltagePercent >= 0 ? voltagePercent : pmicPercent);
         g_pmicLastBatteryLevelAt = now;
     }
 

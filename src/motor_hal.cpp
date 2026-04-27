@@ -464,6 +464,9 @@ void selectDriveType(DriveType detectedType, bool persist) {
     }
 
     applyDriveProfile(persist);
+    if(persist) {
+        pdata_write_drive_type(static_cast<int16_t>(motorDriveType));
+    }
 }
 
 void detectDriveTypeIfNeeded(bool force) {
@@ -488,6 +491,14 @@ void motor_init() {
     resetMotorState();
     rememberPreferredJmcRate(jmcRateFromBaud(pdata_read_jmc_baud()), false, false);
     autoProbeDone = false;
+    const DriveType savedDriveType = static_cast<DriveType>(pdata_read_drive_type());
+    if(savedDriveType != DRIVE_TYPE_UNKNOWN) {
+        selectDriveType(savedDriveType, false);
+        autoProbeDone = true;
+        lastProbeAt = millis();
+        return;
+    }
+
     selectDriveType(DRIVE_TYPE_UNKNOWN, false);
     detectDriveTypeIfNeeded(true);
 }

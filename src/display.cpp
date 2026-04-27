@@ -1838,8 +1838,8 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
         tft->fillRect(0, 60, SCREEN_WIDTH, SCREEN_HEIGHT-60, ST77XX_BLACK);
         prevValue = item.value;
         if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
-            const int selected = item.value < 0 ? 0 : (item.value > 2 ? 2 : item.value);
-            for(int i = 0; i < 3; ++i) {
+            const int selected = item.value < 0 ? 0 : (item.value > 3 ? 3 : item.value);
+            for(int i = 0; i < 4; ++i) {
                 const bool active = i == selected;
                 const GFXfont* font = active ? &FreeSans18pt7b : &FreeSans12pt7b;
                 const char* label = radio_mode_value_label(i);
@@ -1849,7 +1849,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                 int16_t x1, y1;
                 uint16_t w, h;
                 tft->getTextBounds(label, 0, 0, &x1, &y1, &w, &h);
-                const int y = 92 + i * 42;
+                const int y = 86 + i * 36;
                 tft->setCursor((SCREEN_WIDTH - w) / 2, y);
                 tft->print(label);
                 if(active) {

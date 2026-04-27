@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1000" viewBox="0 0 1600 1000"><defs>
+<linearGradient id="caseFace" x1="0" x2="1" y1="0" y2="1">
+<stop offset="0%" stop-color="#f8fafc" />
+<stop offset="100%" stop-color="#cbd5e1" />
+</linearGradient>
+<linearGradient id="pocket" x1="0" x2="0" y1="0" y2="1">
+<stop offset="0%" stop-color="#dbe4ee" />
+<stop offset="100%" stop-color="#aebccc" />
+</linearGradient>
+<linearGradient id="metal" x1="0" x2="1" y1="0" y2="1">
+<stop offset="0%" stop-color="#f8fafc" />
+<stop offset="48%" stop-color="#94a3b8" />
+<stop offset="100%" stop-color="#475569" />
+</linearGradient>
+<marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+<path d="M0,0 L0,6 L9,3 z" fill="#475569" />
+</marker>
+</defs>
+<rect width="1600" height="1000" fill="#f6f7f9" />
+<text x="54" y="72" font-size="30" font-weight="700" fill="#111827" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Recessed Pressure Connector Mockup</text>
+<text x="54" y="105" font-size="15" font-weight="500" fill="#64748b" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">M5 female socket sits behind the case lip; optional snap cover closes the bay when the sensor is unplugged.</text>
+<text x="92" y="173" font-size="21" font-weight="700" fill="#111827" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Short-End View</text>
+<path d="M 138.00 205.00 H 656.00 Q 702.00 205.00 702.00 251.00 V 429.00 Q 702.00 475.00 656.00 475.00 H 138.00 Q 92.00 475.00 92.00 429.00 V 251.00 Q 92.00 205.00 138.00 205.00 Z" fill="url(#caseFace)" stroke="#334155" stroke-width="3" stroke-linejoin="round" />
+<path d="M 305.00 275.00 H 489.00 Q 547.00 275.00 547.00 333.00 V 353.00 Q 547.00 411.00 489.00 411.00 H 305.00 Q 247.00 411.00 247.00 353.00 V 333.00 Q 247.00 275.00 305.00 275.00 Z" fill="url(#pocket)" stroke="#64748b" stroke-width="2.4" stroke-linejoin="round" />
+<path d="M 308.00 288.00 H 486.00 Q 534.00 288.00 534.00 336.00 V 350.00 Q 534.00 398.00 486.00 398.00 H 308.00 Q 260.00 398.00 260.00 350.00 V 336.00 Q 260.00 288.00 308.00 288.00 Z" fill="#eef4fb" stroke="#cbd5e1" stroke-width="1.3" stroke-linejoin="round" />
+<circle cx="397" cy="343" r="52" fill="url(#metal)" stroke="#475569" stroke-width="2" />
+<circle cx="397" cy="343" r="37" fill="#111827" stroke="#020617" stroke-width="2" />
+<circle cx="383" cy="333" r="5.4" fill="#e2e8f0" stroke="#64748b" stroke-width="1.1" />
+<circle cx="413" cy="333" r="5.4" fill="#e2e8f0" stroke="#64748b" stroke-width="1.1" />
+<circle cx="397" cy="359" r="5.4" fill="#e2e8f0" stroke="#64748b" stroke-width="1.1" />
+<text x="397" y="440" font-size="15" font-weight="700" fill="#334155" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif">connector face is protected inside the recess</text>
+<line x1="220" y1="281" x2="280" y2="308" stroke="#475569" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+<text x="220" y="271" font-size="15" font-weight="700" fill="#334155" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">outer case lip</text>
+<line x1="652" y1="280" x2="496" y2="328" stroke="#475569" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+<text x="652" y="270" font-size="15" font-weight="700" fill="#334155" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">recessed M5 socket</text>
+<text x="820" y="173" font-size="21" font-weight="700" fill="#111827" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Side Cutaway</text>
+<rect x="890" y="285" width="500" height="170" fill="url(#caseFace)" stroke="#334155" stroke-width="2.4" rx="20" />
+<rect x="890" y="320" width="70" height="100" fill="#cbd5e1" stroke="#334155" stroke-width="2" rx="14" />
+<rect x="960" y="338" width="135" height="64" fill="#b7c4d3" stroke="#64748b" stroke-width="1.8" rx="22" />
+<rect x="1075" y="349" width="22" height="42" fill="url(#metal)" stroke="#475569" stroke-width="1.7" rx="4" />
+<rect x="1097" y="340" width="92" height="60" fill="url(#metal)" stroke="#475569" stroke-width="1.7" rx="11" />
+<rect x="1189" y="357" width="78" height="26" fill="#111827" stroke="#020617" stroke-width="1.5" rx="9" />
+<rect x="1267" y="362" width="180" height="16" fill="#111827" stroke="#020617" stroke-width="1.2" rx="8" />
+<text x="1033" y="433" font-size="14" font-weight="700" fill="#334155" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif">4 mm recess</text>
+<text x="1154" y="327" font-size="14" font-weight="700" fill="#334155" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif">panel nut / body inside case</text>
+<text x="1360" y="409" font-size="14" font-weight="700" fill="#334155" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif">sensor cable plug</text>
+<line x1="898" y1="267" x2="942" y2="327" stroke="#475569" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+<text x="898" y="257" font-size="15" font-weight="700" fill="#334155" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">front lip</text>
+<line x1="1325" y1="281" x2="1204" y2="359" stroke="#475569" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+<text x="1325" y="271" font-size="15" font-weight="700" fill="#334155" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">plug enters bay</text>
+<text x="92" y="610" font-size="21" font-weight="700" fill="#111827" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Sensor Not Attached</text>
+<path d="M 130.00 650.00 H 664.00 Q 702.00 650.00 702.00 688.00 V 802.00 Q 702.00 840.00 664.00 840.00 H 130.00 Q 92.00 840.00 92.00 802.00 V 688.00 Q 92.00 650.00 130.00 650.00 Z" fill="url(#caseFace)" stroke="#334155" stroke-width="2.6" stroke-linejoin="round" />
+<path d="M 268.00 695.00 H 526.00 Q 572.00 695.00 572.00 741.00 V 743.00 Q 572.00 789.00 526.00 789.00 H 268.00 Q 222.00 789.00 222.00 743.00 V 741.00 Q 222.00 695.00 268.00 695.00 Z" fill="url(#pocket)" stroke="#64748b" stroke-width="2.2" stroke-linejoin="round" />
+<path d="M 275.00 710.00 H 519.00 Q 549.00 710.00 549.00 740.00 V 744.00 Q 549.00 774.00 519.00 774.00 H 275.00 Q 245.00 774.00 245.00 744.00 V 740.00 Q 245.00 710.00 275.00 710.00 Z" fill="#e7eef7" stroke="#475569" stroke-width="2.2" stroke-linejoin="round" />
+<rect x="385" y="704" width="12" height="76" fill="#94a3b8" stroke="#475569" stroke-width="1.2" rx="4" />
+<text x="397" y="815" font-size="15" font-weight="700" fill="#334155" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif">snap-in dust cover sits flush in the same bay</text>
+<text x="282" y="744" font-size="13" font-weight="700" fill="#64748b" text-anchor="middle" font-family="Inter, Helvetica, Arial, sans-serif">small pull lip</text>
+<line x1="700" y1="685" x2="546" y2="721" stroke="#475569" stroke-width="2" stroke-linecap="round" marker-end="url(#arrow)" />
+<text x="700" y="675" font-size="15" font-weight="700" fill="#334155" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">cover snaps into pocket walls</text>
+<text x="900" y="610" font-size="21" font-weight="700" fill="#111827" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Internal Wiring</text>
+<rect x="900" y="640" width="470" height="168" fill="#ffffff" stroke="#cbd5e1" stroke-width="1.6" rx="18" />
+<circle cx="936" cy="675" r="7" fill="#dc2626" stroke="#dc2626" stroke-width="1" />
+<text x="960" y="680" font-size="15" font-weight="700" fill="#334155" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Pin 1 / Brown</text>
+<text x="1110" y="680" font-size="15" font-weight="700" fill="#dc2626" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">SUP / +5V</text>
+<circle cx="936" cy="717" r="7" fill="#2563eb" stroke="#2563eb" stroke-width="1" />
+<text x="960" y="722" font-size="15" font-weight="700" fill="#334155" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Pin 3 / Blue</text>
+<text x="1110" y="722" font-size="15" font-weight="700" fill="#2563eb" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">GND</text>
+<circle cx="936" cy="759" r="7" fill="#111827" stroke="#111827" stroke-width="1" />
+<text x="960" y="764" font-size="15" font-weight="700" fill="#334155" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Pin 4 / Black</text>
+<text x="1110" y="764" font-size="15" font-weight="700" fill="#111827" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">OUT / pressure signal</text>
+<text x="936" y="785" font-size="14" font-weight="600" fill="#64748b" text-anchor="start" font-family="Inter, Helvetica, Arial, sans-serif">Female connector on case, male plug on sensor cable.</text></svg>
