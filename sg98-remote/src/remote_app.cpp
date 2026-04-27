@@ -523,7 +523,7 @@ constexpr SettingItem kGbwItems[] = {
 };
 
 constexpr SettingItem kNetworkItems[] = {
-    {"Radio mode", ItemKind::Value, 1, RADIOMODE, 0, 3, 1, "", nullptr, nullptr},
+    {"Wi-Fi", ItemKind::Value, 1, RADIOMODE, 0, 3, 1, "", nullptr, nullptr},
     {"Controller link", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "peers"},
     {"Audio diag", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "audio"},
     {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
@@ -765,30 +765,40 @@ LinkTransport transportFromRadioMode(int32_t radioMode) {
 }
 
 int32_t sanitizeControllerRadioMode(int32_t value) {
-    if(value == kControllerRadioWeb || value == kControllerRadioEspNow || value == kControllerRadioDual) {
+    if(value == kControllerRadioWeb || value == kControllerRadioEspNow ||
+       value == kControllerRadioOff || value == kControllerRadioDual) {
         return value;
     }
     return kControllerRadioDual;
 }
 
+int32_t safeUserRadioMode(int32_t value) {
+    const int32_t mode = sanitizeControllerRadioMode(value);
+    return (mode == kControllerRadioWeb || mode == kControllerRadioDual) ? kControllerRadioDual
+                                                                         : kControllerRadioEspNow;
+}
+
 String radioModeValueLabel(int32_t value) {
     switch(sanitizeControllerRadioMode(value)) {
         case kControllerRadioWeb:
-            return "WI-FI";
+            return "WI-FI ONLY";
         case kControllerRadioEspNow:
-            return "ESP-NOW";
+            return "DISABLED";
+        case kControllerRadioOff:
+            return "RADIO OFF";
         case kControllerRadioDual:
         default:
-            return "WEB+ESP";
+            return "ENABLED";
     }
 }
 
 float normalizedRadioModeLevel(int32_t value) {
     switch(sanitizeControllerRadioMode(value)) {
         case kControllerRadioWeb:
-            return 0.0f;
+            return 1.0f;
         case kControllerRadioEspNow:
-            return 0.5f;
+        case kControllerRadioOff:
+            return 0.0f;
         case kControllerRadioDual:
         default:
             return 1.0f;
@@ -796,24 +806,11 @@ float normalizedRadioModeLevel(int32_t value) {
 }
 
 int32_t stepRadioModeValue(int32_t current, int delta) {
-    int32_t value = sanitizeControllerRadioMode(current);
-    const int step = delta > 0 ? 1 : -1;
-    for(int i = 0; i < abs(delta); ++i) {
-        if(step > 0) {
-            if(value == kControllerRadioWeb) {
-                value = kControllerRadioEspNow;
-            } else if(value == kControllerRadioEspNow) {
-                value = kControllerRadioDual;
-            }
-        } else {
-            if(value == kControllerRadioDual) {
-                value = kControllerRadioEspNow;
-            } else if(value == kControllerRadioEspNow) {
-                value = kControllerRadioWeb;
-            }
-        }
+    if(delta == 0) {
+        return safeUserRadioMode(current);
     }
-    return value;
+    return safeUserRadioMode(current) == kControllerRadioEspNow ? kControllerRadioDual
+                                                                : kControllerRadioEspNow;
 }
 
 LinkTransport sanitizeTransport(uint8_t raw) {
@@ -1194,7 +1191,7 @@ String displayHintForItem(const SettingItem& item) {
         return "NORMAL OR REVERSED";
     }
     if(isRadioModeItem(item)) {
-        return "WI-FI / ESP-NOW / WEB+ESP";
+        return "CONTROLLER WI-FI ACCESS";
     }
     if(isConfirmActionItem(item)) {
         return "CHOOSE NO OR YES";
@@ -2372,7 +2369,7 @@ String toggleOffLabel(const SettingItem& item) {
         return "NO";
     }
     if(isRadioModeItem(item)) {
-        return "WI-FI";
+        return "DISABLED";
     }
     if(isMotorDirectionItem(item)) {
         return "CLOCKWISE";
@@ -2391,7 +2388,7 @@ String toggleOnLabel(const SettingItem& item) {
         return "YES";
     }
     if(isRadioModeItem(item)) {
-        return "ESP-NOW";
+        return "ENABLED";
     }
     if(isMotorDirectionItem(item)) {
         return "COUNTER-CLOCKWISE";
@@ -7256,7 +7253,7 @@ int32_t normalizeMenuValueForController(uint8_t menuNum, uint8_t itemIdx, int32_
     switch(menuNum) {
         case 1:
             if(itemIdx == RADIOMODE) {
-                return sanitizeControllerRadioMode(requestedValue);
+                return safeUserRadioMode(requestedValue);
             }
             if(itemIdx == SETMAX) {
                 const int32_t minValue = app.menuValues[1][SETMIN];
@@ -7627,9 +7624,9 @@ void serviceEspNowFirstPolicy() {
     }
 
     const int32_t mode = sanitizeControllerRadioMode(app.menuValues[1][RADIOMODE]);
-    if(mode == kControllerRadioDual || mode == kControllerRadioWeb) {
-        if(requestControllerRadioMode(kControllerRadioEspNow)) {
-            setToast("ESP-NOW linked", 900);
+    if(mode == kControllerRadioWeb) {
+        if(requestControllerRadioMode(kControllerRadioDual)) {
+            setToast("WEB+ESP mode", 900);
         }
     }
 }
@@ -8371,13 +8368,11 @@ void activateSelectedItem() {
             } else {
                 const int32_t nextValue = clampValue(app.draftValue, item.minValue, item.maxValue);
                 if(applyMenuValue(item, nextValue)) {
-                    if(isRadioModeItem(item) && nextValue != 0) {
-                        setToast("Pick controller", 1200);
-                        setScreen(Screen::EspNowPeers);
-                        requestEspNowDiscovery(true);
-                        return;
+                    if(isRadioModeItem(item)) {
+                        setToast(nextValue == kControllerRadioDual ? "Wi-Fi enabling" : "Wi-Fi disabling", 1200);
+                    } else {
+                        setToast(String("Saved ") + item.label);
                     }
-                    setToast(String("Saved ") + item.label);
                 } else {
                     setToast("Send failed", 1000);
                 }

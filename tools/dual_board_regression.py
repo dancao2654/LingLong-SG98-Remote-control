@@ -259,12 +259,12 @@ class DualBoardRegression:
         self.remote_command_ok("peer clear")
         self.controller_command_ok("api action reset_network", ack_cmd="action")
         self.controller_command_ok("api action idle", ack_cmd="action")
-        self.controller_command_ok("api set 1 4 3")
+        self.controller_command_ok("api set 1 4 1")
         self.remote_command_ok("transport espnow")
 
     def fresh_discovery_suite(self):
-        print("== Fresh no-info discovery suite ==")
-        self.controller_command_ok("api set 1 4 3")
+        print("== ESP-NOW-first no-info discovery suite ==")
+        self.controller_command_ok("api set 1 4 1")
         self.remote_command_ok("api action reset_network")
         self.remote_command_ok("peer clear")
         self.remote_command_ok("transport espnow")
@@ -274,9 +274,111 @@ class DualBoardRegression:
         self.expect(status["wifi"]["staSaved"] is False,
                     f"fresh remote should not have saved Wi-Fi during no-info test: {status}")
         controller_status = self.controller_status()
-        self.expect(controller_status["radioMode"] in ("WEB+ESP", "DUAL", "ESP-NOW"),
-                    f"fresh controller should remain reachable through ESP-NOW/dual: {controller_status}")
+        self.expect(controller_status["radioMode"] == "ESP-NOW",
+                    f"fresh controller should prefer ESP-NOW-only after link: {controller_status}")
+        self.expect(status["wifi"]["active"] is False,
+                    f"remote Wi-Fi should be off once ESP-NOW is active: {status}")
         self.load_probe("Fresh ESP-NOW discovery")
+
+    def web_mode_matrix_suite(self):
+        print("== Web mode matrix suite ==")
+        self.controller_command_ok("api action reset_network", ack_cmd="action")
+
+        controller_status = self.controller_status()
+        if controller_status.get("remoteRecoveryRequired"):
+            payload = self.controller_command_expect_fail("api set 1 4 0", ack_cmd="set")
+            self.expect("web-only" in payload.get("message", "").lower(),
+                        f"headless WEB-only rejection message was unexpected: {payload}")
+            controller_status = self.controller_status()
+            self.expect(controller_status["radioMode"] != "WEB",
+                        f"headless controller must not enter WEB-only mode: {controller_status}")
+        else:
+            self.controller_command_ok("api set 1 4 0")
+            controller_status = self.controller_status()
+            self.expect(controller_status["radioMode"] == "WEB" and controller_status["radioStatus"] == "AP only",
+                        f"plain WEB mode should be AP/Wi-Fi only, not dual: {controller_status}")
+            self.remote_command_ok("peer clear")
+            self.remote_command_ok("transport espnow")
+            time.sleep(6.0)
+            remote_status = self.remote_status()
+            self.expect(remote_status["transport"] == "ESP-NOW" and not remote_status["linkOnline"],
+                        f"plain WEB-only should not pretend ESP-NOW is reachable: {remote_status}")
+
+        self.controller_command_ok("api set 1 4 3")
+        controller_status = self.controller_status()
+        self.expect(controller_status["radioMode"] == "WEB+ESP",
+                    f"controller should enter WEB+ESP for web GUI/recovery: {controller_status}")
+        self.remote_command_ok("transport espnow")
+        self.remote_command_ok("peer scan")
+        remote_status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=35.0)
+        time.sleep(6.0)
+        controller_status = self.controller_status()
+        self.expect(controller_status["radioMode"] == "WEB+ESP" and "AP only" in controller_status["radioStatus"],
+                    f"WEB+ESP should keep the web GUI/recovery AP available while ESP-NOW is online: {controller_status}")
+        remote_status = self.remote_status()
+        self.expect(remote_status["wifi"]["active"] is False,
+                    f"remote Wi-Fi should stay off while using controller WEB+ESP over ESP-NOW: {remote_status}")
+        self.load_probe("WEB+ESP web GUI / recovery")
+
+        self.controller_command_ok("api set 1 4 1")
+        remote_status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=15.0)
+        controller_status = self.controller_status()
+        self.expect(controller_status["radioMode"] == "ESP-NOW",
+                    f"explicit ESP-NOW mode should turn controller Wi-Fi/AP off: {controller_status}")
+        self.expect(remote_status["wifi"]["active"] is False,
+                    f"remote Wi-Fi should remain off in explicit ESP-NOW mode: {remote_status}")
+
+    def full_size_controller_only_suite(self):
+        status = self.controller_status()
+        if status.get("remoteRecoveryRequired"):
+            print("== Full-size controller-only suite skipped: headless recovery profile active ==")
+            return
+
+        print("== Full-size controller-only suite ==")
+        self.controller_command_ok("api set 1 4 1")
+        self.remote_command_ok("transport ws")
+        time.sleep(8.0)
+        controller_status = self.controller_status()
+        self.expect(controller_status["radioMode"] == "ESP-NOW" and not controller_status["remoteRecoveryRequired"],
+                    f"full-size controller-only should remain locally usable in ESP-NOW mode: {controller_status}")
+
+        self.controller_command_ok("api set 1 4 3")
+        controller_status = self.controller_status()
+        self.expect(controller_status["radioMode"] == "WEB+ESP",
+                    f"full-size controller-only should allow local WEB+ESP for phone UI: {controller_status}")
+
+        self.controller_command_ok("api set 1 4 2")
+        controller_status = self.controller_status()
+        self.expect(controller_status["radioMode"] == "OFF",
+                    f"full-size controller-only should allow OFF because local recovery exists: {controller_status}")
+
+        self.controller_command_ok("api set 1 4 1")
+        self.remote_command_ok("transport espnow")
+        self.remote_command_ok("peer scan")
+        self.wait_remote_transport("ESP-NOW", require_online=True, timeout=35.0)
+
+    def headless_espnow_fallback_suite(self):
+        status = self.controller_status()
+        if not status.get("remoteRecoveryRequired"):
+            print("== Headless ESP-NOW fallback skipped: full-size local UI available ==")
+            return
+
+        print("== Headless ESP-NOW fallback suite ==")
+        self.controller_command_ok("api set 1 4 3")
+        self.controller_command_ok("api set 1 4 1")
+        self.remote_command_ok("transport ws")
+        recovered = self.wait_until(
+            "headless ESP-NOW boot fallback to WEB+ESP",
+            lambda: (lambda s: s if s["radioMode"] == "WEB+ESP" and s.get("radioRecovery") else None)(self.controller_status()),
+            timeout=75.0,
+            interval=1.0,
+        )
+        self.expect(recovered["radioMode"] == "WEB+ESP",
+                    f"headless controller did not fall back to WEB+ESP recovery: {recovered}")
+        self.remote_command_ok("transport espnow")
+        self.remote_command_ok("peer scan")
+        self.wait_remote_transport("ESP-NOW", require_online=True, timeout=35.0)
+        self.load_probe("Headless ESP-NOW fallback")
 
     def wait_remote_transport(self, expected_transport, require_online=False, timeout=20.0):
         def check():
@@ -503,6 +605,9 @@ class DualBoardRegression:
         try:
             if self.factory_network_reset:
                 self.fresh_discovery_suite()
+                self.web_mode_matrix_suite()
+                self.full_size_controller_only_suite()
+                self.headless_espnow_fallback_suite()
             self.headless_guard_suite()
             self.espnow_suite()
             if self.skip_websocket:

@@ -543,7 +543,7 @@ String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
     }
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Hold encoder to start";
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Writes drive baud for next boot";
-    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Web+ESP keeps both links active";
+    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Wi-Fi enabled keeps remote active";
     if(menuNum == 1 && (selectedIdx == Menu1Items::RESET || selectedIdx == Menu1Items::RESETNETWORK)) return "Reset needs encoder confirm";
     if(item.minValue == 0 && item.maxValue == 1 && item.scalar == 1) return "Rotate to choose";
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) return "Encoder opens";
@@ -557,7 +557,7 @@ String menuDetailHint(const menuEntry& item, int menuNum, int selectedIdx) {
         if(command->guidance != nullptr && command->guidance[0] != '\0') return command->guidance;
     }
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Encoder writes. Power cycle drive after the change.";
-    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Start exits. OFF wakes by local button.";
+    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Radio off is local-only standby.";
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Start cancels and goes back.";
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) return "Start goes back.";
     return "Encoder saves. Start cancels.";

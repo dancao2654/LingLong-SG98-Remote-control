@@ -26,8 +26,10 @@ bool wifiUiActive = false;
 bool apRunning = false;
 bool dnsRunning = false;
 bool serverStarted = false;
+unsigned long lastWebActivityAt = 0;
 
 constexpr uint32_t STA_RETRY_MS = 15000;
+constexpr uint32_t WEB_ACTIVITY_HOLD_MS = 120000;
 constexpr uint16_t DNS_PORT = 53;
 constexpr bool kDisableWifiModemSleepForTesting = true;
 
@@ -737,9 +739,9 @@ const char kPage[] PROGMEM = R"HTML(
         state.wizard.choice = '';
         showSetupOverlay(
           'AP-Only Mode Active',
-          'The board will stay on its own hotspot. The captive setup page will now close. After that, open the board AP URL in Safari whenever you want to control it.',
-          'http://192.168.4.1/',
-          true
+          'The board will stay on its own hotspot. The setup page remains available from the board AP, and the control console is available at the URL below.',
+          'http://192.168.4.1/control',
+          false
         );
       }
       await refresh();
@@ -837,8 +839,9 @@ const char kWifiSetupPage[] PROGMEM = R"HTML(
     input,button{font:inherit}
     input{width:100%;min-height:46px;padding:0 14px;border-radius:14px;border:1px solid rgba(134,186,234,.22);background:rgba(255,255,255,.05);color:var(--text)}
     .actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:16px 0}
-    button{border:0;border-radius:14px;min-height:46px;padding:0 14px;background:var(--blue);color:#04121d;font-weight:800;cursor:pointer}
-    button.secondary{background:rgba(255,255,255,.08);color:var(--text);border:1px solid rgba(134,186,234,.18)}
+    button,a.button{border:0;border-radius:14px;min-height:46px;padding:0 14px;background:var(--blue);color:#04121d;font-weight:800;cursor:pointer}
+    a.button{display:grid;place-items:center;text-decoration:none}
+    button.secondary,a.button.secondary{background:rgba(255,255,255,.08);color:var(--text);border:1px solid rgba(134,186,234,.18)}
     .net-head{display:flex;justify-content:space-between;gap:12px;align-items:baseline}
     .net-title{font-size:1rem}.net-meta{color:var(--muted);font-size:.86rem}
     .hint{padding:12px 14px;border-radius:16px;background:rgba(91,195,255,.08);border:1px solid rgba(91,195,255,.16);color:var(--text)}
@@ -864,6 +867,7 @@ const char kWifiSetupPage[] PROGMEM = R"HTML(
         <button id="apOnlyButton" class="secondary">Use AP Only</button>
         <button id="forgetButton" class="secondary">Forget Saved</button>
         <button id="scanButton" class="secondary">Scan Networks</button>
+        <a class="button secondary" href="/control">Control UI</a>
       </div>
       <div id="scanState" class="hint">No scan yet.</div>
       <div id="scanResults" class="scan-list"></div>
@@ -1106,6 +1110,10 @@ void sendAck(bool ok, const String& message) {
     sendJson(out, ok ? 200 : 400);
 }
 
+void noteWebActivity() {
+    lastWebActivityAt = millis();
+}
+
 void serveAppleSuccess() {
     static const char kAppleSuccessHtml[] PROGMEM =
         "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>";
@@ -1128,17 +1136,24 @@ void serveNcsiSuccess() {
 }
 
 void servePortalPage() {
+    noteWebActivity();
     server.sendHeader("Cache-Control", "no-store");
     server.send_P(200, "text/html; charset=utf-8", kPage);
 }
 
 void serveWifiSetupPage() {
+    noteWebActivity();
     server.sendHeader("Cache-Control", "no-store");
     server.send_P(200, "text/html; charset=utf-8", kWifiSetupPage);
 }
 
+bool shouldServeCaptivePortal() {
+    return !setupDone || !staEnabled || staSsid.isEmpty() ||
+           !(WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0);
+}
+
 void serveRootPage() {
-    if(!setupDone) {
+    if(shouldServeCaptivePortal()) {
         serveWifiSetupPage();
         return;
     }
@@ -1150,10 +1165,6 @@ void serveCaptivePortalPage() {
     server.send_P(200, "text/html; charset=utf-8", kWifiSetupPage);
 }
 
-bool shouldServeCaptivePortal() {
-    return !setupDone;
-}
-
 void serveCaptiveAwarePage() {
     if(!shouldServeCaptivePortal()) {
         serveCaptiveSuccess();
@@ -1163,16 +1174,19 @@ void serveCaptiveAwarePage() {
 }
 
 void handleStatus() {
+    noteWebActivity();
     remote_link_note_activity();
     sendJson(diag_api_status_json());
 }
 
 void handleSnapshot() {
+    noteWebActivity();
     remote_link_note_activity();
     sendJson(snapshotJson());
 }
 
 void handleSet() {
+    noteWebActivity();
     remote_link_note_activity();
     String message;
     const bool ok = diag_api_set_menu_value(static_cast<uint8_t>(server.arg("menu").toInt()),
@@ -1183,6 +1197,7 @@ void handleSet() {
 }
 
 void handleSetRpm() {
+    noteWebActivity();
     remote_link_note_activity();
     String message;
     const bool ok = diag_api_set_rpm(server.arg("value").toInt(), &message);
@@ -1190,6 +1205,7 @@ void handleSetRpm() {
 }
 
 void handleSetWeight() {
+    noteWebActivity();
     remote_link_note_activity();
     String message;
     const bool ok = diag_api_set_weight(server.arg("value").toInt(), &message);
@@ -1197,6 +1213,7 @@ void handleSetWeight() {
 }
 
 void handleAction() {
+    noteWebActivity();
     remote_link_note_activity();
     String message;
     const bool ok = diag_api_run_action(server.arg("action").c_str(),
@@ -1207,6 +1224,7 @@ void handleAction() {
 }
 
 void handleWifi() {
+    noteWebActivity();
     const String action = server.arg("action");
     if(server.method() == HTTP_GET || action.isEmpty()) {
         sendJson(wifiJson());
@@ -1265,6 +1283,8 @@ void configureRoutes() {
     }
 
     server.on("/", HTTP_GET, serveRootPage);
+    server.on("/setup", HTTP_GET, serveWifiSetupPage);
+    server.on("/control", HTTP_GET, servePortalPage);
     server.on("/hotspot-detect.html", HTTP_GET, serveCaptiveAwarePage);
     server.on("/library/test/success.html", HTTP_GET, serveCaptiveAwarePage);
     server.on("/generate_204", HTTP_GET, []() { if(shouldServeCaptivePortal()) serveCaptivePortalPage(); else serveAndroidSuccess(); });
@@ -1304,6 +1324,7 @@ bool startAccessPoint() {
     dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
     dnsRunning = true;
     apRunning = true;
+    lastWebActivityAt = millis();
     Serial.printf("[wifi] ap_on ssid=%s ap_ip=%s\n", apSsid.c_str(), apIpString().c_str());
     return true;
 }
@@ -1421,6 +1442,28 @@ bool wifi_ui_sta_connected() {
         return false;
     }
     return staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
+}
+
+bool wifi_ui_setup_complete() {
+    return setupDone;
+}
+
+bool wifi_ui_has_saved_network() {
+    return staEnabled && !staSsid.isEmpty();
+}
+
+uint8_t wifi_ui_ap_station_count() {
+    return static_cast<uint8_t>(WiFi.softAPgetStationNum());
+}
+
+bool wifi_ui_web_activity_recent() {
+    if(!wifiUiActive) {
+        return false;
+    }
+    if(WiFi.softAPgetStationNum() > 0) {
+        return true;
+    }
+    return lastWebActivityAt != 0 && (millis() - lastWebActivityAt) < WEB_ACTIVITY_HOLD_MS;
 }
 
 String wifi_ui_sta_ip() {

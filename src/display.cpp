@@ -1923,7 +1923,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                     tft->print(macCopy); 
                   } 
                 } else if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
-                  const char* radioLabels[2] = {"Web UI", "ESP-NOW"};
+                  const char* radioLabels[2] = {"Wi-Fi enabled", "Wi-Fi disabled"};
                   tft->getTextBounds(radioLabels[i], 0, 0, &x1, &y1, &w, &h);
                   int y = 100 + i * 50;
                   tft->setCursor((SCREEN_WIDTH - w) / 2, y);
@@ -1934,8 +1934,8 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
 
                   if(i == 0) {
                     tft->setFont(&FreeSans9pt7b);
-                    const char* msg1 = "Web UI keeps AP + home Wi-Fi.";
-                    const char* msg2 = "ESP-NOW disables the web server.";
+                    const char* msg1 = "Enabled opens AP + web.";
+                    const char* msg2 = "Disabled parks ESP-NOW.";
                     tft->setCursor(12, 184);
                     tft->print(msg1);
                     tft->setCursor(12, 204);

@@ -54,7 +54,7 @@
 #define default_minRPM 100
 #define default_motor_torque 100
 #define default_led_brightness 100
-#define default_radio_mode 3 // controller default: Web/AP + ESP-NOW
+#define default_radio_mode 1 // controller default: ESP-NOW first; headless can fall back to WEB+ESP recovery
 #define default_espnow_channel 1
 
 #define default_motor_ramp 1

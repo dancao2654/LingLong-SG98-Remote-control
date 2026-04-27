@@ -241,6 +241,14 @@ String remote_link_build_status_frame() {
     out += String(static_cast<unsigned long>(comm_get_jmc_baud()));
     out += sg98_protocol::kFrameSeparator;
     out += String(static_cast<unsigned long>(motor_get_preferred_jmc_baud()));
+    out += sg98_protocol::kFrameSeparator;
+    out += wifi_ui_setup_complete() ? '1' : '0';
+    out += sg98_protocol::kFrameSeparator;
+    out += wifi_ui_has_saved_network() ? '1' : '0';
+    out += sg98_protocol::kFrameSeparator;
+    out += wifi_ui_sta_connected() ? '1' : '0';
+    out += sg98_protocol::kFrameSeparator;
+    out += String(static_cast<unsigned>(wifi_ui_ap_station_count()));
     return out;
 }
 

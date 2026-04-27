@@ -32,7 +32,7 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Purge Settings", 0, 0, 0, 0, "PURGESETT", ""},           // 1
     {"GbW Settings", 0, 0, 0, 0, "GBWSETT", ""},               // 2
     {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 3
-    {"Radio mode", default_radio_mode, 0, 3, 1, "RADIOMODE", ""}, // 4
+    {"Wi-Fi", default_radio_mode, 0, 3, 1, "RADIOMODE", ""}, // 4
     {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 5
     {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 6
     {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 7

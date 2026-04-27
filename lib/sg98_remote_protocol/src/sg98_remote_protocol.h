@@ -47,6 +47,10 @@ struct StatusFrame {
   bool enterMenu = false;
   int32_t jmcBaud = 0;
   int32_t preferredJmcBaud = 0;
+  bool wifiSetupComplete = false;
+  bool wifiSaved = false;
+  bool wifiStaConnected = false;
+  int32_t wifiApStations = 0;
 };
 
 struct MenuFrame {
@@ -311,6 +315,18 @@ inline bool parseStatusFrame(const String& frame, StatusFrame* out) {
   out->jmcBaud = parsed;
   if(!detail::nextToken(frame, start, kFrameSeparator, &token) || !detail::parseIntToken(token, &parsed)) return false;
   out->preferredJmcBaud = parsed;
+  if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
+    out->wifiSetupComplete = parsed != 0;
+  }
+  if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
+    out->wifiSaved = parsed != 0;
+  }
+  if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
+    out->wifiStaConnected = parsed != 0;
+  }
+  if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
+    out->wifiApStations = parsed;
+  }
   return true;
 }
 

@@ -682,11 +682,16 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
             *message = "motor direction can only change while idle";
             return false;
         }
-        if(itemIdx == Menu1Items::RADIOMODE &&
-           controller_board_requires_remote_recovery() &&
-           radio_mode_from_value(requestedValue) == RADIO_MODE_OFF) {
-            *message = "radio off is unavailable on headless controller";
-            return false;
+        if(itemIdx == Menu1Items::RADIOMODE && controller_board_requires_remote_recovery()) {
+            const RadioMode requestedMode = radio_mode_from_value(requestedValue);
+            if(requestedMode == RADIO_MODE_OFF) {
+                *message = "radio off is unavailable on headless controller";
+                return false;
+            }
+            if(requestedMode == RADIO_MODE_WEB) {
+                *message = "web-only radio is unavailable on headless controller";
+                return false;
+            }
         }
         Menu1[itemIdx].value = clampMenuValue(Menu1[itemIdx], requestedValue);
         if(itemIdx == Menu1Items::SETMAX && Menu1[SETMAX].value < Menu1[SETMIN].value) {

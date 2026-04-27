@@ -8,6 +8,8 @@
 
 namespace {
 constexpr unsigned long HEADLESS_ESPNOW_BOOT_RECOVERY_MS = 60000;
+constexpr unsigned long HEADLESS_ESPNOW_REMOTE_LOST_MS = 60000;
+constexpr unsigned long ESPNOW_LINK_HEALTHY_MS = 5000;
 
 RadioMode currentMode = RADIO_MODE_WEB;
 bool initialized = false;
@@ -49,7 +51,10 @@ void startEspNowRecoveryWatchIfNeeded() {
 }
 
 void noteEspNowRecoverySatisfiedIfNeeded() {
-    if(!espnowRecoveryWatchActive || espnow_control_last_command_rx_at() == 0) {
+    const unsigned long lastCommandAt = espnow_control_last_command_rx_at();
+    if(!espnowRecoveryWatchActive ||
+       lastCommandAt == 0 ||
+       lastCommandAt < espnowRecoveryWatchStartedAt) {
         return;
     }
 
@@ -58,7 +63,7 @@ void noteEspNowRecoverySatisfiedIfNeeded() {
 }
 
 void switchToWebRecoverySession() {
-    if(!espnowRecoveryWatchActive || currentMode != RADIO_MODE_ESPNOW) {
+    if(currentMode != RADIO_MODE_ESPNOW) {
         return;
     }
 
@@ -68,11 +73,12 @@ void switchToWebRecoverySession() {
     const bool espOk = webOk && espnow_control_start(true);
     if(webOk) {
         currentMode = espOk ? RADIO_MODE_DUAL : RADIO_MODE_WEB;
+        Menu1[Menu1Items::RADIOMODE].value = currentMode;
         webRecoveryActive = true;
         disp_updateRequired = true;
         Serial.println(espOk
-                           ? "[radio] headless ESP-NOW timeout; WEB+ESP recovery active for this boot"
-                           : "[radio] headless ESP-NOW timeout; WEB recovery active for this boot");
+                           ? "[radio] headless ESP-NOW silent; WEB+ESP recovery active"
+                           : "[radio] headless ESP-NOW silent; WEB recovery active");
         return;
     }
 
@@ -84,18 +90,56 @@ void switchToWebRecoverySession() {
 }
 
 void serviceEspNowRecoveryWatch() {
-    if(!espnowRecoveryWatchActive) {
+    if(!controller_board_requires_remote_recovery() || currentMode != RADIO_MODE_ESPNOW) {
         return;
     }
 
     noteEspNowRecoverySatisfiedIfNeeded();
-    if(!espnowRecoveryWatchActive) {
+
+    const unsigned long now = millis();
+    const unsigned long lastCommandAt = espnow_control_last_command_rx_at();
+    if(espnowRecoveryWatchActive &&
+       now - espnowRecoveryWatchStartedAt >= HEADLESS_ESPNOW_BOOT_RECOVERY_MS) {
+        switchToWebRecoverySession();
+        return;
+    }
+    if(!espnowRecoveryWatchActive &&
+       lastCommandAt != 0 &&
+       now - lastCommandAt >= HEADLESS_ESPNOW_REMOTE_LOST_MS) {
+        switchToWebRecoverySession();
+    }
+}
+
+bool espNowLinkHealthy() {
+    const unsigned long lastCommandAt = espnow_control_last_command_rx_at();
+    return lastCommandAt != 0 && (millis() - lastCommandAt) <= ESPNOW_LINK_HEALTHY_MS;
+}
+
+void closeWebBridgeIfReady() {
+    if(currentMode != RADIO_MODE_DUAL) {
+        return;
+    }
+    if(!espNowLinkHealthy() || wifi_ui_web_activity_recent()) {
         return;
     }
 
-    const unsigned long now = millis();
-    if(now - espnowRecoveryWatchStartedAt >= HEADLESS_ESPNOW_BOOT_RECOVERY_MS) {
-        switchToWebRecoverySession();
+    Menu1[Menu1Items::RADIOMODE].value = RADIO_MODE_ESPNOW;
+    wifi_ui_stop();
+    espnow_control_stop();
+    if(espnow_control_start()) {
+        currentMode = RADIO_MODE_ESPNOW;
+        webRecoveryActive = false;
+        startEspNowRecoveryWatchIfNeeded();
+        disp_updateRequired = true;
+        Serial.println("[radio] WEB+ESP quiet and ESP-NOW healthy; parked in ESP-NOW");
+        return;
+    }
+
+    if(wifi_ui_start() && espnow_control_start(true)) {
+        currentMode = RADIO_MODE_DUAL;
+        Menu1[Menu1Items::RADIOMODE].value = RADIO_MODE_DUAL;
+        webRecoveryActive = true;
+        Serial.println("[radio] ESP-NOW park failed; WEB+ESP recovery remains active");
     }
 }
 }
@@ -113,6 +157,7 @@ void radio_mode_poll() {
     if(radio_mode_is_espnow() || radio_mode_is_dual()) {
         espnow_control_poll();
         serviceEspNowRecoveryWatch();
+        closeWebBridgeIfReady();
     }
 }
 
@@ -208,7 +253,8 @@ RadioMode radio_mode_from_value(int32_t value) {
 
 int32_t radio_mode_sanitize_value(int32_t value) {
     const RadioMode mode = radio_mode_from_value(value);
-    if(controller_board_requires_remote_recovery() && mode == RADIO_MODE_OFF) {
+    if(controller_board_requires_remote_recovery() &&
+       (mode == RADIO_MODE_OFF || mode == RADIO_MODE_WEB)) {
         return RADIO_MODE_DUAL;
     }
     return mode;
@@ -258,11 +304,11 @@ const char* radio_mode_label(RadioMode mode) {
 
 const char* radio_mode_value_label(int32_t value) {
     switch(radio_mode_from_value(value)) {
-        case RADIO_MODE_ESPNOW: return "ESP-NOW";
-        case RADIO_MODE_OFF: return "OFF";
-        case RADIO_MODE_DUAL: return "Web + ESP";
+        case RADIO_MODE_ESPNOW: return "Wi-Fi disabled";
+        case RADIO_MODE_OFF: return "Radio off";
+        case RADIO_MODE_DUAL: return "Wi-Fi enabled";
         case RADIO_MODE_WEB:
-        default: return "Web UI";
+        default: return "Wi-Fi only";
     }
 }
 
