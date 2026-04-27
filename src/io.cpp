@@ -156,6 +156,73 @@ bool shouldOpenDriveSelector() {
     return motor_get_drive_type() == DRIVE_TYPE_UNKNOWN || error == 1;
 }
 
+uint8_t menuItemCount(uint8_t menuNum) {
+    switch(menuNum) {
+        case 1: return NUM_MENU1_ITEMS;
+        case 2: return NUM_MENU2_ITEMS;
+        case 3: return NUM_MENU3_ITEMS;
+        case 4: return NUM_MENU4_ITEMS;
+        case 5: return NUM_MENU5_ITEMS;
+        default: return 0;
+    }
+}
+
+void ensureVisibleMenuSelection(uint8_t menuNum, int8_t& selected) {
+    const uint8_t count = menuItemCount(menuNum);
+    if(count == 0) {
+        selected = 0;
+        return;
+    }
+
+    int start = selected;
+    while(start < 0) start += count;
+    while(start >= count) start -= count;
+
+    if(motor_menu_item_visible(menuNum, static_cast<uint8_t>(start))) {
+        selected = static_cast<int8_t>(start);
+        return;
+    }
+
+    for(uint8_t offset = 1; offset < count; ++offset) {
+        const uint8_t idx = static_cast<uint8_t>((start + offset) % count);
+        if(motor_menu_item_visible(menuNum, idx)) {
+            selected = static_cast<int8_t>(idx);
+            return;
+        }
+    }
+
+    selected = 0;
+}
+
+void moveVisibleMenuSelection(uint8_t menuNum, int8_t& selected, int delta) {
+    const uint8_t count = menuItemCount(menuNum);
+    if(count == 0) {
+        selected = 0;
+        return;
+    }
+
+    ensureVisibleMenuSelection(menuNum, selected);
+    if(delta == 0) {
+        return;
+    }
+
+    const int direction = delta > 0 ? 1 : -1;
+    int remaining = abs(delta);
+    int current = selected;
+    while(remaining-- > 0) {
+        for(uint8_t guard = 0; guard < count; ++guard) {
+            current += direction;
+            if(current < 0) current = count - 1;
+            if(current >= count) current = 0;
+            if(motor_menu_item_visible(menuNum, static_cast<uint8_t>(current))) {
+                break;
+            }
+        }
+    }
+
+    selected = static_cast<int8_t>(current);
+}
+
 void openDriveSelector(States returnState) {
     motorSelectReturnState = returnState;
 
@@ -204,6 +271,27 @@ void applyDriveSelection() {
     controller_note_activity();
     state = motorSelectReturnState;
     display_show_action_feedback("Drive applied");
+}
+
+States networkInfoReturnState = MENU1;
+
+void syncWirelessMenuFromMain() {
+    Menu5[Menu5Items::WIRELESS_RADIO_MODE].value = Menu1[Menu1Items::RADIOMODE].value;
+}
+
+void openWirelessMenu() {
+    syncWirelessMenuFromMain();
+    enterMenu = false;
+    menu5Selected = Menu5Items::RETURN_FROM_WIRELESS;
+    state = MENU5;
+    disp_updateRequired = true;
+}
+
+void openNetworkInfo(States returnState) {
+    networkInfoReturnState = returnState;
+    enterMenu = false;
+    state = NETWORK_INFO;
+    disp_updateRequired = true;
 }
 }
 
@@ -418,11 +506,12 @@ void do_io() {
     if(state == MENU1) { 
         //Encoder routes
         if(enterMenu == false) { 
-            menu1Selected += Menu1[INVERT_SCROLL].value? encoder_change() : -encoder_change();
+            const int delta = Menu1[INVERT_SCROLL].value ? encoder_change() : -encoder_change();
+            moveVisibleMenuSelection(1, menu1Selected, delta);
             ledAction(0);
-        } 
-        if(menu1Selected > NUM_MENU1_ITEMS-1) menu1Selected = 0;
-        if(menu1Selected < 0) menu1Selected = NUM_MENU1_ITEMS - 1;
+        } else {
+            ensureVisibleMenuSelection(1, menu1Selected);
+        }
 
         if(enterMenu == true) { 
             const int encoderDelta = encoder_change();
@@ -459,16 +548,31 @@ void do_io() {
         }
 
         if(ENC_BUTTON_DOWN() == true) { 
+            ensureVisibleMenuSelection(1, menu1Selected);
             if(enterMenu == false) { 
                 if(menu1Selected == Menu1Items::PURGESETTINGS) state = MENU2;
                 if(menu1Selected == Menu1Items::GBWSETTINGS) state = MENU3;
-                if(menu1Selected == Menu1Items::JMCBAUDMENU) state = MENU4;
+                if(menu1Selected == Menu1Items::JMCBAUDMENU) {
+                    if(motor_jmc_tools_supported()) {
+                        state = MENU4;
+                    } else {
+                        display_show_action_feedback("JMC only");
+                    }
+                }
                 if(menu1Selected == Menu1Items::DRIVESETTINGS) openDriveSelector(MENU1);
+                if(menu1Selected == Menu1Items::RADIOMODE) {
+                    openWirelessMenu();
+                }
+                if(menu1Selected == Menu1Items::NETWORKINFO) {
+                    openNetworkInfo(MENU1);
+                }
                 if(menu1Selected == Menu1Items::EXITMENU) lastIdle? state = IDLE : state = IDLE_GBW; 
                 if(menu1Selected != Menu1Items::PURGESETTINGS &&
                    menu1Selected != Menu1Items::GBWSETTINGS &&
                    menu1Selected != Menu1Items::JMCBAUDMENU &&
                    menu1Selected != Menu1Items::DRIVESETTINGS &&
+                   menu1Selected != Menu1Items::RADIOMODE &&
+                   menu1Selected != Menu1Items::NETWORKINFO &&
                    menu1Selected != Menu1Items::EXITMENU) enterMenu = true; //entering settings adjustment
                 OriginalValue = Menu1[menu1Selected].value;
             } else { 
@@ -652,11 +756,97 @@ void do_io() {
         }
     }
 
-    if(state == MENU4) {
+    if(state == MENU5) {
         ledAction(0);
-        if(enterMenu == false) menu4Selected += Menu1[INVERT_SCROLL].value ? encoder_change() : -encoder_change();
-        if(menu4Selected > Menu4Items::NUM_MENU4_ITEMS - 1) menu4Selected = 0;
-        if(menu4Selected < 0) menu4Selected = Menu4Items::NUM_MENU4_ITEMS - 1;
+        if(enterMenu == false) {
+            syncWirelessMenuFromMain();
+            const int delta = Menu1[INVERT_SCROLL].value ? encoder_change() : -encoder_change();
+            moveVisibleMenuSelection(5, menu5Selected, delta);
+        } else {
+            ensureVisibleMenuSelection(5, menu5Selected);
+            if(menu5Selected == Menu5Items::WIRELESS_RADIO_MODE) {
+                Menu5[menu5Selected].value = radio_mode_next_user_value(Menu5[menu5Selected].value, encoder_change());
+            } else {
+                (void)encoder_change();
+            }
+        }
+
+        if(START_BUTTON() == true) {
+            if(enterMenu == false) {
+                menu5Selected = Menu5Items::RETURN_FROM_WIRELESS;
+                state = MENU1;
+            } else {
+                enterMenu = false;
+                syncWirelessMenuFromMain();
+            }
+        }
+
+        if(ENC_BUTTON_DOWN() == true) {
+            if(enterMenu == false) {
+                if(menu5Selected == Menu5Items::RETURN_FROM_WIRELESS) {
+                    state = MENU1;
+                } else if(menu5Selected == Menu5Items::WIRELESS_RADIO_MODE) {
+                    enterMenu = true;
+                    OriginalValue = Menu5[menu5Selected].value;
+                } else if(menu5Selected == Menu5Items::WIRELESS_NETWORK_INFO) {
+                    openNetworkInfo(MENU5);
+                } else if(menu5Selected == Menu5Items::WIRELESS_RESET_NETWORK) {
+                    wifi_ui_reset_network_settings();
+                    Menu1[Menu1Items::RESETNETWORK].value = 0;
+                    display_show_action_feedback("Network reset");
+                    disp_updateRequired = true;
+                }
+            } else {
+                enterMenu = false;
+                if(menu5Selected == Menu5Items::WIRELESS_RADIO_MODE) {
+                    const int16_t originalValue = Menu1[Menu1Items::RADIOMODE].value;
+                    Menu1[Menu1Items::RADIOMODE].value = Menu5[menu5Selected].value;
+                    if(radio_mode_apply()) {
+                        pdata_write(2);
+                        display_show_action_feedback("Wireless applied");
+                    } else {
+                        Menu1[Menu1Items::RADIOMODE].value = originalValue;
+                        syncWirelessMenuFromMain();
+                        disp_updateRequired = true;
+                    }
+                }
+                pdata_normalize();
+            }
+        }
+    }
+
+    if(state == NETWORK_INFO) {
+        ledAction(0);
+        (void)encoder_change();
+        static unsigned long lastNetworkInfoRefreshAt = 0;
+        if(lastNetworkInfoRefreshAt == 0 || millis() - lastNetworkInfoRefreshAt >= 1000) {
+            lastNetworkInfoRefreshAt = millis();
+            disp_updateRequired = true;
+        }
+
+        if(START_BUTTON() == true || ENC_BUTTON_DOWN() == true) {
+            state = networkInfoReturnState;
+            disp_updateRequired = true;
+        }
+    }
+
+    if(state == MENU4) {
+        if(!motor_jmc_tools_supported()) {
+            enterMenu = false;
+            menu4Selected = Menu4Items::RETURN_FROM_JMC_BAUD;
+            state = MENU1;
+            disp_updateRequired = true;
+            display_show_action_feedback("JMC only");
+            return;
+        }
+
+        ledAction(0);
+        if(enterMenu == false) {
+            const int delta = Menu1[INVERT_SCROLL].value ? encoder_change() : -encoder_change();
+            moveVisibleMenuSelection(4, menu4Selected, delta);
+        } else {
+            ensureVisibleMenuSelection(4, menu4Selected);
+        }
 
         if(START_BUTTON() == true) {
             if(enterMenu == false) {

@@ -625,6 +625,32 @@ bool motor_supports_ramp() {
     return motor_command_supported(MOTOR_COMMAND_RAMP_LEVEL);
 }
 
+bool motor_jmc_tools_supported() {
+    return motor_get_drive_type() == DRIVE_TYPE_JMC;
+}
+
+bool motor_menu_item_visible(uint8_t menuNum, uint8_t itemIdx) {
+    if(menuNum == 1 &&
+       (itemIdx == static_cast<uint8_t>(RESETNETWORK) ||
+        itemIdx == static_cast<uint8_t>(NETWORKINFO))) {
+        return false;
+    }
+
+    if(menuNum == 1 && itemIdx == static_cast<uint8_t>(SETMOTORRAMP)) {
+        return motor_command_supported(MOTOR_COMMAND_RAMP_LEVEL);
+    }
+
+    if(menuNum == 1 && itemIdx == static_cast<uint8_t>(JMCBAUDMENU)) {
+        return motor_jmc_tools_supported();
+    }
+
+    if(menuNum == 4) {
+        return motor_jmc_tools_supported();
+    }
+
+    return true;
+}
+
 bool motor_is_direction_reversed() {
     return motor_get_command_menu_value(MOTOR_COMMAND_DIRECTION) != 0;
 }

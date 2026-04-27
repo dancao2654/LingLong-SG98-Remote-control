@@ -67,13 +67,14 @@ constexpr int kMenuEncoderStepDivisor = 2;
 constexpr uint32_t kStaleEspNowLockClearMs = 2500;
 constexpr uint32_t kHomeTransportServiceMs = 450;
 constexpr uint32_t kHomePollingServiceMs = 650;
-constexpr uint32_t kHomeStatusPollIdleMs = 1800;
+constexpr uint32_t kHomeStatusPollIdleMs = 650;
 constexpr uint32_t kHomeStatusPollRunningMs = 1200;
 constexpr uint32_t kHomeStatusPollActiveMs = 2400;
 constexpr uint32_t kPersistentStateDebounceMs = 1200;
 constexpr uint32_t kValidUnixTime = 1700000000UL;
 constexpr uint32_t kDockWeatherHttpTimeoutMs = 4500;
 constexpr uint32_t kControllerEnvironmentRetryMs = 60000;
+constexpr uint32_t kEnvironmentShareRetryMs = 30000;
 constexpr bool kMotionHomeEnabled = false;
 constexpr uint32_t kMotionHomeConfirmWindowMs = 1500;
 constexpr uint32_t kMotionHomeMinGapMs = 200;
@@ -109,6 +110,8 @@ enum class LinkTransport : uint8_t {
 };
 
 constexpr uint8_t kScreenCount = 9;
+constexpr uint8_t kControllerMenuMax = 5;
+constexpr uint8_t kControllerMenuSlots = kControllerMenuMax + 1;
 constexpr uint8_t kEspNowPeerSlots = 6;
 constexpr uint8_t kPendingMenuWriteSlots = 8;
 constexpr uint16_t kPressureProfileSampleCount =
@@ -331,16 +334,17 @@ struct AppState {
     int32_t localInvertScroll = 0;
     int32_t localUiSounds = 1;
     int32_t localDriveSelection = 0;
-    int32_t menuValues[5][sg98_protocol::kMaxMenuValues] = {};
-    int32_t controllerMenuValues[5][sg98_protocol::kMaxMenuValues] = {};
-    bool menuSynced[5] = {};
-    bool controllerMenuSynced[5] = {};
+    int32_t menuValues[kControllerMenuSlots][sg98_protocol::kMaxMenuValues] = {};
+    int32_t controllerMenuValues[kControllerMenuSlots][sg98_protocol::kMaxMenuValues] = {};
+    bool menuSynced[kControllerMenuSlots] = {};
+    bool controllerMenuSynced[kControllerMenuSlots] = {};
     sg98_protocol::StatusFrame status;
     sg98_protocol::StatusFrame controllerStatus;
     bool hasStatus = false;
     bool hasControllerStatus = false;
     bool preferGbw = false;
     bool redraw = true;
+    bool deferredHomeStatusRedraw = false;
     bool radioModeKnown = false;
     bool espNowPeerConfigured = false;
     bool espNowReady = false;
@@ -371,8 +375,8 @@ struct AppState {
     uint32_t lastTransportServiceAt = 0;
     uint32_t lastPollingServiceAt = 0;
     uint32_t lastRoundInputDebugAt = 0;
-    uint32_t lastMenuPollAt[5] = {};
-    uint32_t lastMenuRxAt[5] = {};
+    uint32_t lastMenuPollAt[kControllerMenuSlots] = {};
+    uint32_t lastMenuRxAt[kControllerMenuSlots] = {};
     uint32_t lastEspNowDiscoveryAt = 0;
     uint32_t lastAutoRadioRequestAt = 0;
     uint32_t webRecoveryStartedAt = 0;
@@ -393,6 +397,7 @@ struct AppState {
     uint32_t dockClockLastNtpSyncAt = 0;
     uint32_t dockClockLastWeatherFetchAt = 0;
     uint32_t lastControllerEnvironmentRequestAt = 0;
+    uint32_t lastEnvironmentShareAt = 0;
     uint32_t homeWheelAnimatedAt = 0;
     uint32_t homeWheelFrameAt = 0;
     int16_t menuEncoderRemainder = 0;
@@ -444,7 +449,7 @@ struct SleepSnapshot {
     int32_t localInvertScroll = 0;
     int32_t localUiSounds = 1;
     int32_t localDriveSelection = 0;
-    int32_t menuValues[5][sg98_protocol::kMaxMenuValues] = {};
+    int32_t menuValues[kControllerMenuSlots][sg98_protocol::kMaxMenuValues] = {};
     uint8_t menuSyncedMask = 0;
     uint8_t transport = 0;
     bool preferGbw = false;
@@ -482,6 +487,7 @@ static_assert(NUM_MENU1_ITEMS <= sg98_protocol::kMaxMenuValues, "menu1 frame too
 static_assert(NUM_MENU2_ITEMS <= sg98_protocol::kMaxMenuValues, "menu2 frame too small");
 static_assert(NUM_MENU3_ITEMS <= sg98_protocol::kMaxMenuValues, "menu3 frame too small");
 static_assert(NUM_MENU4_ITEMS <= sg98_protocol::kMaxMenuValues, "menu4 frame too small");
+static_assert(NUM_MENU5_ITEMS <= sg98_protocol::kMaxMenuValues, "menu5 frame too small");
 
 constexpr SettingItem kMainItems[] = {
     {"Sleep time", ItemKind::Value, 1, SETSLEEP, 0, 300, 5, "min", nullptr, nullptr},
@@ -526,7 +532,7 @@ constexpr SettingItem kGbwItems[] = {
 };
 
 constexpr SettingItem kNetworkItems[] = {
-    {"Wi-Fi", ItemKind::Value, 1, RADIOMODE, 0, 3, 1, "", nullptr, nullptr},
+    {"Wireless", ItemKind::Value, 1, RADIOMODE, 0, 2, 1, "", nullptr, nullptr},
     {"Controller link", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "peers"},
     {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
 };
@@ -598,7 +604,7 @@ char g_consoleLineBuffer[160] = {};
 size_t g_consoleLineLen = 0;
 
 constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
-constexpr uint16_t kSleepSnapshotVersion = 8;
+constexpr uint16_t kSleepSnapshotVersion = 9;
 constexpr uint16_t kSleepSnapshotVersionLegacyUiSoundsOff = 6;
 constexpr uint32_t kInteractiveLoopWaitMs = 4;
 constexpr uint32_t kAnimatingLoopWaitMs = 16;
@@ -622,6 +628,7 @@ void serviceDockClock(uint32_t now);
 void shortenWaitForDockClock(uint32_t now, uint32_t* waitMs);
 void exitDockClock();
 void requestControllerEnvironment(bool force);
+bool sendRaw(const String& command);
 void markUserActivity(uint32_t now = millis());
 
 uint32_t currentWebSocketLoopIntervalMs() {
@@ -770,29 +777,29 @@ LinkTransport transportFromRadioMode(int32_t radioMode) {
 
 int32_t sanitizeControllerRadioMode(int32_t value) {
     if(value == kControllerRadioWeb || value == kControllerRadioEspNow ||
-       value == kControllerRadioOff || value == kControllerRadioDual) {
+       value == kControllerRadioOff) {
         return value;
+    }
+    if(value == kControllerRadioDual) {
+        return kControllerRadioWeb;
     }
     return kControllerRadioWeb;
 }
 
 int32_t safeUserRadioMode(int32_t value) {
-    const int32_t mode = sanitizeControllerRadioMode(value);
-    return (mode == kControllerRadioWeb || mode == kControllerRadioDual) ? kControllerRadioWeb
-                                                                         : kControllerRadioEspNow;
+    return sanitizeControllerRadioMode(value);
 }
 
 String radioModeValueLabel(int32_t value) {
     switch(sanitizeControllerRadioMode(value)) {
         case kControllerRadioWeb:
-            return "ENABLED";
+            return "WIFI";
         case kControllerRadioEspNow:
-            return "DISABLED";
+            return "ESP-NOW";
         case kControllerRadioOff:
             return "RADIO OFF";
-        case kControllerRadioDual:
         default:
-            return "ENABLED";
+            return "WIFI";
     }
 }
 
@@ -801,20 +808,42 @@ float normalizedRadioModeLevel(int32_t value) {
         case kControllerRadioWeb:
             return 1.0f;
         case kControllerRadioEspNow:
+            return 0.5f;
         case kControllerRadioOff:
             return 0.0f;
-        case kControllerRadioDual:
         default:
             return 1.0f;
     }
 }
 
 int32_t stepRadioModeValue(int32_t current, int delta) {
+    static const int32_t values[] = {
+        kControllerRadioWeb,
+        kControllerRadioEspNow,
+        kControllerRadioOff,
+    };
+    constexpr int count = sizeof(values) / sizeof(values[0]);
     if(delta == 0) {
         return safeUserRadioMode(current);
     }
-    return safeUserRadioMode(current) == kControllerRadioEspNow ? kControllerRadioWeb
-                                                                : kControllerRadioEspNow;
+
+    int selected = 0;
+    const int32_t sanitized = safeUserRadioMode(current);
+    for(int i = 0; i < count; ++i) {
+        if(values[i] == sanitized) {
+            selected = i;
+            break;
+        }
+    }
+
+    const int direction = delta > 0 ? 1 : -1;
+    int steps = abs(delta);
+    while(steps-- > 0) {
+        selected += direction;
+        if(selected < 0) selected = count - 1;
+        if(selected >= count) selected = 0;
+    }
+    return values[selected];
 }
 
 LinkTransport sanitizeTransport(uint8_t raw) {
@@ -1806,10 +1835,59 @@ void serviceDockClockWeather(uint32_t now) {
     https.end();
 }
 
+bool buildLocalEnvironmentFrame(sg98_protocol::EnvironmentFrame* out) {
+    if(out == nullptr) {
+        return false;
+    }
+
+    *out = {};
+    const time_t unixNow = time(nullptr);
+    if(unixNow >= static_cast<time_t>(kValidUnixTime)) {
+        out->timeValid = true;
+        out->unixTime = static_cast<uint32_t>(unixNow);
+    }
+
+    if(app.dockWeather.valid) {
+        out->weatherValid = true;
+        out->temperatureF = app.dockWeather.temperatureF;
+        out->weatherCode = app.dockWeather.weatherCode;
+        out->precipitationPercent = app.dockWeather.precipitationPercent;
+        out->location = app.dockWeather.location;
+    }
+
+    return out->timeValid || out->weatherValid;
+}
+
+void shareLocalEnvironmentWithController(uint32_t now) {
+    if(!isLinkOnline() || !app.hasControllerStatus || !app.controllerStatus.envSyncFieldsPresent) {
+        return;
+    }
+    if(app.lastEnvironmentShareAt != 0 && (now - app.lastEnvironmentShareAt) < kEnvironmentShareRetryMs) {
+        return;
+    }
+
+    sg98_protocol::EnvironmentFrame frame;
+    if(!buildLocalEnvironmentFrame(&frame)) {
+        return;
+    }
+
+    const bool controllerNeedsTime = frame.timeValid && !app.controllerStatus.envTimeValid;
+    const bool controllerNeedsWeather = frame.weatherValid && !app.controllerStatus.envWeatherValid;
+    if(!controllerNeedsTime && !controllerNeedsWeather) {
+        return;
+    }
+
+    if(sendRaw(sg98_protocol::environment(frame))) {
+        app.lastEnvironmentShareAt = now;
+    }
+}
+
 void serviceControllerEnvironmentSync(uint32_t now) {
     if(!isLinkOnline()) {
         return;
     }
+
+    shareLocalEnvironmentWithController(now);
 
     struct tm timeInfo = {};
     const bool needsTime = !localClockTime(&timeInfo);
@@ -2151,6 +2229,37 @@ bool isControllerLinkItem(const SettingItem& item) {
            strcmp(item.actionArg, "peers") == 0;
 }
 
+bool activeDriveIsJmc() {
+    if(app.hasStatus && app.status.drive.length() > 0) {
+        return app.status.drive == "JMC";
+    }
+    return currentLocalDriveSelection() == LOCAL_DRIVE_JMC;
+}
+
+bool settingItemVisible(const SettingItem& item) {
+    if(item.menuNum == 1 && item.itemIdx == SETMOTORRAMP) {
+        return activeDriveIsJmc();
+    }
+    if(item.action != nullptr && strcmp(item.action, "jmc_baud") == 0) {
+        return activeDriveIsJmc();
+    }
+    return true;
+}
+
+const SettingItem* filteredSettingItems(const SettingItem* rawItems, size_t rawCount, size_t* count) {
+    static SettingItem filtered[16];
+    size_t visibleCount = 0;
+    for(size_t idx = 0; idx < rawCount && visibleCount < arrayCount(filtered); ++idx) {
+        if(settingItemVisible(rawItems[idx])) {
+            filtered[visibleCount++] = rawItems[idx];
+        }
+    }
+    if(count != nullptr) {
+        *count = visibleCount;
+    }
+    return filtered;
+}
+
 bool macAddressEqual(const uint8_t* lhs, const uint8_t* rhs) {
     return lhs != nullptr && rhs != nullptr && memcmp(lhs, rhs, 6) == 0;
 }
@@ -2384,7 +2493,7 @@ String toggleOffLabel(const SettingItem& item) {
         return "NO";
     }
     if(isRadioModeItem(item)) {
-        return "DISABLED";
+        return "ESP-NOW";
     }
     if(isMotorDirectionItem(item)) {
         return "CLOCKWISE";
@@ -2403,7 +2512,7 @@ String toggleOnLabel(const SettingItem& item) {
         return "YES";
     }
     if(isRadioModeItem(item)) {
-        return "ENABLED";
+        return "WIFI";
     }
     if(isMotorDirectionItem(item)) {
         return "COUNTER-CLOCKWISE";
@@ -2496,7 +2605,7 @@ void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
     snapshot->localDriveSelection = app.localDriveSelection;
     memcpy(snapshot->menuValues, app.menuValues, sizeof(snapshot->menuValues));
     snapshot->menuSyncedMask = 0;
-    for(uint8_t menu = 0; menu < 5; ++menu) {
+    for(uint8_t menu = 0; menu < kControllerMenuSlots; ++menu) {
         if(app.menuSynced[menu]) {
             snapshot->menuSyncedMask |= static_cast<uint8_t>(1u << menu);
         }
@@ -2530,7 +2639,7 @@ void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTrans
     }
     setLocalDriveSelection(sanitizeLocalDriveSelection(snapshot.localDriveSelection));
     memcpy(app.menuValues, snapshot.menuValues, sizeof(app.menuValues));
-    for(uint8_t menu = 0; menu < 5; ++menu) {
+    for(uint8_t menu = 0; menu < kControllerMenuSlots; ++menu) {
         app.menuSynced[menu] = (snapshot.menuSyncedMask & static_cast<uint8_t>(1u << menu)) != 0;
     }
     app.preferGbw = snapshot.preferGbw;
@@ -2918,6 +3027,7 @@ bool isVisibleControllerMenuScreen(Screen screen, uint8_t menuNum) {
                        screen == Screen::AudioDiag;
         case 2: return screen == Screen::Purge;
         case 3: return screen == Screen::Gbw;
+        case 5: return screen == Screen::Network;
         default: return false;
     }
 }
@@ -2929,11 +3039,14 @@ bool statusFrameEqual(const sg98_protocol::StatusFrame& lhs, const sg98_protocol
            lhs.torquePercent == rhs.torquePercent && lhs.setWeightMg == rhs.setWeightMg &&
            lhs.currentWeightMg == rhs.currentWeightMg && lhs.currentMenu == rhs.currentMenu &&
            lhs.enterMenu == rhs.enterMenu && lhs.jmcBaud == rhs.jmcBaud &&
-           lhs.preferredJmcBaud == rhs.preferredJmcBaud;
+           lhs.preferredJmcBaud == rhs.preferredJmcBaud &&
+           lhs.envSyncFieldsPresent == rhs.envSyncFieldsPresent &&
+           lhs.envTimeValid == rhs.envTimeValid &&
+           lhs.envWeatherValid == rhs.envWeatherValid;
 }
 
 bool menuFrameMatchesCache(const sg98_protocol::MenuFrame& frame) {
-    if(frame.menuNum >= 5 || !app.menuSynced[frame.menuNum]) {
+    if(frame.menuNum == 0 || frame.menuNum > kControllerMenuMax || !app.menuSynced[frame.menuNum]) {
         return false;
     }
 
@@ -2980,7 +3093,9 @@ bool shouldRedrawForStatusFrame(const sg98_protocol::StatusFrame& previous,
 
     return status.state != previous.state || status.error != previous.error ||
            status.motor != previous.motor || status.drive != previous.drive ||
-           status.comm != previous.comm;
+           status.comm != previous.comm ||
+           status.setRpm != previous.setRpm ||
+           status.setWeightMg != previous.setWeightMg;
 }
 
 bool shouldRedrawForMenuFrame(const sg98_protocol::MenuFrame& frame, bool valuesChanged) {
@@ -3034,8 +3149,7 @@ const SettingItem* itemsForScreen(Screen screen, size_t* count) {
             if(count != nullptr) *count = arrayCount(kPurgeItems);
             return kPurgeItems;
         case Screen::Gbw:
-            if(count != nullptr) *count = arrayCount(kGbwItems);
-            return kGbwItems;
+            return filteredSettingItems(kGbwItems, arrayCount(kGbwItems), count);
         case Screen::Network:
             if(count != nullptr) *count = arrayCount(kNetworkItems);
             return kNetworkItems;
@@ -3043,8 +3157,7 @@ const SettingItem* itemsForScreen(Screen screen, size_t* count) {
             if(count != nullptr) *count = arrayCount(kAudioItems);
             return kAudioItems;
         case Screen::Drive:
-            if(count != nullptr) *count = arrayCount(kDriveItems);
-            return kDriveItems;
+            return filteredSettingItems(kDriveItems, arrayCount(kDriveItems), count);
         case Screen::EspNowPeers: {
             size_t peerCount = visibleEspNowPeerCount();
             const SettingItem* peerItems = kEspNowPeerItems;
@@ -3596,6 +3709,24 @@ void updateMenuRollAnimation() {
     }
 
     app.menuRollOffset *= 0.72f;
+    app.redraw = true;
+}
+
+void serviceDeferredHomeStatusRedraw() {
+    if(!app.deferredHomeStatusRedraw) {
+        return;
+    }
+
+    if(app.screen != Screen::Home) {
+        app.deferredHomeStatusRedraw = false;
+        return;
+    }
+
+    if(roundUiInteractionActive()) {
+        return;
+    }
+
+    app.deferredHomeStatusRedraw = false;
     app.redraw = true;
 }
 
@@ -4993,8 +5124,8 @@ void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, cons
                 focused ? 8 : clampI16(static_cast<int16_t>(8.0f + distance * static_cast<float>(farInsetMax)), 8, farInsetMax);
             const int16_t rowW = focused ? max<int16_t>(200, static_cast<int16_t>(content.w - 16))
                                          : max<int16_t>(180, static_cast<int16_t>(content.w - inset * 2));
-            const int16_t rowH = focused ? clampI16(static_cast<int16_t>(layout.rowH + 8), 52, 72)
-                                         : clampI16(static_cast<int16_t>(46.0f + prominence * 18.0f), 44, 62);
+            const int16_t rowH = focused ? clampI16(static_cast<int16_t>(layout.rowH + 2), 48, 64)
+                                         : clampI16(static_cast<int16_t>(42.0f + prominence * 16.0f), 38, 56);
             const int16_t rowX = static_cast<int16_t>(centerX - (rowW / 2));
             const int16_t rowY =
                 static_cast<int16_t>(centerY + lroundf(visualOffset * static_cast<float>(stepDistance)) - (rowH / 2));
@@ -5072,7 +5203,7 @@ void drawWaveshareRoundMenuList(RemoteCanvas& canvas, const Layout& layout, cons
         const uint16_t accent = dangerArmed ? kColorDanger : roundMenuItemAccentColor(item);
         const int16_t inset = clampI16(static_cast<int16_t>(8.0f + distance * static_cast<float>(farInsetMax)), 8, farInsetMax);
         const int16_t rowW = max<int16_t>(180, static_cast<int16_t>(content.w - inset * 2));
-        const int16_t rowH = clampI16(static_cast<int16_t>(46.0f + prominence * 24.0f), 44, 70);
+        const int16_t rowH = clampI16(static_cast<int16_t>(42.0f + prominence * 18.0f), 38, 62);
         const int16_t rowX = static_cast<int16_t>(centerX - (rowW / 2));
         const int16_t rowY = static_cast<int16_t>(centerY + lroundf(visualOffset * static_cast<float>(stepDistance)) - (rowH / 2));
         if(rowY + rowH < layout.modeBadge.y + layout.modeBadge.h || rowY > layout.footer.y) {
@@ -5138,10 +5269,13 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
         const String liveValue = isGbwState() ? weightValueText(app.status.currentWeightMg) : String(displayLiveRpm);
         const String primaryValue = showLiveValue ? liveValue : targetValue;
         const String unitText = isGbwState() ? "GRAMS" : "RPM";
+        const String unitLine = (isRunningState() && app.hasStatus)
+                                    ? unitText + "  TORQ " + String(app.status.torquePercent) + "%"
+                                    : unitText;
         const int16_t valueWidth = static_cast<int16_t>((layout.homeDialInnerRadius * 2) + 72);
-        const int16_t unitWidth = static_cast<int16_t>((layout.homeDialInnerRadius * 2) + 28);
+        const int16_t unitWidth = static_cast<int16_t>((layout.homeDialInnerRadius * 2) + 82);
         const RemoteTextStyle valueStyle = chooseValueTextStyle(primaryValue, valueWidth);
-        const RemoteTextStyle unitStyle = chooseLabelTextStyle(unitText, unitWidth);
+        const RemoteTextStyle unitStyle = chooseLabelTextStyle(unitLine, unitWidth);
         const uint16_t ringAccent = reverseLiveRpm ? reverseRpmAccentColor() : palette.accent;
         const uint16_t valueColor = isGbwState()
                                         ? blendColor565(kColorText, palette.accent, 0.24f)
@@ -5187,7 +5321,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                                 valueStyle,
                                 valueColor,
                                 palette.background);
-        canvas.drawCenteredText(fitTextToWidth(unitText,
+        canvas.drawCenteredText(fitTextToWidth(unitLine,
                                                unitWidth,
                                                unitStyle,
                                                12),
@@ -6957,14 +7091,14 @@ bool waitForEspNowCommandConfirmation(const String& command,
         if(app.lastStatusAt != startedStatusAt) {
             return true;
         }
-        if(menuNum < 5 && app.lastMenuRxAt[menuNum] != startedMenuAt) {
+        if(menuNum > 0 && menuNum <= kControllerMenuMax && app.lastMenuRxAt[menuNum] != startedMenuAt) {
             return true;
         }
         delay(1);
     }
     return app.lastAckAt != startedAckAt ||
            app.lastStatusAt != startedStatusAt ||
-           (menuNum < 5 && app.lastMenuRxAt[menuNum] != startedMenuAt);
+           (menuNum > 0 && menuNum <= kControllerMenuMax && app.lastMenuRxAt[menuNum] != startedMenuAt);
 }
 
 void refreshEspNowSessionForRetry(const uint8_t* mac) {
@@ -7094,13 +7228,13 @@ void serviceSafetyHeartbeat() {
 }
 
 void requestMenu(uint8_t menuNum) {
-    if(menuNum >= 1 && menuNum <= 4 && sendRaw(sg98_protocol::getMenu(menuNum))) {
+    if(menuNum >= 1 && menuNum <= kControllerMenuMax && sendRaw(sg98_protocol::getMenu(menuNum))) {
         app.lastMenuPollAt[menuNum] = millis();
     }
 }
 
 void requestAllMenus() {
-    for(uint8_t menuNum = 1; menuNum <= 4; ++menuNum) {
+    for(uint8_t menuNum = 1; menuNum <= kControllerMenuMax; ++menuNum) {
         requestMenu(menuNum);
     }
 }
@@ -7144,6 +7278,7 @@ void requestVisibleMenuIfNeeded(bool force) {
             break;
         case Screen::Network:
             requestIfDue(1);
+            requestIfDue(5);
             break;
         default:
             break;
@@ -7164,7 +7299,7 @@ bool pendingTargetSatisfied(const PendingTargetWrite& pending) {
 
 bool pendingMenuWriteSatisfied(const PendingMenuWrite& pending) {
     return pending.active &&
-           pending.menuNum < 5 &&
+           pending.menuNum > 0 && pending.menuNum <= kControllerMenuMax &&
            app.controllerMenuSynced[pending.menuNum] &&
            app.controllerMenuValues[pending.menuNum][pending.itemIdx] == pending.value;
 }
@@ -7485,7 +7620,7 @@ void applyPendingUiOverridesToStatusFrame(sg98_protocol::StatusFrame* status) {
 }
 
 void applyPendingUiOverridesToMenu(uint8_t menuNum) {
-    if(menuNum >= 5) {
+    if(menuNum == 0 || menuNum > kControllerMenuMax) {
         return;
     }
 
@@ -7523,10 +7658,11 @@ void rejectPendingActionFromStatusIfNeeded(const sg98_protocol::StatusFrame& sta
 }
 
 void servicePendingMenuPolls() {
-    bool requestedMenu[5] = {};
+    bool requestedMenu[kControllerMenuSlots] = {};
     const uint32_t now = millis();
     for(const PendingMenuWrite& pending : app.pendingMenuWrites) {
-        if(!pending.active || pending.menuNum >= 5 || requestedMenu[pending.menuNum]) {
+        if(!pending.active || pending.menuNum == 0 || pending.menuNum > kControllerMenuMax ||
+           requestedMenu[pending.menuNum]) {
             continue;
         }
         if((now - app.lastMenuPollAt[pending.menuNum]) >= remote_config::kPendingMenuPollMs) {
@@ -7778,14 +7914,21 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
        previousWeightMg != app.weightMg) {
         markPersistentStateDirty();
     }
-    if(shouldRedrawForStatusFrame(previous, app.status, hadStatus, valuesChanged)) {
+    if(!hadStatus || previous.drive != app.status.drive) {
+        sanitizeSelections();
         app.redraw = true;
+    }
+    if(shouldRedrawForStatusFrame(previous, app.status, hadStatus, valuesChanged)) {
+        app.deferredHomeStatusRedraw = false;
+        app.redraw = true;
+    } else if(valuesChanged && useRoundNavigation() && app.screen == Screen::Home && roundUiInteractionActive()) {
+        app.deferredHomeStatusRedraw = true;
     }
     requestFullControllerRefreshOnLinkOnline(wasOnline);
 }
 
 void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
-    if(frame.menuNum >= 5) {
+    if(frame.menuNum == 0 || frame.menuNum > kControllerMenuMax) {
         return;
     }
 
@@ -8196,7 +8339,7 @@ void syncPolling() {
     servicePendingMenuPolls();
 
     if(millis() - app.lastBackgroundMenuPollAt >= remote_config::kBackgroundMenuPollMs) {
-        for(uint8_t menuNum = 1; menuNum <= 4; ++menuNum) {
+        for(uint8_t menuNum = 1; menuNum <= kControllerMenuMax; ++menuNum) {
             requestMenu(menuNum);
         }
         app.lastBackgroundMenuPollAt = millis();
@@ -8208,6 +8351,10 @@ void syncPolling() {
 }
 
 bool applyMenuValue(const SettingItem& item, int32_t value) {
+    if(!settingItemVisible(item)) {
+        return false;
+    }
+
     if(isInvertScrollItem(item)) {
         app.localInvertScroll = clampValue(value, 0, 1);
         markPersistentStateDirty();
@@ -8331,6 +8478,10 @@ void runConfirmAction(const SettingItem& item) {
                                         0);
         }
     } else if(strcmp(item.action, "jmc_baud") == 0 && item.actionArg != nullptr) {
+        if(!activeDriveIsJmc()) {
+            setToast("JMC only", 1000);
+            return;
+        }
         const int32_t baud = atoi(item.actionArg);
         queued = queuePendingAction(PendingActionKind::JmcBaud,
                                     PendingActionReflection::JmcBaud,
@@ -8391,7 +8542,11 @@ void activateSelectedItem() {
                 const int32_t nextValue = clampValue(app.draftValue, item.minValue, item.maxValue);
                 if(applyMenuValue(item, nextValue)) {
                     if(isRadioModeItem(item)) {
-                        setToast(transportFromRadioMode(nextValue) == LinkTransport::WebSocket ? "Wi-Fi enabling" : "Wi-Fi disabling", 1200);
+                        if(safeUserRadioMode(nextValue) == kControllerRadioOff) {
+                            setToast("Radio off", 1200);
+                        } else {
+                            setToast(transportFromRadioMode(nextValue) == LinkTransport::WebSocket ? "WiFi mode" : "ESP-NOW mode", 1200);
+                        }
                     } else {
                         setToast(actionFeedbackLabel(item), 1200);
                     }
@@ -9563,6 +9718,7 @@ uint8_t menuValueCount(uint8_t menuNum) {
         case 2: return NUM_MENU2_ITEMS;
         case 3: return NUM_MENU3_ITEMS;
         case 4: return NUM_MENU4_ITEMS;
+        case 5: return NUM_MENU5_ITEMS;
         default: return 0;
     }
 }
@@ -9574,7 +9730,7 @@ const SettingItem* findSettingItem(uint8_t menuNum, uint8_t itemIdx) {
         for(size_t idx = 0; idx < groupCounts[group]; ++idx) {
             const SettingItem& item = groups[group][idx];
             if(item.menuNum == menuNum && item.itemIdx == itemIdx) {
-                return &item;
+                return settingItemVisible(item) ? &item : nullptr;
             }
         }
     }
@@ -9620,6 +9776,12 @@ void appendRemoteControllerStatusJson(String& out) {
     out += String(app.status.jmcBaud);
     out += ",\"preferredJmcBaud\":";
     out += String(app.status.preferredJmcBaud);
+    out += ",\"envSyncFieldsPresent\":";
+    out += app.status.envSyncFieldsPresent ? "true" : "false";
+    out += ",\"envTimeValid\":";
+    out += app.status.envTimeValid ? "true" : "false";
+    out += ",\"envWeatherValid\":";
+    out += app.status.envWeatherValid ? "true" : "false";
     out += '}';
 }
 
@@ -9757,7 +9919,7 @@ void appendRemoteSnapshotJson(String& out) {
     out += "\"status\":";
     appendRemoteStatusJson(out);
     out += ",\"menus\":[";
-    for(uint8_t menuNum = 1; menuNum <= 4; ++menuNum) {
+    for(uint8_t menuNum = 1; menuNum <= kControllerMenuMax; ++menuNum) {
         if(menuNum > 1) {
             out += ',';
         }
@@ -10575,6 +10737,12 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
     }
 
     if(action == "jmc_baud") {
+        if(!activeDriveIsJmc()) {
+            if(message != nullptr) {
+                *message = "JMC baud unavailable for active drive";
+            }
+            return false;
+        }
         const String baud = takeToken(&commandLine);
         if(baud.length() == 0) {
             if(message != nullptr) {
@@ -11196,6 +11364,8 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("home_anim", sectionStartUs, loopStartUs, input);
     updateMenuRollAnimation();
     sectionStartUs = traceLoopStep("menu_anim", sectionStartUs, loopStartUs, input);
+    serviceDeferredHomeStatusRedraw();
+    sectionStartUs = traceLoopStep("deferred_status", sectionStartUs, loopStartUs, input);
     remoteConsoleMaybeStream();
     sectionStartUs = traceLoopStep("console_stream", sectionStartUs, loopStartUs, input);
     enterIdleSleepIfNeeded();

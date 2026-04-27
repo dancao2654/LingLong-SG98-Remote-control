@@ -68,7 +68,6 @@ constexpr uint32_t WEB_ACTIVITY_HOLD_MS = 120000;
 constexpr uint32_t STA_CONNECT_AFTER_HTTP_ACK_MS = 1200;
 constexpr uint32_t AP_DHCP_LEASE_WATCHDOG_MS = 8000;
 constexpr uint32_t AP_RESTART_COOLDOWN_MS = 15000;
-constexpr uint32_t HTTP_SERVICE_REFRESH_AFTER_CLIENT_MS = 120;
 constexpr uint32_t REMOTE_WS_MIN_FREE_HEAP = 30000;
 constexpr uint16_t WIFI_SCAN_MAX_MS_PER_CHANNEL = 160;
 constexpr uint16_t DNS_PORT = 53;
@@ -1463,6 +1462,36 @@ void serveNcsiSuccess() {
 bool shouldServeCaptivePortal();
 void serveWifiSetupPage();
 
+void serveAppleCaptiveResult(const char* label) {
+    ++captiveProbeHits;
+    noteCaptiveRequest(label);
+    if(shouldServeCaptivePortal()) {
+        serveWifiSetupPage();
+        return;
+    }
+    serveAppleSuccess();
+}
+
+void serveAndroidCaptiveResult(const char* label) {
+    ++captiveProbeHits;
+    noteCaptiveRequest(label);
+    if(shouldServeCaptivePortal()) {
+        serveWifiSetupPage();
+        return;
+    }
+    serveAndroidSuccess();
+}
+
+void serveNcsiCaptiveResult() {
+    ++captiveProbeHits;
+    noteCaptiveRequest("ncsi");
+    if(shouldServeCaptivePortal()) {
+        serveWifiSetupPage();
+        return;
+    }
+    serveNcsiSuccess();
+}
+
 void serveCaptivePortalApi() {
     ++captiveApiHits;
     noteCaptiveRequest("api");
@@ -1577,13 +1606,15 @@ void serveCaptiveSetupRedirect() {
 void serveCaptiveProbePage() {
     ++captiveProbeHits;
     noteCaptiveRequest("probe");
+    if(shouldServeCaptivePortal()) {
+        serveWifiSetupPage();
+        return;
+    }
     serveCaptiveSuccess();
 }
 
 void serveCaptiveAwarePage() {
-    ++captiveProbeHits;
-    noteCaptiveRequest("aware");
-    serveCaptiveSuccess();
+    serveAppleCaptiveResult("aware");
 }
 
 void handleStatus() {
@@ -1703,15 +1734,15 @@ void configureRoutes() {
     server.on("/", HTTP_GET, serveRootPage);
     server.on("/setup", HTTP_GET, serveWifiSetupPage);
     server.on("/control", HTTP_GET, servePortalPage);
-    server.on("/hotspot-detect.html", HTTP_GET, serveCaptiveAwarePage);
-    server.on("/library/test/success.html", HTTP_GET, serveCaptiveAwarePage);
-    server.on("/generate_204", HTTP_GET, serveAndroidSuccess);
-    server.on("/gen_204", HTTP_GET, serveAndroidSuccess);
-    server.on("/connecttest.txt", HTTP_GET, serveCaptiveSuccess);
-    server.on("/redirect", HTTP_GET, serveCaptiveAwarePage);
-    server.on("/canonical.html", HTTP_GET, serveCaptiveAwarePage);
-    server.on("/ncsi.txt", HTTP_GET, serveNcsiSuccess);
-    server.on("/success.txt", HTTP_GET, serveCaptiveSuccess);
+    server.on("/hotspot-detect.html", HTTP_GET, []() { serveAppleCaptiveResult("hotspot"); });
+    server.on("/library/test/success.html", HTTP_GET, []() { serveAppleCaptiveResult("apple"); });
+    server.on("/generate_204", HTTP_GET, []() { serveAndroidCaptiveResult("generate_204"); });
+    server.on("/gen_204", HTTP_GET, []() { serveAndroidCaptiveResult("gen_204"); });
+    server.on("/connecttest.txt", HTTP_GET, []() { serveAppleCaptiveResult("connecttest"); });
+    server.on("/redirect", HTTP_GET, []() { serveAppleCaptiveResult("redirect"); });
+    server.on("/canonical.html", HTTP_GET, []() { serveAppleCaptiveResult("canonical"); });
+    server.on("/ncsi.txt", HTTP_GET, serveNcsiCaptiveResult);
+    server.on("/success.txt", HTTP_GET, []() { serveAppleCaptiveResult("success"); });
     server.on("/favicon.ico", HTTP_GET, serveEmptyIcon);
     server.on("/.well-known/captive-portal", HTTP_GET, serveCaptivePortalApi);
     server.on("/api/status", HTTP_GET, handleStatus);
@@ -1939,12 +1970,9 @@ void wifi_ui_poll() {
     if(!staConnected) {
         captiveSetupComplete = false;
     }
-    const bool setupApNeeded = !staEnabled || staSsid.isEmpty() || !setupDone || !staConnected;
+    const bool setupApNeeded = !staEnabled || staSsid.isEmpty() || !setupDone || !staConnected || !captiveSetupComplete;
     if(setupApNeeded && !apRunning) {
         startAccessPoint();
-    } else if(!setupApNeeded && apRunning) {
-        stopAccessPoint();
-        Serial.printf("[wifi] home Wi-Fi online; AP closed sta_ip=%s\n", staIpString().c_str());
     }
 
     const uint8_t apStations = apRunning ? WiFi.softAPgetStationNum() : 0;
@@ -2063,6 +2091,20 @@ bool wifi_ui_save_network_settings(const String& ssid, const String& password) {
 
 String wifi_ui_sta_ip() {
     return wifi_ui_sta_connected() ? staIpString() : "";
+}
+
+String wifi_ui_sta_ssid() {
+    if(wifi_ui_sta_connected()) {
+        const String connectedSsid = WiFi.SSID();
+        if(!connectedSsid.isEmpty()) {
+            return connectedSsid;
+        }
+    }
+    return staSsid;
+}
+
+int32_t wifi_ui_sta_rssi() {
+    return wifi_ui_sta_connected() ? WiFi.RSSI() : 0;
 }
 
 String wifi_ui_lcd_status() {

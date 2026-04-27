@@ -38,8 +38,10 @@ const char* stateTextCompact(States value) {
         case MENU2: return "MENU2";
         case MENU3: return "MENU3";
         case MENU4: return "MENU4";
+        case MENU5: return "MENU5";
         case CALIBRATING: return "CALIBRATING";
         case MOTOR_SELECT: return "MOTOR_SELECT";
+        case NETWORK_INFO: return "NETWORK_INFO";
         default: return "UNKNOWN";
     }
 }
@@ -116,6 +118,9 @@ const menuEntry* menuByNumber(uint8_t menuNum) {
         case 2: return Menu2;
         case 3: return Menu3;
         case 4: return Menu4;
+        case 5:
+            Menu5[Menu5Items::WIRELESS_RADIO_MODE].value = Menu1[Menu1Items::RADIOMODE].value;
+            return Menu5;
         default: return nullptr;
     }
 }
@@ -126,6 +131,7 @@ uint8_t menuCountByNumber(uint8_t menuNum) {
         case 2: return NUM_MENU2_ITEMS;
         case 3: return NUM_MENU3_ITEMS;
         case 4: return NUM_MENU4_ITEMS;
+        case 5: return NUM_MENU5_ITEMS;
         default: return 0;
     }
 }
@@ -136,6 +142,7 @@ uint8_t currentMenuNumber() {
         case MENU2: return 2;
         case MENU3: return 3;
         case MENU4: return 4;
+        case MENU5: return 5;
         default: return 0;
     }
 }
@@ -249,6 +256,10 @@ String remote_link_build_status_frame() {
     out += wifi_ui_sta_connected() ? '1' : '0';
     out += sg98_protocol::kFrameSeparator;
     out += String(static_cast<unsigned>(wifi_ui_ap_station_count()));
+    out += sg98_protocol::kFrameSeparator;
+    out += controller_env_time_valid() ? '1' : '0';
+    out += sg98_protocol::kFrameSeparator;
+    out += controller_env_weather_valid() ? '1' : '0';
     return out;
 }
 
@@ -292,6 +303,14 @@ bool remote_link_handle_command(const String& rawPayload, String* message, bool*
     if(cmd.length() == 0) {
         setMessage(message, "empty command");
         return false;
+    }
+
+    sg98_protocol::EnvironmentFrame environmentFrame;
+    if(sg98_protocol::parseEnvironmentFrame(cmd, &environmentFrame)) {
+        const bool applied = controller_env_apply_peer_frame(environmentFrame);
+        setMessage(message, applied ? "env synced" : "env ok");
+        remote_link_note_activity();
+        return true;
     }
 
     String cmdUpper = cmd;

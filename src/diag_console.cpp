@@ -43,8 +43,10 @@ const char* stateText(States value) {
         case MENU2: return "MENU2";
         case MENU3: return "MENU3";
         case MENU4: return "MENU4";
+        case MENU5: return "MENU5";
         case CALIBRATING: return "CALIBRATING";
         case MOTOR_SELECT: return "MOTOR_SELECT";
+        case NETWORK_INFO: return "NETWORK_INFO";
     }
     return "UNKNOWN";
 }
@@ -70,8 +72,10 @@ const char* shortStateText(States value) {
         case MENU2: return "MENU2";
         case MENU3: return "MENU3";
         case MENU4: return "MENU4";
+        case MENU5: return "MENU5";
         case CALIBRATING: return "CAL";
         case MOTOR_SELECT: return "DRVSEL";
+        case NETWORK_INFO: return "NET";
     }
     return "UNK";
 }
@@ -245,6 +249,7 @@ const menuEntry* menuByNumber(uint8_t menuNum) {
         case 2: return Menu2;
         case 3: return Menu3;
         case 4: return Menu4;
+        case 5: return Menu5;
         default: return nullptr;
     }
 }
@@ -255,8 +260,20 @@ uint8_t menuCountByNumber(uint8_t menuNum) {
         case 2: return NUM_MENU2_ITEMS;
         case 3: return NUM_MENU3_ITEMS;
         case 4: return NUM_MENU4_ITEMS;
+        case 5: return NUM_MENU5_ITEMS;
         default: return 0;
     }
+}
+
+uint8_t visibleMenuCountByNumber(uint8_t menuNum) {
+    const uint8_t count = menuCountByNumber(menuNum);
+    uint8_t visibleCount = 0;
+    for(uint8_t idx = 0; idx < count; ++idx) {
+        if(motor_menu_item_visible(menuNum, idx)) {
+            ++visibleCount;
+        }
+    }
+    return visibleCount;
 }
 
 const char* menuLabel(uint8_t menuNum) {
@@ -265,6 +282,7 @@ const char* menuLabel(uint8_t menuNum) {
         case 2: return "Purge Settings";
         case 3: return "GbW Settings";
         case 4: return "JMC Baud";
+        case 5: return "Wireless";
         default: return "Unknown";
     }
 }
@@ -275,6 +293,7 @@ States menuStateByNumber(uint8_t menuNum) {
         case 2: return MENU2;
         case 3: return MENU3;
         case 4: return MENU4;
+        case 5: return MENU5;
         default: return IDLE;
     }
 }
@@ -285,6 +304,7 @@ int8_t* menuSelectionByNumber(uint8_t menuNum) {
         case 2: return &menu2Selected;
         case 3: return &menu3Selected;
         case 4: return &menu4Selected;
+        case 5: return &menu5Selected;
         default: return nullptr;
     }
 }
@@ -295,6 +315,7 @@ uint8_t currentMenuNumber() {
         case MENU2: return 2;
         case MENU3: return 3;
         case MENU4: return 4;
+        case MENU5: return 5;
         default: return 0;
     }
 }
@@ -370,15 +391,21 @@ void apiPrintDevice() {
 }
 
 const char* apiMenuItemKind(uint8_t menuNum, uint8_t itemIdx) {
+    if(!motor_menu_item_visible(menuNum, itemIdx)) {
+        return "hidden";
+    }
+
     if(menuNum == 1) {
         switch(itemIdx) {
             case Menu1Items::EXITMENU: return "nav";
             case Menu1Items::PURGESETTINGS:
             case Menu1Items::GBWSETTINGS:
             case Menu1Items::JMCBAUDMENU:
+            case Menu1Items::RADIOMODE:
                 return "submenu";
             case Menu1Items::DRIVESETTINGS:
             case Menu1Items::CALIBRATE:
+            case Menu1Items::NETWORKINFO:
                 return "action";
             case Menu1Items::RESET:
                 return "danger_action";
@@ -403,15 +430,35 @@ const char* apiMenuItemKind(uint8_t menuNum, uint8_t itemIdx) {
         return "baud_action";
     }
 
+    if(menuNum == 5) {
+        if(itemIdx == Menu5Items::RETURN_FROM_WIRELESS) return "nav";
+        if(itemIdx == Menu5Items::WIRELESS_NETWORK_INFO) return "action";
+        if(itemIdx == Menu5Items::WIRELESS_RESET_NETWORK) return "danger_action";
+        if(itemIdx == Menu5Items::WIRELESS_RADIO_MODE) return "value";
+    }
+
     return "unknown";
 }
 
 const char* apiMenuItemAction(uint8_t menuNum, uint8_t itemIdx) {
+    if(!motor_menu_item_visible(menuNum, itemIdx)) {
+        return nullptr;
+    }
+
     if(menuNum == 1) {
         switch(itemIdx) {
             case Menu1Items::DRIVESETTINGS: return "drive_select";
             case Menu1Items::CALIBRATE: return "calibrate";
+            case Menu1Items::NETWORKINFO: return "network_info";
             case Menu1Items::RESET: return "reset_defaults";
+            default: return nullptr;
+        }
+    }
+
+    if(menuNum == 5) {
+        switch(itemIdx) {
+            case Menu5Items::WIRELESS_NETWORK_INFO: return "network_info";
+            case Menu5Items::WIRELESS_RESET_NETWORK: return "reset_network";
             default: return nullptr;
         }
     }
@@ -424,11 +471,16 @@ const char* apiMenuItemAction(uint8_t menuNum, uint8_t itemIdx) {
 }
 
 uint8_t apiTargetMenu(uint8_t menuNum, uint8_t itemIdx) {
+    if(!motor_menu_item_visible(menuNum, itemIdx)) {
+        return 0;
+    }
+
     if(menuNum == 1) {
         switch(itemIdx) {
             case Menu1Items::PURGESETTINGS: return 2;
             case Menu1Items::GBWSETTINGS: return 3;
             case Menu1Items::JMCBAUDMENU: return 4;
+            case Menu1Items::RADIOMODE: return 5;
             default: return 0;
         }
     }
@@ -538,13 +590,14 @@ void apiPrintMenu(uint8_t menuNum) {
     const uint8_t count = menuCountByNumber(menuNum);
     const int8_t* selectedPtr = menuSelectionByNumber(menuNum);
     const uint8_t activeMenu = currentMenuNumber();
+    const uint8_t visibleCount = visibleMenuCountByNumber(menuNum);
 
     Serial.print("{\"type\":\"menu\",\"menu\":");
     Serial.print(static_cast<unsigned>(menuNum));
     Serial.print(",\"label\":");
     jsonPrintQuoted(menuLabel(menuNum));
     Serial.print(",\"count\":");
-    Serial.print(static_cast<unsigned>(count));
+    Serial.print(static_cast<unsigned>(visibleCount));
     Serial.print(",\"active\":");
     Serial.print(activeMenu == menuNum ? "true" : "false");
     Serial.print(",\"selected\":");
@@ -552,6 +605,9 @@ void apiPrintMenu(uint8_t menuNum) {
     Serial.println("}");
 
     for(uint8_t idx = 0; idx < count; ++idx) {
+        if(!motor_menu_item_visible(menuNum, idx)) {
+            continue;
+        }
         const menuEntry& entry = menu[idx];
         const char* kind = apiMenuItemKind(menuNum, idx);
         Serial.print("{\"type\":\"item\",\"menu\":");
@@ -612,6 +668,7 @@ void apiPrintSnapshot() {
     apiPrintMenu(2);
     apiPrintMenu(3);
     apiPrintMenu(4);
+    apiPrintMenu(5);
     Serial.println("{\"type\":\"snapshot_end\"}");
 }
 
@@ -688,7 +745,13 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
         return false;
     }
 
-    if(!apiMenuItemWritable(menuNum, itemIdx)) {
+    if(!motor_menu_item_visible(menuNum, itemIdx)) {
+        *message = "item unavailable for active drive";
+        return false;
+    }
+
+    const bool legacyRadioModeWrite = menuNum == 1 && itemIdx == Menu1Items::RADIOMODE;
+    if(!legacyRadioModeWrite && !apiMenuItemWritable(menuNum, itemIdx)) {
         *message = "item is not writable";
         return false;
     }
@@ -749,6 +812,32 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
         } else {
             persistMenuValue(menuNum, itemIdx);
         }
+    } else if(menuNum == 5) {
+        if(itemIdx != Menu5Items::WIRELESS_RADIO_MODE) {
+            *message = "menu item is not writable";
+            return false;
+        }
+        const int16_t originalValue = Menu1[Menu1Items::RADIOMODE].value;
+        const RadioMode requestedMode = radio_mode_from_value(requestedValue);
+        if(controller_board_requires_remote_recovery() && requestedMode == RADIO_MODE_OFF) {
+            *message = "radio off is unavailable on headless controller";
+            return false;
+        }
+        Menu5[itemIdx].value = clampMenuValue(Menu5[itemIdx], radio_mode_sanitize_value(requestedValue));
+        Menu1[Menu1Items::RADIOMODE].value = Menu5[itemIdx].value;
+        if(!radio_mode_can_switch_now()) {
+            Menu1[Menu1Items::RADIOMODE].value = originalValue;
+            Menu5[itemIdx].value = originalValue;
+            *message = "radio mode can only switch while idle";
+            return false;
+        }
+        if(!radio_mode_apply()) {
+            Menu1[Menu1Items::RADIOMODE].value = originalValue;
+            Menu5[itemIdx].value = originalValue;
+            *message = "radio mode switch failed";
+            return false;
+        }
+        persistMenuValue(1, Menu1Items::RADIOMODE);
     } else {
         *message = "menu does not accept direct value writes";
         return false;
@@ -838,6 +927,7 @@ bool apiActionIdle(States nextState, const char** message) {
     menu2Selected = RETURN_FROM_PURGE;
     menu3Selected = RETURN_FROM_GBW;
     menu4Selected = RETURN_FROM_JMC_BAUD;
+    menu5Selected = RETURN_FROM_WIRELESS;
     motor_setRPM = 0;
     state = nextState;
     controller_note_activity();
@@ -905,6 +995,19 @@ bool apiActionResetDefaults(const char* confirmToken, const char** message) {
 
 bool apiActionResetNetwork(const char** message) {
     wifi_ui_reset_network_settings();
+    controller_note_activity();
+    disp_updateRequired = true;
+    *message = "ok";
+    return true;
+}
+
+bool apiActionNetworkInfo(const char** message) {
+    if(!controller_board_has_display()) {
+        *message = "display unavailable";
+        return false;
+    }
+    state = NETWORK_INFO;
+    enterMenu = false;
     controller_note_activity();
     disp_updateRequired = true;
     *message = "ok";
@@ -1011,6 +1114,9 @@ void appendStatusJson(String& out) {
 }
 
 void appendMenuSnapshotJson(String& out, uint8_t menuNum) {
+    if(menuNum == 5) {
+        Menu5[Menu5Items::WIRELESS_RADIO_MODE].value = Menu1[Menu1Items::RADIOMODE].value;
+    }
     const menuEntry* menu = menuByNumber(menuNum);
     if(menu == nullptr) {
         return;
@@ -1030,8 +1136,13 @@ void appendMenuSnapshotJson(String& out, uint8_t menuNum) {
     out += String(selectedPtr != nullptr ? static_cast<int>(*selectedPtr) : -1);
     out += ",\"items\":[";
 
+    bool firstItem = true;
     for(uint8_t idx = 0; idx < count; ++idx) {
-        if(idx > 0) out += ',';
+        if(!motor_menu_item_visible(menuNum, idx)) {
+            continue;
+        }
+        if(!firstItem) out += ',';
+        firstItem = false;
         const menuEntry& entry = menu[idx];
         const char* kind = apiMenuItemKind(menuNum, idx);
         out += '{';
@@ -1095,7 +1206,7 @@ void printHelp() {
     Serial.println("[diag] dbg: dbg status | dbg wifi <on|off|reset|scan> | dbg espnow <on|off|coexist> | dbg ws <on|off> | dbg all off");
     Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
     Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm>");
+    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm>");
 }
 
 void printStatus() {
@@ -1140,6 +1251,7 @@ void forceIdleMode(States nextState) {
     menu2Selected = RETURN_FROM_PURGE;
     menu3Selected = RETURN_FROM_GBW;
     menu4Selected = RETURN_FROM_JMC_BAUD;
+    menu5Selected = RETURN_FROM_WIRELESS;
     motor_setRPM = 0;
     state = nextState;
     controller_note_activity();
@@ -1808,11 +1920,18 @@ void handleLineCommand(char* line) {
                     apiPrintAck("action", false, "usage: api action jmc_baud <baud>");
                     return;
                 }
-                ok = motor_run_jmc_baud_switch(baud);
-                message = motor_get_jmc_baud_trial_status_text();
-                disp_updateRequired = true;
+                if(!motor_jmc_tools_supported()) {
+                    ok = false;
+                    message = "JMC baud unavailable for active drive";
+                } else {
+                    ok = motor_run_jmc_baud_switch(baud);
+                    message = motor_get_jmc_baud_trial_status_text();
+                    disp_updateRequired = true;
+                }
             } else if(strcmp(action, "reset_network") == 0) {
                 ok = apiActionResetNetwork(&message);
+            } else if(strcmp(action, "network_info") == 0) {
+                ok = apiActionNetworkInfo(&message);
             } else if(strcmp(action, "reset_defaults") == 0) {
                 ok = apiActionResetDefaults(strtok_r(nullptr, " \t", &savePtr), &message);
             } else {
@@ -1966,6 +2085,11 @@ void handleLineCommand(char* line) {
         if(!parseUnsignedToken(strtok_r(nullptr, " \t", &savePtr), &baud) ||
            (baud != 9600 && baud != 19200 && baud != 38400 && baud != 57600 && baud != 115200)) {
             Serial.println("[diag] usage: jbaud <9600|19200|38400|57600|115200>");
+            return;
+        }
+
+        if(!motor_jmc_tools_supported()) {
+            Serial.println("[diag] JMC baud unavailable for active drive");
             return;
         }
 
@@ -2147,8 +2271,13 @@ String diag_api_snapshot_json() {
     out += "\"status\":";
     appendStatusJson(out);
     out += ",\"menus\":[";
-    for(uint8_t menuNum = 1; menuNum <= 4; ++menuNum) {
-        if(menuNum > 1) out += ',';
+    bool firstMenu = true;
+    for(uint8_t menuNum = 1; menuNum <= 5; ++menuNum) {
+        if(visibleMenuCountByNumber(menuNum) == 0) {
+            continue;
+        }
+        if(!firstMenu) out += ',';
+        firstMenu = false;
         appendMenuSnapshotJson(out, menuNum);
     }
     out += "]}";
@@ -2205,6 +2334,8 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
     } else if(strcmp(action, "jmc_baud") == 0) {
         if(arg0 == nullptr) {
             rawMessage = "missing baud";
+        } else if(!motor_jmc_tools_supported()) {
+            rawMessage = "JMC baud unavailable for active drive";
         } else {
             const uint32_t baud = static_cast<uint32_t>(strtoul(arg0, nullptr, 10));
             ok = motor_run_jmc_baud_switch(baud);
@@ -2213,6 +2344,8 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
         }
     } else if(strcmp(action, "reset_network") == 0) {
         ok = apiActionResetNetwork(&rawMessage);
+    } else if(strcmp(action, "network_info") == 0) {
+        ok = apiActionNetworkInfo(&rawMessage);
     } else if(strcmp(action, "reset_defaults") == 0) {
         ok = apiActionResetDefaults(arg0, &rawMessage);
     } else if(strcmp(action, "stream") == 0) {

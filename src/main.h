@@ -18,7 +18,7 @@ void purge_prepare_for_grinding();
 void purge_cancel_pending();
 void purge_mark_started();
 
-enum States{SLEEPING, IDLE, IDLE_GBW, GRINDING, PURGING, GRINDING_GBW, MENU1, MENU2, MENU3, MENU4, CALIBRATING, MOTOR_SELECT};
+enum States{SLEEPING, IDLE, IDLE_GBW, GRINDING, PURGING, GRINDING_GBW, MENU1, MENU2, MENU3, MENU4, MENU5, CALIBRATING, MOTOR_SELECT, NETWORK_INFO};
 
 bool controller_is_menu_state(States currentState);
 
@@ -49,6 +49,7 @@ enum Menu1Items{
     LED_BRIGHTNESS,
     INVERT_SCROLL,
     RESET,
+    NETWORKINFO,
     NUM_MENU1_ITEMS
 };
 
@@ -92,6 +93,14 @@ enum Menu4Items{
     NUM_MENU4_ITEMS
 };
 
+enum Menu5Items{
+    RETURN_FROM_WIRELESS,
+    WIRELESS_RADIO_MODE,
+    WIRELESS_NETWORK_INFO,
+    WIRELESS_RESET_NETWORK,
+    NUM_MENU5_ITEMS
+};
+
 struct menuEntry { 
     const char* name;
     int16_t value;
@@ -106,6 +115,7 @@ extern menuEntry Menu1[NUM_MENU1_ITEMS];
 extern menuEntry Menu2[NUM_MENU2_ITEMS];
 extern menuEntry Menu3[NUM_MENU3_ITEMS];
 extern menuEntry Menu4[NUM_MENU4_ITEMS];
+extern menuEntry Menu5[NUM_MENU5_ITEMS];
 
 extern bool firstBootFlag;
 
@@ -116,6 +126,7 @@ extern int8_t menu1Selected;
 extern int8_t menu2Selected;
 extern int8_t menu3Selected;
 extern int8_t menu4Selected;
+extern int8_t menu5Selected;
 extern int8_t motorSelectSelected;
 extern bool enterMenu;
 extern States motorSelectReturnState;

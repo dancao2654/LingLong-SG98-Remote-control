@@ -51,6 +51,9 @@ struct StatusFrame {
   bool wifiSaved = false;
   bool wifiStaConnected = false;
   int32_t wifiApStations = 0;
+  bool envSyncFieldsPresent = false;
+  bool envTimeValid = false;
+  bool envWeatherValid = false;
 };
 
 struct MenuFrame {
@@ -326,6 +329,17 @@ inline bool parseStatusFrame(const String& frame, StatusFrame* out) {
   }
   if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
     out->wifiApStations = parsed;
+  }
+  bool parsedEnvTime = false;
+  if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
+    out->envTimeValid = parsed != 0;
+    parsedEnvTime = true;
+  }
+  if(parsedEnvTime &&
+     detail::nextToken(frame, start, kFrameSeparator, &token) &&
+     detail::parseIntToken(token, &parsed)) {
+    out->envWeatherValid = parsed != 0;
+    out->envSyncFieldsPresent = true;
   }
   return true;
 }

@@ -13,6 +13,7 @@ constexpr unsigned long HEADLESS_ESPNOW_REMOTE_LOST_MS = 60000;
 constexpr unsigned long ESPNOW_LINK_HEALTHY_MS = 5000;
 constexpr unsigned long HOME_WIFI_SYNC_GRACE_MS = 120000;
 constexpr unsigned long WIFI_SESSION_IDLE_TIMEOUT_MS = 600000;
+constexpr unsigned long CAPTIVE_DONE_CLOSE_GRACE_MS = 7000;
 
 RadioMode currentMode = RADIO_MODE_WEB;
 bool initialized = false;
@@ -20,6 +21,7 @@ bool espnowRecoveryWatchActive = false;
 bool webRecoveryActive = false;
 unsigned long espnowRecoveryWatchStartedAt = 0;
 unsigned long homeWifiOnlineSince = 0;
+unsigned long captiveDoneMarkedAt = 0;
 
 bool isMenuOrIdleState(States currentState) {
     switch(currentState) {
@@ -29,7 +31,9 @@ bool isMenuOrIdleState(States currentState) {
         case MENU2:
         case MENU3:
         case MENU4:
+        case MENU5:
         case MOTOR_SELECT:
+        case NETWORK_INFO:
             return true;
         default:
             return false;
@@ -154,13 +158,40 @@ const int32_t* radioModeUserValues(uint8_t* count) {
 void closeWebBridgeIfReady() {
     if(currentMode != RADIO_MODE_WEB) {
         homeWifiOnlineSince = 0;
+        captiveDoneMarkedAt = 0;
+        wifi_ui_set_captive_setup_complete(false);
         return;
     }
 
     const bool internetSynced = homeWifiSetupSynced();
+    const bool syncTimedOut = !internetSynced && homeWifiSetupReadyByTimeout();
+    const bool setupReady = internetSynced || syncTimedOut;
     const bool idleTimedOut = wifi_ui_web_idle_for(WIFI_SESSION_IDLE_TIMEOUT_MS);
-    if(!internetSynced && !idleTimedOut) {
+    const bool shouldAutoPark = webRecoveryActive || idleTimedOut;
+    if(!setupReady && !idleTimedOut) {
+        captiveDoneMarkedAt = 0;
+        wifi_ui_set_captive_setup_complete(false);
         return;
+    }
+
+    if(setupReady) {
+        if(captiveDoneMarkedAt == 0) {
+            captiveDoneMarkedAt = millis();
+            wifi_ui_set_captive_setup_complete(true);
+            disp_updateRequired = true;
+            Serial.printf("[radio] Wi-Fi setup ready; captive close grace=%lus\n",
+                          static_cast<unsigned long>(CAPTIVE_DONE_CLOSE_GRACE_MS / 1000));
+            return;
+        }
+        if(!shouldAutoPark) {
+            return;
+        }
+        if(wifi_ui_ap_station_count() > 0 &&
+           millis() - captiveDoneMarkedAt < CAPTIVE_DONE_CLOSE_GRACE_MS) {
+            return;
+        }
+    } else {
+        wifi_ui_set_captive_setup_complete(false);
     }
 
     Menu1[Menu1Items::RADIOMODE].value = RADIO_MODE_ESPNOW;
@@ -170,10 +201,11 @@ void closeWebBridgeIfReady() {
         currentMode = RADIO_MODE_ESPNOW;
         webRecoveryActive = false;
         homeWifiOnlineSince = 0;
+        captiveDoneMarkedAt = 0;
         startEspNowRecoveryWatchIfNeeded();
         disp_updateRequired = true;
         Serial.printf("[radio] Wi-Fi %s; parked in ESP-NOW\n",
-                      internetSynced ? "internet sync complete" : "idle timeout");
+                      setupReady ? (internetSynced ? "internet sync complete" : "setup grace complete") : "idle timeout");
         return;
     }
 
@@ -181,6 +213,7 @@ void closeWebBridgeIfReady() {
         currentMode = RADIO_MODE_WEB;
         Menu1[Menu1Items::RADIOMODE].value = RADIO_MODE_WEB;
         webRecoveryActive = true;
+        captiveDoneMarkedAt = 0;
         Serial.println("[radio] ESP-NOW park failed; Wi-Fi remains active");
     }
 }
@@ -318,7 +351,7 @@ int32_t radio_mode_user_value_at(uint8_t index) {
     uint8_t count = 0;
     const int32_t* values = radioModeUserValues(&count);
     if(count == 0) {
-        return RADIO_MODE_DUAL;
+        return RADIO_MODE_WEB;
     }
     return values[index % count];
 }
@@ -327,7 +360,7 @@ int32_t radio_mode_next_user_value(int32_t current, int delta) {
     uint8_t count = 0;
     const int32_t* values = radioModeUserValues(&count);
     if(count == 0) {
-        return RADIO_MODE_DUAL;
+        return RADIO_MODE_WEB;
     }
 
     const int32_t sanitized = radio_mode_sanitize_value(current);
@@ -384,20 +417,20 @@ unsigned long radio_mode_recovery_remaining_ms() {
 const char* radio_mode_label(RadioMode mode) {
     switch(mode) {
         case RADIO_MODE_ESPNOW: return "ESP-NOW";
-        case RADIO_MODE_OFF: return "OFF";
-        case RADIO_MODE_DUAL: return "WEB";
+        case RADIO_MODE_OFF: return "Radio Off";
+        case RADIO_MODE_DUAL: return "WiFi";
         case RADIO_MODE_WEB:
-        default: return "WEB";
+        default: return "WiFi";
     }
 }
 
 const char* radio_mode_value_label(int32_t value) {
     switch(radio_mode_from_value(radio_mode_sanitize_value(value))) {
-        case RADIO_MODE_ESPNOW: return "Wi-Fi disabled";
-        case RADIO_MODE_OFF: return "Radio off";
+        case RADIO_MODE_ESPNOW: return "ESP-NOW";
+        case RADIO_MODE_OFF: return "Radio Off";
         case RADIO_MODE_DUAL:
         case RADIO_MODE_WEB:
-        default: return "Wi-Fi enabled";
+        default: return "WiFi";
     }
 }
 

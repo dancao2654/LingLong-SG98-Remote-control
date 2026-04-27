@@ -9,6 +9,8 @@ void wifi_ui_poll();
 bool wifi_ui_is_active();
 bool wifi_ui_sta_connected();
 String wifi_ui_sta_ip();
+String wifi_ui_sta_ssid();
+int32_t wifi_ui_sta_rssi();
 String wifi_ui_lcd_status();
 bool wifi_ui_setup_complete();
 bool wifi_ui_has_saved_network();

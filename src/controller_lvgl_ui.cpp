@@ -7,8 +7,10 @@
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "comm.h"
+#include "controller_env.h"
 #include "gbw.h"
 #include "io.h"
 #include "main.h"
@@ -179,6 +181,78 @@ String formatMassMg(int32_t mg) {
     return text;
 }
 
+String ageLabel(uint32_t timestampMs) {
+    if(timestampMs == 0) return "--";
+    const uint32_t ageMs = millis() - timestampMs;
+    if(ageMs < 1000UL) return "now";
+    if(ageMs < 60000UL) return String(ageMs / 1000UL) + "s";
+    if(ageMs < 3600000UL) return String(ageMs / 60000UL) + "m";
+    return String(ageMs / 3600000UL) + "h";
+}
+
+String dateTimeLabel() {
+    if(!controller_env_time_valid()) return "--";
+
+    const time_t unixNow = time(nullptr);
+    struct tm localTime;
+    if(!localtime_r(&unixNow, &localTime)) {
+        return "--";
+    }
+
+    char text[24];
+    snprintf(text,
+             sizeof(text),
+             "%02d/%02d %02d:%02d",
+             localTime.tm_mon + 1,
+             localTime.tm_mday,
+             localTime.tm_hour,
+             localTime.tm_min);
+    return String(text);
+}
+
+String networkInfoText() {
+    String out;
+    out.reserve(220);
+    out += "Mode  ";
+    out += radio_mode_label(radio_mode_current());
+    out += "\nSet   ";
+    out += radio_mode_value_label(Menu1[Menu1Items::RADIOMODE].value);
+    out += "\nSSID  ";
+    const String ssid = wifi_ui_sta_ssid();
+    out += ssid.length() > 0 ? fitText(ssid, 20) : String("--");
+    out += "\nIP    ";
+    const String ip = wifi_ui_sta_ip();
+    out += ip.length() > 0 ? ip : String("--");
+    out += "\nRSSI  ";
+    if(wifi_ui_sta_connected()) {
+        out += String(wifi_ui_sta_rssi());
+        out += " dBm";
+    } else {
+        out += "--";
+    }
+    out += "\nTime  ";
+    out += dateTimeLabel();
+    out += "\nNTP   ";
+    out += ageLabel(controller_env_last_ntp_sync_ms());
+    out += "\nWx    ";
+    if(controller_env_weather_valid()) {
+        out += String(controller_env_temperature_f());
+        out += "F ";
+        out += fitText(controller_env_location(), 13);
+        const int8_t precip = controller_env_precipitation_percent();
+        if(precip >= 0) {
+            out += " ";
+            out += String(precip);
+            out += "%";
+        }
+    } else {
+        out += "--";
+    }
+    out += "\nWxAge ";
+    out += ageLabel(controller_env_last_weather_fetch_ms());
+    return out;
+}
+
 String formatPercent(int32_t value) {
     char text[16];
     snprintf(text, sizeof(text), "%ld%%", static_cast<long>(value));
@@ -305,7 +379,7 @@ String shortScaleState() {
 }
 
 lv_color_t torqueStatusColor() {
-    const int32_t torque = clampPct(motor_currentTorque);
+    const int32_t torque = clampPct(motor_get_torque_percent());
     if(torque >= 85) return lvColor(kColorDanger);
     if(torque >= 60) return lvColor(kColorWarn);
     return lvColor(kColorAccent);
@@ -417,12 +491,13 @@ const menuEntry* menuByNum(int menuNum) {
         case 2: return Menu2;
         case 3: return Menu3;
         case 4: return Menu4;
+        case 5: return Menu5;
         default: return nullptr;
     }
 }
 
 String menuTitleForNum(int menuNum) {
-    (void)menuNum;
+    if(menuNum == 5) return "Wireless";
     return "Grinder Setup";
 }
 
@@ -432,6 +507,7 @@ String menuPathForNum(int menuNum) {
         case 2: return "Purge Settings. Rotate to browse.";
         case 3: return "GbW Settings. Rotate to browse.";
         case 4: return "JMC Baud. Rotate to browse.";
+        case 5: return "Wireless. Rotate to browse.";
         default: return "Rotate to browse.";
     }
 }
@@ -442,6 +518,7 @@ int selectedIndexForMenuState() {
         case MENU2: return menu2Selected;
         case MENU3: return menu3Selected;
         case MENU4: return menu4Selected;
+        case MENU5: return menu5Selected;
         default: return 0;
     }
 }
@@ -452,8 +529,47 @@ int menuCountForState() {
         case MENU2: return NUM_MENU2_ITEMS;
         case MENU3: return NUM_MENU3_ITEMS;
         case MENU4: return NUM_MENU4_ITEMS;
+        case MENU5: return NUM_MENU5_ITEMS;
         default: return 0;
     }
+}
+
+int visibleMenuCountFor(int menuNum, int rawCount) {
+    int count = 0;
+    for(int idx = 0; idx < rawCount; ++idx) {
+        if(motor_menu_item_visible(static_cast<uint8_t>(menuNum), static_cast<uint8_t>(idx))) {
+            ++count;
+        }
+    }
+    return count;
+}
+
+int menuIndexForVisibleOrdinal(int menuNum, int rawCount, int ordinal) {
+    int seen = 0;
+    for(int idx = 0; idx < rawCount; ++idx) {
+        if(!motor_menu_item_visible(static_cast<uint8_t>(menuNum), static_cast<uint8_t>(idx))) {
+            continue;
+        }
+        if(seen == ordinal) {
+            return idx;
+        }
+        ++seen;
+    }
+    return 0;
+}
+
+int visibleOrdinalForMenuIndex(int menuNum, int rawCount, int selectedIdx) {
+    int seen = 0;
+    for(int idx = 0; idx < rawCount; ++idx) {
+        if(!motor_menu_item_visible(static_cast<uint8_t>(menuNum), static_cast<uint8_t>(idx))) {
+            continue;
+        }
+        if(idx == selectedIdx) {
+            return seen;
+        }
+        ++seen;
+    }
+    return 0;
 }
 
 int menuNumForState() {
@@ -462,12 +578,14 @@ int menuNumForState() {
         case MENU2: return 2;
         case MENU3: return 3;
         case MENU4: return 4;
+        case MENU5: return 5;
         default: return 0;
     }
 }
 
 String toggleValueText(int menuNum, int selectedIdx, int32_t value) {
-    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
+    if((menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) ||
+       (menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE)) {
         return radio_mode_value_label(value);
     }
     if(menuNum == 1 && selectedIdx == Menu1Items::SETMOTORDIRECTION) {
@@ -503,6 +621,9 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
     const MotorCommandDescriptor* command = motorCommandForMenuItem(menuNum, selectedIdx);
     if(command != nullptr && !command->supported) return "N/A";
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
+        return "Open";
+    }
+    if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) {
         return radio_mode_value_label(item.value);
     }
 
@@ -513,7 +634,12 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
            (selectedIdx == PURGESETTINGS ||
             selectedIdx == GBWSETTINGS ||
             selectedIdx == JMCBAUDMENU ||
-            selectedIdx == DRIVESETTINGS)) return "Open";
+            selectedIdx == DRIVESETTINGS ||
+            selectedIdx == RADIOMODE ||
+            selectedIdx == NETWORKINFO)) return "Open";
+        if(menuNum == 5 &&
+           (selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO ||
+            selectedIdx == Menu5Items::WIRELESS_RESET_NETWORK)) return "Open";
         if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return String(baudForJmcMenuItem(selectedIdx));
         if(menuNum == 1 && selectedIdx == CALIBRATE) return "Hold";
         return "Select";
@@ -548,9 +674,12 @@ String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
         if(command->helpText != nullptr && command->helpText[0] != '\0') return command->helpText;
     }
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Hold encoder to start";
+    if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO) return "Shows cached network and sync status";
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Writes drive baud for next boot";
-    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Wi-Fi enabled opens setup";
-    if(menuNum == 1 && (selectedIdx == Menu1Items::RESET || selectedIdx == Menu1Items::RESETNETWORK)) return "Reset needs encoder confirm";
+    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Wireless mode, status, and reset";
+    if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) return "WiFi opens setup, ESP-NOW parks low power";
+    if(menuNum == 1 && selectedIdx == Menu1Items::RESET) return "Reset needs encoder confirm";
+    if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RESET_NETWORK) return "Clears saved WiFi and setup state";
     if(item.minValue == 0 && item.maxValue == 1 && item.scalar == 1) return "Rotate to choose";
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) return "Encoder opens";
     return "Rotate to adjust";
@@ -563,7 +692,9 @@ String menuDetailHint(const menuEntry& item, int menuNum, int selectedIdx) {
         if(command->guidance != nullptr && command->guidance[0] != '\0') return command->guidance;
     }
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Encoder writes. Power cycle drive after the change.";
-    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Radio off is local-only standby.";
+    if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Encoder opens. Start goes back.";
+    if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) return "Radio Off is local-only standby.";
+    if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO) return "Start or encoder goes back.";
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Start cancels and goes back.";
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) return "Start goes back.";
     return "Encoder saves. Start cancels.";
@@ -633,7 +764,9 @@ uint32_t currentViewTint() {
             return kColorWarn;
         case MENU3:
             return kColorGood;
+        case MENU5:
         case MOTOR_SELECT:
+        case NETWORK_INFO:
             return kColorAccent;
         case MENU1:
         case MENU4:
@@ -839,20 +972,23 @@ void createMenuUi() {
     setHidden(ui.menuHelp, true);
 
     for(uint8_t i = 0; i < kVisibleMenuRows; ++i) {
+        const bool hero = i == 1;
+        const int16_t rowH = hero ? 82 : 30;
+        const int16_t rowY = i == 0 ? 0 : (hero ? 35 : 122);
         ui.menuRows[i] = lv_obj_create(ui.menuView);
         stylePanel(ui.menuRows[i], kColorMenuItem, kColorLine, LV_OPA_90);
-        lv_obj_set_size(ui.menuRows[i], i == 1 ? 240 : 1, i == 1 ? 140 : 1);
-        lv_obj_set_pos(ui.menuRows[i], i == 1 ? 0 : 0, i == 1 ? 6 : 0);
-        lv_obj_set_style_pad_hor(ui.menuRows[i], i == 1 ? 16 : 0, 0);
-        lv_obj_set_style_pad_ver(ui.menuRows[i], i == 1 ? 16 : 0, 0);
+        lv_obj_set_size(ui.menuRows[i], hero ? 240 : 220, rowH);
+        lv_obj_set_pos(ui.menuRows[i], hero ? 0 : 10, rowY);
+        lv_obj_set_style_pad_hor(ui.menuRows[i], hero ? 16 : 10, 0);
+        lv_obj_set_style_pad_ver(ui.menuRows[i], hero ? 12 : 4, 0);
 
         ui.menuRowLabel[i] = lv_label_create(ui.menuRows[i]);
-        lv_obj_set_width(ui.menuRowLabel[i], i == 1 ? 208 : 1);
-        lv_obj_set_style_text_font(ui.menuRowLabel[i], i == 1 ? &lv_font_montserrat_32 : &lv_font_montserrat_14, 0);
+        lv_obj_set_width(ui.menuRowLabel[i], hero ? 208 : 190);
+        lv_obj_set_style_text_font(ui.menuRowLabel[i], hero ? &lv_font_montserrat_32 : &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(ui.menuRowLabel[i], lvColor(kColorMenuItemText), 0);
         lv_obj_set_style_text_align(ui.menuRowLabel[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_obj_set_style_text_line_space(ui.menuRowLabel[i], 2, 0);
-        lv_label_set_long_mode(ui.menuRowLabel[i], i == 1 ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
+        lv_label_set_long_mode(ui.menuRowLabel[i], hero ? LV_LABEL_LONG_WRAP : LV_LABEL_LONG_DOT);
         lv_obj_center(ui.menuRowLabel[i]);
 
         ui.menuRowValue[i] = lv_label_create(ui.menuRows[i]);
@@ -1124,6 +1260,7 @@ void syncDashboard() {
             const int32_t target = abs(setRPM);
             const int32_t displayRpm = abs(liveRpm);
             const int32_t pct = target > 0 ? (displayRpm * 100) / target : 0;
+            const String torqueText = formatPercent(clampPct(motor_get_torque_percent()));
             syncDashboardCommon("Grinding",
                                 String(displayRpm) + " rpm",
                                 String("Target ") + setRPM + " rpm",
@@ -1134,9 +1271,9 @@ void syncDashboard() {
                                 "DRV",
                                 driveStatusSymbol(),
                                 driveStatusColor(),
-                                "Purge",
-                                purgeStatusSymbol(),
-                                purgeStatusColor());
+                                "Torque",
+                                torqueText.c_str(),
+                                torqueStatusColor());
             lv_obj_set_style_text_color(ui.dashPrimary, grindingRpmColor(), 0);
             break;
         }
@@ -1144,6 +1281,7 @@ void syncDashboard() {
             const int32_t target = maxAbs(Menu2[SETPURGERPM].value, Menu2[SETPURGEREVERSE].value);
             const int32_t displayRpm = abs(liveRpm);
             const int32_t pct = target > 0 ? (displayRpm * 100) / target : 0;
+            const String torqueText = formatPercent(clampPct(motor_get_torque_percent()));
             syncDashboardCommon("Purging",
                                 String(displayRpm) + " rpm",
                                 "Clearing the chute",
@@ -1154,13 +1292,14 @@ void syncDashboard() {
                                 "DRV",
                                 driveStatusSymbol(),
                                 driveStatusColor(),
-                                "Purge",
-                                purgeStatusSymbol(),
-                                purgeStatusColor());
+                                "Torque",
+                                torqueText.c_str(),
+                                torqueStatusColor());
             break;
         }
         case GRINDING_GBW: {
             const int32_t pct = setWeight > 0 ? (currentWeight * 100L) / static_cast<int32_t>(setWeight) : 0;
+            const String torqueText = formatPercent(clampPct(motor_get_torque_percent()));
             syncDashboardCommon("Dosing",
                                 formatMassMg(currentWeight),
                                 String("Target ") + formatMassMg(setWeight),
@@ -1171,9 +1310,9 @@ void syncDashboard() {
                                 "DRV",
                                 driveStatusSymbol(),
                                 driveStatusColor(),
-                                "Scale",
-                                scaleStatusSymbol(),
-                                scaleStatusColor());
+                                "Torque",
+                                torqueText.c_str(),
+                                torqueStatusColor());
             break;
         }
         case CALIBRATING: {
@@ -1216,10 +1355,10 @@ void syncDashboard() {
 
 void syncMenuList() {
     const int menuNum = menuNumForState();
-    const int count = menuCountForState();
+    const int rawCount = menuCountForState();
     const int selected = selectedIndexForMenuState();
     const menuEntry* menu = menuByNum(menuNum);
-    if(menu == nullptr || count <= 0) return;
+    if(menu == nullptr || rawCount <= 0) return;
 
     lv_label_set_text(ui.menuTitle, "");
     setHidden(ui.menuTitle, true);
@@ -1228,25 +1367,55 @@ void syncMenuList() {
     lv_label_set_text(ui.menuFooter, "");
     setHidden(ui.menuFooter, true);
 
+    const int visibleCount = visibleMenuCountFor(menuNum, rawCount);
+    if(visibleCount <= 0) {
+        for(int row = 0; row < kVisibleMenuRows; ++row) {
+            setHidden(ui.menuRows[row], true);
+        }
+        return;
+    }
+
+    const int selectedOrdinal = visibleOrdinalForMenuIndex(menuNum, rawCount, selected);
+
     for(int row = 0; row < kVisibleMenuRows; ++row) {
         const bool hero = row == 1;
-        setHidden(ui.menuRows[row], !hero);
-        if(!hero) continue;
+        if(!hero && visibleCount <= 1) {
+            setHidden(ui.menuRows[row], true);
+            continue;
+        }
 
-        const String label = menuItemLabel(menu[selected], menuNum, selected);
+        const int rel = row - 1;
+        const int ordinal = (selectedOrdinal + rel + visibleCount) % visibleCount;
+        const int itemIdx = menuIndexForVisibleOrdinal(menuNum, rawCount, ordinal);
+        setHidden(ui.menuRows[row], false);
+
+        const String label = menuItemLabel(menu[itemIdx], menuNum, itemIdx);
         lv_obj_set_style_text_font(ui.menuRowLabel[row], heroMenuFontForText(label), 0);
         lv_label_set_text(ui.menuRowLabel[row], label.c_str());
         lv_label_set_text(ui.menuRowValue[row], "");
         setHidden(ui.menuRowValue[row], true);
 
-        stylePanel(ui.menuRows[row],
-                   kColorMenuItemActive,
-                   kColorMenuItemActiveLine,
-                   LV_OPA_COVER);
-        lv_obj_set_style_border_width(ui.menuRows[row], 3, 0);
-        lv_obj_set_style_text_color(ui.menuRowLabel[row],
-                                    lvColor(kColorMenuItemActiveText),
-                                    0);
+        if(hero) {
+            lv_obj_set_style_text_font(ui.menuRowLabel[row], heroMenuFontForText(label), 0);
+            stylePanel(ui.menuRows[row],
+                       kColorMenuItemActive,
+                       kColorMenuItemActiveLine,
+                       LV_OPA_COVER);
+            lv_obj_set_style_border_width(ui.menuRows[row], 3, 0);
+            lv_obj_set_style_text_color(ui.menuRowLabel[row],
+                                        lvColor(kColorMenuItemActiveText),
+                                        0);
+        } else {
+            lv_obj_set_style_text_font(ui.menuRowLabel[row], &lv_font_montserrat_14, 0);
+            stylePanel(ui.menuRows[row],
+                       blendRgb(kColorMenuItem, kColorPanel, 0.30f),
+                       blendRgb(kColorLine, kColorBg, 0.20f),
+                       LV_OPA_80);
+            lv_obj_set_style_border_width(ui.menuRows[row], 1, 0);
+            lv_obj_set_style_text_color(ui.menuRowLabel[row],
+                                        lvColor(kColorMuted),
+                                        0);
+        }
     }
 }
 
@@ -1260,13 +1429,34 @@ void syncMenuDetail() {
     lv_label_set_text(ui.detailTitle, "");
     setHidden(ui.detailTitle, true);
     const String value = menuDetailValue(item, menuNum, selected);
+    lv_obj_set_width(ui.detailValue, 208);
     lv_obj_set_style_text_font(ui.detailValue, heroMenuFontForText(value), 0);
+    lv_obj_set_style_text_align(ui.detailValue, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_center(ui.detailValue);
     lv_label_set_text(ui.detailValue, value.c_str());
     lv_obj_set_style_text_color(ui.detailValue, lvColor(kColorMenuItemActiveText), 0);
     lv_label_set_text(ui.detailMeta, "");
     setHidden(ui.detailMeta, true);
     lv_label_set_text(ui.detailHint, "");
     setHidden(ui.detailHint, true);
+}
+
+void syncNetworkInfo() {
+    lv_label_set_text(ui.detailTitle, "");
+    setHidden(ui.detailTitle, true);
+
+    lv_obj_set_width(ui.detailValue, 214);
+    lv_obj_set_style_text_font(ui.detailValue, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_align(ui.detailValue, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_color(ui.detailValue, lvColor(kColorSoft), 0);
+    lv_obj_align(ui.detailValue, LV_ALIGN_TOP_LEFT, -3, -6);
+    lv_label_set_text(ui.detailValue, networkInfoText().c_str());
+
+    lv_label_set_text(ui.detailMeta, "");
+    setHidden(ui.detailMeta, true);
+    lv_label_set_text(ui.detailHint, "Start / encoder: back");
+    lv_obj_set_style_text_color(ui.detailHint, lvColor(kColorMuted), 0);
+    setHidden(ui.detailHint, false);
 }
 
 void syncMotorSelect() {
@@ -1323,7 +1513,15 @@ void syncViewForState() {
         return;
     }
 
-    if(state == MENU1 || state == MENU2 || state == MENU3 || state == MENU4) {
+    if(state == NETWORK_INFO) {
+        showView(ActiveView::Detail);
+        syncNetworkInfo();
+        syncHeader();
+        syncErrorBanner();
+        return;
+    }
+
+    if(state == MENU1 || state == MENU2 || state == MENU3 || state == MENU4 || state == MENU5) {
         if(enterMenu) {
             showView(ActiveView::Detail);
             syncMenuDetail();

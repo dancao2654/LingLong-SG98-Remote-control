@@ -9,14 +9,17 @@
 #include <Adafruit_ST7789.h> // Hardware-specific library for ST7789
 #include <SPI.h>             // Arduino SPI library
 #include <math.h>
+#include <time.h>
 
 #include <Fonts/FreeSans9pt7b.h>
 #include <Fonts/FreeSans12pt7b.h>
 #include <Fonts/FreeSans18pt7b.h>
 #include <Fonts/FreeSans24pt7b.h>
 #include "comm.h"
+#include "controller_env.h"
 #include "motor_hal.h"
 #include "radio_mode.h"
+#include "wifi_ui.h"
 
 #define COLOR_NAVY 0x0010
 #define COLOR_BRIGHT_BLUE 0x55FF
@@ -39,6 +42,7 @@ const int HEADER_HEIGHT = 24;
 #define SCREEN_CALIBRATING  6
 #define SCREEN_ERROR        7
 #define SCREEN_MOTOR_SELECT 8
+#define SCREEN_NETWORK_INFO 9
 
 int initializedScreenId = -1;
 bool dimmed = false;
@@ -74,6 +78,44 @@ uint32_t baudForJmcMenuItem(int selectedIdx) {
     case Menu4Items::JMCBAUD115200: return 115200;
     default: return 0;
   }
+}
+
+int visibleMenuItemCount(int menuNum, int rawCount) {
+  int count = 0;
+  for (int idx = 0; idx < rawCount; ++idx) {
+    if (motor_menu_item_visible(static_cast<uint8_t>(menuNum), static_cast<uint8_t>(idx))) {
+      ++count;
+    }
+  }
+  return count;
+}
+
+int menuIndexForVisibleOrdinal(int menuNum, int rawCount, int ordinal) {
+  int seen = 0;
+  for (int idx = 0; idx < rawCount; ++idx) {
+    if (!motor_menu_item_visible(static_cast<uint8_t>(menuNum), static_cast<uint8_t>(idx))) {
+      continue;
+    }
+    if (seen == ordinal) {
+      return idx;
+    }
+    ++seen;
+  }
+  return 0;
+}
+
+int visibleOrdinalForMenuIndex(int menuNum, int rawCount, int selectedIdx) {
+  int seen = 0;
+  for (int idx = 0; idx < rawCount; ++idx) {
+    if (!motor_menu_item_visible(static_cast<uint8_t>(menuNum), static_cast<uint8_t>(idx))) {
+      continue;
+    }
+    if (idx == selectedIdx) {
+      return seen;
+    }
+    ++seen;
+  }
+  return 0;
 }
 
 int getMotorSplashTextSize(const String& label) {
@@ -1088,7 +1130,7 @@ void drawGrindingOrPurgingScreen() {
 
     // --- Torque speedometer (right side) ---
     const int16_t torquePercent = motor_get_torque_percent();
-    if (prevTorque != motor_currentTorque) {
+    if (prevTorque != torquePercent) {
         tft->fillCircle(speedoCX, speedoCY, speedoR + 2, ST77XX_BLACK);
 
         // Gradient color: green (0%) -> yellow (50%) -> red (100%)
@@ -1127,7 +1169,7 @@ void drawGrindingOrPurgingScreen() {
         tft->setCursor(speedoCX - w / 2, speedoCY+ h/2);
         tft->print(percentStr);
 
-        prevTorque = motor_currentTorque;
+        prevTorque = torquePercent;
     }
 
     // --- Connection status (bottom left) ---
@@ -1403,8 +1445,8 @@ void drawCalibratingScreen() {
     }
 
     // --- Torque speedometer (right side) ---
-    int16_t torquePercent = motor_currentTorque;
-    if (prevTorque != motor_currentTorque) {
+    int16_t torquePercent = motor_get_torque_percent();
+    if (prevTorque != torquePercent) {
         tft->setFont(&FreeSans18pt7b);
         tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
         int16_t x1, y1;
@@ -1423,7 +1465,7 @@ void drawCalibratingScreen() {
         tft->setCursor(speedoCX - w / 2, speedoCY + h / 2);
         tft->print(percentStr);
 
-        prevTorque = motor_currentTorque;
+        prevTorque = torquePercent;
     }
 
 
@@ -1467,6 +1509,7 @@ static const menuEntry* getMenuByNum(int menuNum) {
         case 2: return Menu2;
         case 3: return Menu3;
         case 4: return Menu4;
+        case 5: return Menu5;
         default: return nullptr;
     }
 }
@@ -1489,6 +1532,103 @@ static const char* getMotorSelectHint(int idx) {
         case MOTOR_SELECT_KRS_130ST_M07725: return "Force KRS 130ST backend";
         default: return "";
     }
+}
+
+static String formatSyncAge(uint32_t timestampMs) {
+    if(timestampMs == 0) return "--";
+    const uint32_t ageMs = millis() - timestampMs;
+    if(ageMs < 1000UL) return "now";
+    if(ageMs < 60000UL) return String(ageMs / 1000UL) + "s";
+    if(ageMs < 3600000UL) return String(ageMs / 60000UL) + "m";
+    return String(ageMs / 3600000UL) + "h";
+}
+
+static String formatControllerTime() {
+    if(!controller_env_time_valid()) return "--";
+
+    const time_t unixNow = time(nullptr);
+    struct tm localTime;
+    if(!localtime_r(&unixNow, &localTime)) return "--";
+
+    char text[24];
+    snprintf(text,
+             sizeof(text),
+             "%02d/%02d %02d:%02d",
+             localTime.tm_mon + 1,
+             localTime.tm_mday,
+             localTime.tm_hour,
+             localTime.tm_min);
+    return String(text);
+}
+
+static String clippedInfoValue(const String& value, uint8_t maxLen) {
+    if(value.length() <= maxLen) return value;
+    if(maxLen <= 3) return value.substring(0, maxLen);
+    return value.substring(0, maxLen - 3) + "...";
+}
+
+void drawInfoRow(int16_t y, const char* label, const String& value) {
+    tft->setFont(&FreeSans9pt7b);
+    tft->setTextColor(0x9CF3, ST77XX_BLACK);
+    tft->setCursor(22, y);
+    tft->print(label);
+    tft->setTextColor(ST77XX_WHITE, ST77XX_BLACK);
+    tft->setCursor(88, y);
+    tft->print(value);
+}
+
+void drawNetworkInfoScreen() {
+    static unsigned long prevSecond = 0xFFFFFFFF;
+    const unsigned long secondNow = millis() / 1000UL;
+    if(initializedScreenId != SCREEN_NETWORK_INFO || prevSecond != secondNow) {
+        tft->fillScreen(ST77XX_BLACK);
+        initializedScreenId = SCREEN_NETWORK_INFO;
+        prevSecond = secondNow;
+
+        tft->setFont(&FreeSans18pt7b);
+        tft->setTextColor(COLOR_GREEN);
+        const char* title = "Network";
+        int16_t x1, y1;
+        uint16_t w, h;
+        tft->getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
+        tft->setCursor((SCREEN_WIDTH - w) / 2, HEADER_HEIGHT + h + 4);
+        tft->print(title);
+
+        const String ssid = wifi_ui_sta_ssid();
+        const String ip = wifi_ui_sta_ip();
+        String rssi = "--";
+        if(wifi_ui_sta_connected()) {
+            rssi = String(wifi_ui_sta_rssi()) + " dBm";
+        }
+
+        String weather = "--";
+        if(controller_env_weather_valid()) {
+            weather = String(controller_env_temperature_f()) + "F";
+            const String location = controller_env_location();
+            if(location.length() > 0) {
+                weather += " ";
+                weather += clippedInfoValue(location, 12);
+            }
+            const int8_t precip = controller_env_precipitation_percent();
+            if(precip >= 0) {
+                weather += " ";
+                weather += String(precip);
+                weather += "%";
+            }
+        }
+
+        drawInfoRow(66, "Mode", radio_mode_label(radio_mode_current()));
+        drawInfoRow(86, "Set", radio_mode_value_label(Menu1[Menu1Items::RADIOMODE].value));
+        drawInfoRow(106, "SSID", ssid.length() > 0 ? clippedInfoValue(ssid, 18) : String("--"));
+        drawInfoRow(126, "IP", ip.length() > 0 ? ip : String("--"));
+        drawInfoRow(146, "RSSI", rssi);
+        drawInfoRow(166, "Time", formatControllerTime());
+        drawInfoRow(186, "NTP", formatSyncAge(controller_env_last_ntp_sync_ms()));
+        drawInfoRow(206, "Wx", weather);
+        drawInfoRow(226, "WxAge", formatSyncAge(controller_env_last_weather_fetch_ms()));
+    }
+
+    drawTopIndicators(SCREEN_NETWORK_INFO);
 }
 
 void drawMotorSelectScreen() {
@@ -1565,6 +1705,7 @@ void drawMotorSelectScreen() {
 void drawMenuScreen(int menuNum, int numItems, int selectedIdx) {
     static int prevSelectedIdx = -1;
     static int prevMenuNum = -1;
+    static DriveType prevDriveType = DRIVE_TYPE_UNKNOWN;
     static char prevNames[5][21] = {0}; // 20 chars + null, for 5 visible items
 
     const menuEntry* menu = getMenuByNum(menuNum);
@@ -1601,11 +1742,24 @@ void drawMenuScreen(int menuNum, int numItems, int selectedIdx) {
         prevMenuNum = menuNum;
     }
 
+    if (prevDriveType != motor_get_drive_type()) {
+        fullRedraw = true;
+        prevDriveType = motor_get_drive_type();
+    }
+
     drawTopIndicators(thisScreenId);
+
+    const int visibleCount = visibleMenuItemCount(menuNum, numItems);
+    if (visibleCount <= 0) {
+        return;
+    }
+
+    const int selectedOrdinal = visibleOrdinalForMenuIndex(menuNum, numItems, selectedIdx);
 
     for (int i = 0; i < itemCount; ++i) {
         int relIdx = i - itemCount / 2; // -2, -1, 0, 1, 2
-        int menuIdx = (selectedIdx + relIdx + numItems) % numItems;
+        int visibleOrdinal = (selectedOrdinal + relIdx + visibleCount) % visibleCount;
+        int menuIdx = menuIndexForVisibleOrdinal(menuNum, numItems, visibleOrdinal);
 
         int y = centerY + relIdx * itemHeight;
 
@@ -1848,7 +2002,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
       if(prevValue != item.value) {
         tft->fillRect(0, 60, SCREEN_WIDTH, SCREEN_HEIGHT-60, ST77XX_BLACK);
         prevValue = item.value;
-        if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
+        if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) {
             const int32_t selectedValue = radio_mode_sanitize_value(item.value);
             const uint8_t optionCount = radio_mode_user_value_count();
             for(uint8_t i = 0; i < optionCount; ++i) {
@@ -1872,8 +2026,8 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
 
             tft->setFont(&FreeSans9pt7b);
             tft->setTextColor(ST77XX_WHITE);
-            const char* msg1 = "Enabled opens AP + web.";
-            const char* msg2 = optionCount > 2 ? "Off disables all radios." : "Disabled returns remote link.";
+            const char* msg1 = "WiFi opens setup.";
+            const char* msg2 = optionCount > 2 ? "Radio Off disables all." : "ESP-NOW parks link.";
             int16_t x1, y1;
             uint16_t w, h;
             tft->getTextBounds(msg1, 0, 0, &x1, &y1, &w, &h);
@@ -1935,8 +2089,8 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                     tft->setCursor((SCREEN_WIDTH - w) / 2, 200);
                     tft->print(macCopy); 
                   } 
-                } else if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
-                  const char* radioLabels[2] = {"Wi-Fi enabled", "Wi-Fi disabled"};
+                } else if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) {
+                  const char* radioLabels[2] = {"WiFi", "ESP-NOW"};
                   tft->getTextBounds(radioLabels[i], 0, 0, &x1, &y1, &w, &h);
                   int y = 100 + i * 50;
                   tft->setCursor((SCREEN_WIDTH - w) / 2, y);
@@ -1954,7 +2108,8 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                     tft->setCursor(12, 204);
                     tft->print(msg2);
                   }
-                } else if(menuNum == 1 && (selectedIdx == Menu1Items::RESET || selectedIdx == Menu1Items::RESETNETWORK)) { 
+                } else if((menuNum == 1 && selectedIdx == Menu1Items::RESET) ||
+                          (menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RESET_NETWORK)) {
                   tft->getTextBounds(alt_label2[i], 0, 0, &x1, &y1, &w, &h);
                   int y = 100 + i * 50;
                   tft->setCursor((SCREEN_WIDTH - w) / 2, y);

@@ -96,6 +96,8 @@ const char* motor_get_backend_command_guidance();
 const char* motor_get_backend_telemetry_guidance();
 int16_t motor_get_max_rpm();
 bool motor_supports_ramp();
+bool motor_jmc_tools_supported();
+bool motor_menu_item_visible(uint8_t menuNum, uint8_t itemIdx);
 bool motor_is_direction_reversed();
 int8_t motor_get_direction_multiplier();
 int16_t motor_apply_direction(int16_t rpm);

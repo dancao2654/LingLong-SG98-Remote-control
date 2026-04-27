@@ -22,6 +22,7 @@ int8_t menu1Selected = EXITMENU;
 int8_t menu2Selected = RETURN_FROM_PURGE;
 int8_t menu3Selected = RETURN_FROM_GBW;
 int8_t menu4Selected = RETURN_FROM_JMC_BAUD;
+int8_t menu5Selected = RETURN_FROM_WIRELESS;
 int8_t motorSelectSelected = MOTOR_SELECT_AUTO;
 bool enterMenu = false;
 bool firstBootFlag = false;
@@ -39,13 +40,14 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Drive", 0, 0, 0, 0, "DRIVESEL", ""},                // 8
     {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 9
     {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 10
-    {"Wi-Fi", default_radio_mode, 0, 3, 1, "RADIOMODE", ""}, // 11
+    {"Wireless", default_radio_mode, 0, 2, 1, "RADIOMODE", ""}, // 11
     {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 12
     {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 13
     {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 14
     {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 15
     {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 16
     {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 17
+    {"Network info", 0, 0, 0, 0, "NETINFO", ""},          // 18
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {
@@ -83,6 +85,13 @@ menuEntry Menu4[NUM_MENU4_ITEMS] = {
     {"JMC 38400", 0, 0 ,0, 0, "JMC38400", ""},
     {"JMC 57600", 0, 0 ,0, 0, "JMC57600", ""},
     {"JMC 115200", 0, 0 ,0, 0, "JMC115200", ""},
+};
+
+menuEntry Menu5[NUM_MENU5_ITEMS] = {
+    {"BACK", 0, 0, 0, 0, "RETURN5", ""},
+    {"Mode", default_radio_mode, 0, 2, 1, "RADIOMODE", ""},
+    {"Network info", 0, 0, 0, 0, "NETINFO", ""},
+    {"Reset Network", 0, 0, 0, 0, "RSTNET", ""},
 };
 
 volatile bool newData = true; //This is new TORQUE data.
@@ -214,7 +223,9 @@ bool controller_is_menu_state(States currentState) {
         case MENU2:
         case MENU3:
         case MENU4:
+        case MENU5:
         case MOTOR_SELECT:
+        case NETWORK_INFO:
             return true;
         default:
             return false;
@@ -404,6 +415,10 @@ void loop() {
         motor_setRPM = 0;
     }
 
+    if(state == MENU5) {
+        motor_setRPM = 0;
+    }
+
     if(state == CALIBRATING) { 
         ledAction(1);
         Calibrate();
@@ -411,6 +426,10 @@ void loop() {
     }
 
     if(state == MOTOR_SELECT) {
+        motor_setRPM = 0;
+    }
+
+    if(state == NETWORK_INFO) {
         motor_setRPM = 0;
     }
 

@@ -2,6 +2,7 @@
 
 #include <HTTPClient.h>
 #include <WiFi.h>
+#include <sys/time.h>
 #include <time.h>
 
 #include "main.h"
@@ -167,6 +168,36 @@ String controller_env_build_frame() {
     return sg98_protocol::environment(g_environment);
 }
 
+bool controller_env_apply_peer_frame(const sg98_protocol::EnvironmentFrame& frame) {
+    const uint32_t now = millis();
+    bool applied = false;
+
+    if(frame.timeValid && frame.unixTime >= kValidUnixTime && !controller_env_time_valid()) {
+        setenv("TZ", kTimezone, 1);
+        tzset();
+        timeval tv = {};
+        tv.tv_sec = static_cast<time_t>(frame.unixTime);
+        settimeofday(&tv, nullptr);
+        g_timeConfigured = true;
+        g_lastNtpSyncAt = now;
+        refreshTimeSnapshot();
+        applied = true;
+    }
+
+    if(frame.weatherValid && !controller_env_weather_valid()) {
+        g_environment.weatherValid = true;
+        g_environment.temperatureF = frame.temperatureF;
+        g_environment.weatherCode = frame.weatherCode;
+        g_environment.precipitationPercent = frame.precipitationPercent;
+        g_environment.location = frame.location.length() > 0 ? frame.location : String(kLocationName);
+        g_lastWeatherFetchAt = now;
+        g_lastWeatherAttemptAt = now;
+        applied = true;
+    }
+
+    return applied;
+}
+
 bool controller_env_time_valid() {
     refreshTimeSnapshot();
     return g_environment.timeValid;
@@ -174,4 +205,24 @@ bool controller_env_time_valid() {
 
 bool controller_env_weather_valid() {
     return g_environment.weatherValid && g_lastWeatherFetchAt != 0;
+}
+
+uint32_t controller_env_last_ntp_sync_ms() {
+    return controller_env_time_valid() ? g_lastNtpSyncAt : 0;
+}
+
+uint32_t controller_env_last_weather_fetch_ms() {
+    return controller_env_weather_valid() ? g_lastWeatherFetchAt : 0;
+}
+
+String controller_env_location() {
+    return g_environment.location;
+}
+
+int16_t controller_env_temperature_f() {
+    return g_environment.temperatureF;
+}
+
+int8_t controller_env_precipitation_percent() {
+    return g_environment.precipitationPercent;
 }
