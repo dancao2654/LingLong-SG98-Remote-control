@@ -4,6 +4,8 @@
 #include <cstring>
 
 #include <WiFi.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 
 #include "controller_board.h"
 #include "display.h"
@@ -18,6 +20,8 @@
 #include "pdata.h"
 #include "radio_mode.h"
 #include "remote_ws.h"
+#include "sg98_ota_download.h"
+#include "sg98_version.h"
 #include "wifi_ui.h"
 
 namespace {
@@ -28,8 +32,14 @@ uint16_t lastObservedFaultCode = 0xFFFF;
 uint8_t lastObservedCommStatus = 0xFF;
 uint8_t lastObservedMotorStatus = 0xFF;
 uint8_t lastObservedScaleStatus = 0xFF;
-char serialLineBuffer[96];
+char serialLineBuffer[384];
 size_t serialLineLen = 0;
+char otaMessageBuffer[160];
+
+struct OtaWifiGuard {
+    bool wifiWasActive = false;
+    bool espNowWasActive = false;
+};
 
 const char* stateText(States value) {
     switch(value) {
@@ -47,6 +57,7 @@ const char* stateText(States value) {
         case CALIBRATING: return "CALIBRATING";
         case MOTOR_SELECT: return "MOTOR_SELECT";
         case NETWORK_INFO: return "NETWORK_INFO";
+        case ABOUT_INFO: return "ABOUT_INFO";
     }
     return "UNKNOWN";
 }
@@ -76,6 +87,7 @@ const char* shortStateText(States value) {
         case CALIBRATING: return "CAL";
         case MOTOR_SELECT: return "DRVSEL";
         case NETWORK_INFO: return "NET";
+        case ABOUT_INFO: return "ABOUT";
     }
     return "UNK";
 }
@@ -378,6 +390,179 @@ String stableDeviceMacAddress() {
     return String(out);
 }
 
+String runningApplicationOffsetHex() {
+    const esp_partition_t* partition = esp_ota_get_running_partition();
+    char out[12];
+    snprintf(out, sizeof(out), "0x%lx", static_cast<unsigned long>(partition != nullptr ? partition->address : 0x10000));
+    return String(out);
+}
+
+uint32_t runningApplicationSize() {
+    const esp_partition_t* partition = esp_ota_get_running_partition();
+    return partition != nullptr ? partition->size : 0;
+}
+
+String nextOtaOffsetHex() {
+    const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+    char out[12];
+    snprintf(out, sizeof(out), "0x%lx", static_cast<unsigned long>(partition != nullptr ? partition->address : 0));
+    return String(out);
+}
+
+uint32_t nextOtaSize() {
+    const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+    return partition != nullptr ? partition->size : 0;
+}
+
+const esp_partition_t* otaBootPartitionForToken(const char* token) {
+    if(token == nullptr) {
+        return nullptr;
+    }
+    if(strcmp(token, "next") == 0) {
+        return esp_ota_get_next_update_partition(nullptr);
+    }
+    if(strcmp(token, "running") == 0 || strcmp(token, "current") == 0) {
+        return esp_ota_get_running_partition();
+    }
+    if(strcmp(token, "app0") == 0 || strcmp(token, "ota0") == 0 || strcmp(token, "ota_0") == 0) {
+        return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
+    }
+    if(strcmp(token, "app1") == 0 || strcmp(token, "ota1") == 0 || strcmp(token, "ota_1") == 0) {
+        return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, nullptr);
+    }
+    return nullptr;
+}
+
+bool apiSetOtaBootPartition(const char* target, const char** message) {
+    const esp_partition_t* partition = otaBootPartitionForToken(target);
+    if(partition == nullptr) {
+        *message = "usage: api ota boot <next|running|app0|app1> [reboot]";
+        return false;
+    }
+
+    const esp_err_t err = esp_ota_set_boot_partition(partition);
+    if(err != ESP_OK) {
+        snprintf(otaMessageBuffer, sizeof(otaMessageBuffer), "set boot failed err=%d", static_cast<int>(err));
+        *message = otaMessageBuffer;
+        return false;
+    }
+
+    snprintf(otaMessageBuffer,
+             sizeof(otaMessageBuffer),
+             "boot=%s offset=0x%lx reboot required",
+             partition->label,
+             static_cast<unsigned long>(partition->address));
+    *message = otaMessageBuffer;
+    return true;
+}
+
+void restoreOtaWifi(const OtaWifiGuard& guard) {
+    if(guard.wifiWasActive) {
+        return;
+    }
+    wifi_ui_stop();
+    if(guard.espNowWasActive && !espnow_control_is_active()) {
+        (void)espnow_control_start(false);
+    }
+}
+
+bool ensureOtaWifi(OtaWifiGuard* guard, String* message) {
+    if(guard == nullptr) {
+        return false;
+    }
+    guard->wifiWasActive = wifi_ui_is_active();
+    guard->espNowWasActive = espnow_control_is_active();
+
+    if(wifi_ui_sta_connected()) {
+        return true;
+    }
+    if(!wifi_ui_has_saved_network()) {
+        if(message != nullptr) {
+            *message = "no saved wifi";
+        }
+        return false;
+    }
+
+    if(!guard->wifiWasActive && guard->espNowWasActive) {
+        espnow_control_stop();
+    }
+    if(!wifi_ui_start()) {
+        restoreOtaWifi(*guard);
+        if(message != nullptr) {
+            *message = "wifi start failed";
+        }
+        return false;
+    }
+
+    const uint32_t startedAt = millis();
+    while(static_cast<uint32_t>(millis() - startedAt) < 30000UL) {
+        wifi_ui_poll();
+        if(wifi_ui_sta_connected()) {
+            return true;
+        }
+        delay(50);
+        yield();
+    }
+
+    restoreOtaWifi(*guard);
+    if(message != nullptr) {
+        *message = "wifi connect timeout";
+    }
+    return false;
+}
+
+bool apiDownloadOta(const char* url, String* message) {
+    if(url == nullptr || url[0] == '\0') {
+        if(message != nullptr) {
+            *message = "usage: api ota download <url> [boot|reboot]";
+        }
+        return false;
+    }
+
+    OtaWifiGuard guard;
+    String wifiMessage;
+    if(!ensureOtaWifi(&guard, &wifiMessage)) {
+        if(message != nullptr) {
+            *message = wifiMessage;
+        }
+        return false;
+    }
+
+    sg98_ota_download::Result result;
+    const bool ok = sg98_ota_download::downloadToNextSlot(String(url), &result);
+    restoreOtaWifi(guard);
+    if(message != nullptr) {
+        *message = result.message;
+    }
+    return ok;
+}
+
+bool apiDownloadOtaManifest(const char* url, String* message) {
+    if(url == nullptr || url[0] == '\0') {
+        if(message != nullptr) {
+            *message = "usage: api ota manifest <url> [boot|reboot]";
+        }
+        return false;
+    }
+
+    OtaWifiGuard guard;
+    String wifiMessage;
+    if(!ensureOtaWifi(&guard, &wifiMessage)) {
+        if(message != nullptr) {
+            *message = wifiMessage;
+        }
+        return false;
+    }
+
+    sg98_ota_download::Result result;
+    const bool ok = sg98_ota_download::downloadManifestToNextSlot(String(url), &result);
+    restoreOtaWifi(guard);
+    if(message != nullptr) {
+        *message = result.message;
+    }
+    return ok;
+}
+
 void apiPrintDevice() {
     Serial.print("{\"type\":\"device\",\"protocol\":\"sg98-usb-device-v1\",\"role\":\"controller\",\"target\":");
     jsonPrintQuoted(controller_board_target_name());
@@ -385,6 +570,29 @@ void apiPrintDevice() {
     jsonPrintQuoted(controller_board_display_name());
     Serial.print(",\"mac\":");
     jsonPrintQuoted(stableDeviceMacAddress());
+    Serial.print(",\"firmwareVersion\":");
+    jsonPrintQuoted(sg98_version::release());
+    Serial.print(",\"gitSha\":");
+    jsonPrintQuoted(sg98_version::gitSha());
+    Serial.print(",\"gitDirty\":");
+    Serial.print(sg98_version::dirty() ? "true" : "false");
+    Serial.print(",\"buildEnv\":");
+    jsonPrintQuoted(sg98_version::buildEnv());
+    Serial.print(",\"buildDate\":");
+    jsonPrintQuoted(SG98_BUILD_DATE);
+    Serial.print(",\"buildTime\":");
+    jsonPrintQuoted(SG98_BUILD_TIME);
+    Serial.print(",\"supportsAppOnlyUpdate\":true");
+    Serial.print(",\"applicationOffset\":");
+    jsonPrintQuoted(runningApplicationOffsetHex());
+    Serial.print(",\"applicationSize\":");
+    Serial.print(static_cast<unsigned long>(runningApplicationSize()));
+    Serial.print(",\"supportsOtaUpdate\":");
+    Serial.print(nextOtaSize() > 0 ? "true" : "false");
+    Serial.print(",\"otaNextOffset\":");
+    jsonPrintQuoted(nextOtaOffsetHex());
+    Serial.print(",\"otaNextSize\":");
+    Serial.print(static_cast<unsigned long>(nextOtaSize()));
     Serial.print(",\"buildId\":");
     jsonPrintQuoted(BUILD_ID);
     Serial.println("}");
@@ -406,6 +614,7 @@ const char* apiMenuItemKind(uint8_t menuNum, uint8_t itemIdx) {
             case Menu1Items::DRIVESETTINGS:
             case Menu1Items::CALIBRATE:
             case Menu1Items::NETWORKINFO:
+            case Menu1Items::ABOUT:
                 return "action";
             case Menu1Items::RESET:
                 return "danger_action";
@@ -450,6 +659,7 @@ const char* apiMenuItemAction(uint8_t menuNum, uint8_t itemIdx) {
             case Menu1Items::DRIVESETTINGS: return "drive_select";
             case Menu1Items::CALIBRATE: return "calibrate";
             case Menu1Items::NETWORKINFO: return "network_info";
+            case Menu1Items::ABOUT: return "about";
             case Menu1Items::RESET: return "reset_defaults";
             default: return nullptr;
         }
@@ -546,6 +756,14 @@ void apiPrintStatus() {
     Serial.print(radio_mode_web_recovery_active() ? "true" : "false");
     Serial.print(",\"radioRecoveryMs\":");
     Serial.print(static_cast<unsigned long>(radio_mode_recovery_remaining_ms()));
+    Serial.print(",\"firmwareVersion\":");
+    jsonPrintQuoted(sg98_version::release());
+    Serial.print(",\"firmwareGitSha\":");
+    jsonPrintQuoted(sg98_version::gitSha());
+    Serial.print(",\"firmwareDirty\":");
+    Serial.print(sg98_version::dirty() ? "true" : "false");
+    Serial.print(",\"buildEnv\":");
+    jsonPrintQuoted(sg98_version::buildEnv());
     Serial.print(",\"remoteRecoveryRequired\":");
     Serial.print(controller_board_requires_remote_recovery() ? "true" : "false");
     Serial.print(",\"error\":");
@@ -1014,6 +1232,19 @@ bool apiActionNetworkInfo(const char** message) {
     return true;
 }
 
+bool apiActionAbout(const char** message) {
+    if(!controller_board_has_display()) {
+        *message = "display unavailable";
+        return false;
+    }
+    state = ABOUT_INFO;
+    enterMenu = false;
+    controller_note_activity();
+    disp_updateRequired = true;
+    *message = "ok";
+    return true;
+}
+
 void appendJsonQuoted(String& out, const char* value) {
     out += '"';
     if(value != nullptr) {
@@ -1078,6 +1309,14 @@ void appendStatusJson(String& out) {
     out += radio_mode_web_recovery_active() ? "true" : "false";
     out += ",\"radioRecoveryMs\":";
     out += String(static_cast<unsigned long>(radio_mode_recovery_remaining_ms()));
+    out += ",\"firmwareVersion\":";
+    appendJsonQuoted(out, sg98_version::release());
+    out += ",\"firmwareGitSha\":";
+    appendJsonQuoted(out, sg98_version::gitSha());
+    out += ",\"firmwareDirty\":";
+    out += sg98_version::dirty() ? "true" : "false";
+    out += ",\"buildEnv\":";
+    appendJsonQuoted(out, sg98_version::buildEnv());
     out += ",\"remoteRecoveryRequired\":";
     out += controller_board_requires_remote_recovery() ? "true" : "false";
     out += ",\"error\":";
@@ -1205,8 +1444,9 @@ void printHelp() {
     Serial.println("[diag] raw-uart: mru <baud> <8N1|8N2|8E1|8E2|8O1|8O2> <slave> <reg> <count> | mwu <baud> <mode> <slave> <reg> <value>");
     Serial.println("[diag] dbg: dbg status | dbg wifi <on|off|reset|scan> | dbg espnow <on|off|coexist> | dbg ws <on|off> | dbg all off");
     Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
+    Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot] | api reboot");
     Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm>");
+    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm>");
 }
 
 void printStatus() {
@@ -1844,6 +2084,82 @@ void handleLineCommand(char* line) {
             return;
         }
 
+        if(strcmp(subcmd, "ota") == 0) {
+            char* action = strtok_r(nullptr, " \t", &savePtr);
+            if(action == nullptr) {
+                apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot]");
+                return;
+            }
+            if(strcmp(action, "boot") == 0) {
+                const char* target = strtok_r(nullptr, " \t", &savePtr);
+                const char* rebootToken = strtok_r(nullptr, " \t", &savePtr);
+                const char* message = nullptr;
+                const bool ok = apiSetOtaBootPartition(target, &message);
+                apiPrintAck("ota", ok, message);
+                if(ok && rebootToken != nullptr && strcmp(rebootToken, "reboot") == 0) {
+                    delay(150);
+                    Serial.flush();
+                    ESP.restart();
+                }
+                return;
+            }
+            if(strcmp(action, "download") == 0) {
+                const char* url = strtok_r(nullptr, " \t", &savePtr);
+                const char* bootToken = strtok_r(nullptr, " \t", &savePtr);
+                String message;
+                const bool ok = apiDownloadOta(url, &message);
+                apiPrintAck("ota", ok, message.c_str());
+                if(ok && bootToken != nullptr &&
+                   (strcmp(bootToken, "boot") == 0 || strcmp(bootToken, "reboot") == 0)) {
+                    const char* bootMessage = nullptr;
+                    const bool bootOk = apiSetOtaBootPartition("next", &bootMessage);
+                    apiPrintAck("ota", bootOk, bootMessage);
+                    if(bootOk && strcmp(bootToken, "reboot") == 0) {
+                        delay(150);
+                        Serial.flush();
+                        ESP.restart();
+                    }
+                }
+                return;
+            }
+            if(strcmp(action, "manifest") == 0) {
+                const char* url = strtok_r(nullptr, " \t", &savePtr);
+                const char* bootToken = strtok_r(nullptr, " \t", &savePtr);
+                String message;
+                const bool ok = apiDownloadOtaManifest(url, &message);
+                apiPrintAck("ota", ok, message.c_str());
+                if(ok && bootToken != nullptr &&
+                   (strcmp(bootToken, "boot") == 0 || strcmp(bootToken, "reboot") == 0)) {
+                    const char* bootMessage = nullptr;
+                    const bool bootOk = apiSetOtaBootPartition("next", &bootMessage);
+                    apiPrintAck("ota", bootOk, bootMessage);
+                    if(bootOk && strcmp(bootToken, "reboot") == 0) {
+                        delay(150);
+                        Serial.flush();
+                        ESP.restart();
+                    }
+                }
+                return;
+            }
+            if(strcmp(action, "reboot") == 0) {
+                apiPrintAck("ota", true, "rebooting");
+                delay(150);
+                Serial.flush();
+                ESP.restart();
+                return;
+            }
+            apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot]");
+            return;
+        }
+
+        if(strcmp(subcmd, "reboot") == 0) {
+            apiPrintAck("reboot", true, "rebooting");
+            delay(150);
+            Serial.flush();
+            ESP.restart();
+            return;
+        }
+
         if(strcmp(subcmd, "set") == 0) {
             uint32_t menuNum = 0;
             uint32_t itemIdx = 0;
@@ -1932,6 +2248,8 @@ void handleLineCommand(char* line) {
                 ok = apiActionResetNetwork(&message);
             } else if(strcmp(action, "network_info") == 0) {
                 ok = apiActionNetworkInfo(&message);
+            } else if(strcmp(action, "about") == 0) {
+                ok = apiActionAbout(&message);
             } else if(strcmp(action, "reset_defaults") == 0) {
                 ok = apiActionResetDefaults(strtok_r(nullptr, " \t", &savePtr), &message);
             } else {
@@ -2346,6 +2664,8 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
         ok = apiActionResetNetwork(&rawMessage);
     } else if(strcmp(action, "network_info") == 0) {
         ok = apiActionNetworkInfo(&rawMessage);
+    } else if(strcmp(action, "about") == 0) {
+        ok = apiActionAbout(&rawMessage);
     } else if(strcmp(action, "reset_defaults") == 0) {
         ok = apiActionResetDefaults(arg0, &rawMessage);
     } else if(strcmp(action, "stream") == 0) {
@@ -2374,13 +2694,13 @@ void diag_console_init() {
     lastObservedMotorStatus = static_cast<uint8_t>(currentStatus);
     lastObservedScaleStatus = static_cast<uint8_t>(scaleStatus);
     Serial.printf(
-        "[diag] build=%s built=%s %s drive=%s uart=%s build_id=%s\n",
+        "[diag] build=%s built=%s %s drive=%s uart=%s firmware=%s\n",
         __FILE__,
         __DATE__,
         __TIME__,
         motor_get_type_label(),
         comm_get_profile_label(),
-        BUILD_ID
+        sg98_version::buildId().c_str()
     );
     printHelp();
     printStatus();

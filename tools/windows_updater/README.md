@@ -10,6 +10,47 @@ Each updater bundle embeds a full ESP32-S3 flash set:
 - `boot_app0`
 - application firmware
 
+## Versioning and Smart Update Mode
+
+Bundle metadata is generated from the root `VERSION` file plus the git short
+SHA that was used for the firmware build. The embedded `sg98-flash-manifest.json`
+now carries:
+
+- release version and git SHA
+- controller/remote role
+- PlatformIO environment
+- per-segment SHA-256 and size
+- application offset and update policy
+
+The updater runs in `auto` mode by default. It first asks the connected device
+for `api device` over USB-C:
+
+- If the running firmware reports `supportsAppOnlyUpdate=true`, the
+  reported firmware version is at least the bundle's `appOnlySince`, the
+  controller/remote role plus build environment match the bundle, and the new
+  app image fits the running app partition, only the application partition is
+  flashed.
+- If the device is older, unreadable, in bootloader/recovery, or does not match
+  the bundle target, the updater flashes the full image set.
+
+`appOnlySince` defaults to `2026.04.28`, the first release that can report
+enough USB-C identity data for safe application-only updates. Future release
+builds can force a whole-flash update with `SG98_UPDATE_DEFAULT_MODE=full`, or
+raise the app-only baseline with `SG98_APP_ONLY_SINCE=<version>` after a
+partition/bootloader compatibility change.
+
+Manual overrides are available:
+
+```bash
+SG98-Updater --full
+SG98-Updater --app-only
+SG98-Updater --mode full
+SG98-Updater --mode application
+```
+
+Public release folders also get `sg98-release-manifest.json` next to the zip
+files. That manifest is intended for later online update discovery from GitHub.
+
 ## PlatformIO Tasks
 
 In the PlatformIO sidebar, open the `Custom` group under these environments:

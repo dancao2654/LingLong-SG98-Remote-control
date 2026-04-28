@@ -13,6 +13,7 @@
 #include "motor_hal.h"
 #include "wifi_ui.h"
 #include "radio_mode.h"
+#include "sg98_version.h"
 
 namespace {
 constexpr uint32_t START_BUTTON_DEBOUNCE_MS = 12;
@@ -274,6 +275,7 @@ void applyDriveSelection() {
 }
 
 States networkInfoReturnState = MENU1;
+States aboutInfoReturnState = MENU1;
 
 void syncWirelessMenuFromMain() {
     Menu5[Menu5Items::WIRELESS_RADIO_MODE].value = Menu1[Menu1Items::RADIOMODE].value;
@@ -291,6 +293,13 @@ void openNetworkInfo(States returnState) {
     networkInfoReturnState = returnState;
     enterMenu = false;
     state = NETWORK_INFO;
+    disp_updateRequired = true;
+}
+
+void openAboutInfo(States returnState) {
+    aboutInfoReturnState = returnState;
+    enterMenu = false;
+    state = ABOUT_INFO;
     disp_updateRequired = true;
 }
 }
@@ -566,6 +575,9 @@ void do_io() {
                 if(menu1Selected == Menu1Items::NETWORKINFO) {
                     openNetworkInfo(MENU1);
                 }
+                if(menu1Selected == Menu1Items::ABOUT) {
+                    openAboutInfo(MENU1);
+                }
                 if(menu1Selected == Menu1Items::EXITMENU) lastIdle? state = IDLE : state = IDLE_GBW; 
                 if(menu1Selected != Menu1Items::PURGESETTINGS &&
                    menu1Selected != Menu1Items::GBWSETTINGS &&
@@ -573,6 +585,7 @@ void do_io() {
                    menu1Selected != Menu1Items::DRIVESETTINGS &&
                    menu1Selected != Menu1Items::RADIOMODE &&
                    menu1Selected != Menu1Items::NETWORKINFO &&
+                   menu1Selected != Menu1Items::ABOUT &&
                    menu1Selected != Menu1Items::EXITMENU) enterMenu = true; //entering settings adjustment
                 OriginalValue = Menu1[menu1Selected].value;
             } else { 
@@ -815,17 +828,17 @@ void do_io() {
         }
     }
 
-    if(state == NETWORK_INFO) {
+    if(state == NETWORK_INFO || state == ABOUT_INFO) {
         ledAction(0);
         (void)encoder_change();
-        static unsigned long lastNetworkInfoRefreshAt = 0;
-        if(lastNetworkInfoRefreshAt == 0 || millis() - lastNetworkInfoRefreshAt >= 1000) {
-            lastNetworkInfoRefreshAt = millis();
+        static unsigned long lastInfoRefreshAt = 0;
+        if(lastInfoRefreshAt == 0 || millis() - lastInfoRefreshAt >= 1000) {
+            lastInfoRefreshAt = millis();
             disp_updateRequired = true;
         }
 
         if(START_BUTTON() == true || ENC_BUTTON_DOWN() == true) {
-            state = networkInfoReturnState;
+            state = state == NETWORK_INFO ? networkInfoReturnState : aboutInfoReturnState;
             disp_updateRequired = true;
         }
     }

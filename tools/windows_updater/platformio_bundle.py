@@ -1,7 +1,9 @@
 Import("env")
 
 from pathlib import Path
+import json
 import os
+import shutil
 import subprocess
 import sys
 
@@ -66,6 +68,23 @@ def _bundle_config(env_name: str) -> tuple[str, str]:
     return ("SG98-Updater", "controller")
 
 
+def _stage_ota_assets(env_name: str) -> None:
+    assets = SCRIPT_DIR / "assets"
+    manifest_path = assets / "sg98-ota-manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    app_name = manifest.get("application", {}).get("fileName")
+    if not app_name:
+        raise RuntimeError("OTA manifest is missing application.fileName")
+
+    ota_dir = SCRIPT_DIR / "publish" / "ota" / env_name
+    if ota_dir.exists():
+        shutil.rmtree(ota_dir)
+    ota_dir.mkdir(parents=True, exist_ok=True)
+
+    for name in ("sg98-ota-manifest.json", "sg98-flash-manifest.json", app_name):
+        shutil.copy2(assets / name, ota_dir / name)
+
+
 def _bundle_env(env_name: str, rid: str, ensure_build: bool) -> None:
     output_base, publish_subdir = _bundle_config(env_name)
     if ensure_build:
@@ -73,6 +92,7 @@ def _bundle_env(env_name: str, rid: str, ensure_build: bool) -> None:
     if rid.startswith("win"):
         _run_step("fetch_esptool.py")
     _run_step("prepare_assets.py", "--env", env_name)
+    _stage_ota_assets(env_name)
     _run_step(
         "build_updater.py",
         "--rid",

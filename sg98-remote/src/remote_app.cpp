@@ -11,6 +11,8 @@
 #include <WiFiClientSecure.h>
 #include <driver/gpio.h>
 #include <esp_now.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
 #include <sys/time.h>
@@ -23,6 +25,8 @@
 #include "remote_runtime.h"
 #include "remote_wifi.h"
 #include "sg98_remote_defs.h"
+#include "sg98_ota_download.h"
+#include "sg98_version.h"
 #include <sg98_remote_protocol.h>
 
 namespace {
@@ -94,6 +98,7 @@ enum class Screen : uint8_t {
     EspNowPeers = 6,
     Network = 7,
     Profiler = 8,
+    About = 9,
 };
 
 enum class ItemKind : uint8_t {
@@ -109,7 +114,7 @@ enum class LinkTransport : uint8_t {
     WebSocket = 2,
 };
 
-constexpr uint8_t kScreenCount = 9;
+constexpr uint8_t kScreenCount = 10;
 constexpr uint8_t kControllerMenuMax = 5;
 constexpr uint8_t kControllerMenuSlots = kControllerMenuMax + 1;
 constexpr uint8_t kEspNowPeerSlots = 6;
@@ -496,6 +501,7 @@ constexpr SettingItem kMainItems[] = {
     {"Invert scrolling", ItemKind::Toggle, 1, INVERT_SCROLL, 0, 1, 1, "", nullptr, nullptr},
     {"Audio diag", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "audio"},
     {"Reset default", ItemKind::Danger, 0, 0, 0, 0, 0, "", "reset_defaults", "confirm"},
+    {"About", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "about"},
 };
 
 constexpr SettingItem kPurgeItems[] = {
@@ -600,7 +606,7 @@ bool g_backlightLevelValid = false;
 bool g_consoleStreamEnabled = false;
 bool g_consoleFrameTraceEnabled = false;
 uint32_t g_consoleLastStreamAt = 0;
-char g_consoleLineBuffer[160] = {};
+char g_consoleLineBuffer[384] = {};
 size_t g_consoleLineLen = 0;
 
 constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
@@ -1272,6 +1278,7 @@ const char* screenTitle(Screen screen) {
         case Screen::EspNowPeers: return "ESP-NOW";
         case Screen::Network: return "NETWORK";
         case Screen::Profiler: return "PROFILE";
+        case Screen::About: return "ABOUT";
         default: return "?";
     }
 }
@@ -1301,6 +1308,9 @@ Screen roundNavMenuTarget(Screen current, int delta) {
     }
     if(current == Screen::AudioDiag) {
         return Screen::Network;
+    }
+    if(current == Screen::About) {
+        return Screen::Main;
     }
     return cycleMenuScreen(current, delta);
 }
@@ -2625,7 +2635,7 @@ void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
 
 void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTransport, const char* toastText = nullptr) {
     const uint8_t screenIndex = snapshot.screen;
-    if(screenIndex <= static_cast<uint8_t>(Screen::Profiler)) {
+    if(screenIndex <= static_cast<uint8_t>(Screen::About)) {
         app.screen = static_cast<Screen>(screenIndex);
     }
     memcpy(app.selection, snapshot.selection, sizeof(app.selection));
@@ -3177,6 +3187,7 @@ const SettingItem* itemsForScreen(Screen screen, size_t* count) {
         }
         case Screen::Home:
         case Screen::Profiler:
+        case Screen::About:
         default:
             if(count != nullptr) *count = 0;
             return nullptr;
@@ -3190,6 +3201,7 @@ uint8_t& selectionFor(Screen screen) {
 void sanitizeSelections() {
     app.selection[static_cast<uint8_t>(Screen::Home)] = 0;
     app.selection[static_cast<uint8_t>(Screen::Profiler)] = 0;
+    app.selection[static_cast<uint8_t>(Screen::About)] = 0;
     for(const Screen screen : kMenuScreens) {
         size_t count = 0;
         itemsForScreen(screen, &count);
@@ -3263,6 +3275,9 @@ String formatValueLabel(const SettingItem& item, int32_t value) {
 
 String formatSettingValue(const SettingItem& item) {
     if(item.kind == ItemKind::Action || item.kind == ItemKind::Danger) {
+        if(item.action != nullptr && strcmp(item.action, "about") == 0) {
+            return sg98_version::shortVersion();
+        }
         if(isEspNowPeerSlotItem(item)) {
             const DiscoveredEspNowPeer* peer = visibleEspNowPeerAt(static_cast<uint8_t>(item.itemIdx));
             if(peer == nullptr) {
@@ -3295,6 +3310,9 @@ String formatSettingValue(const SettingItem& item) {
             return "CONFIRM";
         }
         if(item.action != nullptr && strcmp(item.action, "screen") == 0) {
+            if(item.actionArg != nullptr && strcmp(item.actionArg, "about") == 0) {
+                return sg98_version::shortVersion();
+            }
             if(item.actionArg != nullptr && strcmp(item.actionArg, "drive") == 0) {
                 return localDriveSelectionLabel(currentLocalDriveSelection());
             }
@@ -6450,6 +6468,141 @@ void drawPressureProfiler(RemoteCanvas& canvas, const Layout& layout) {
     drawBatteryIndicator(canvas, layout, bg);
 }
 
+String aboutOtaLine() {
+    return esp_ota_get_next_update_partition(nullptr) != nullptr ? "APP SLOT" : "FULL FLASH";
+}
+
+String aboutBuildTimeLine() {
+    const String date = SG98_BUILD_DATE;
+    const String time = SG98_BUILD_TIME;
+    if(date.length() >= 10 && time.length() >= 5) {
+        return date.substring(5, 7) + "/" + date.substring(8, 10) + " " + time.substring(0, 5) + "Z";
+    }
+    String out = date;
+    out += " ";
+    out += time;
+    return out;
+}
+
+String aboutRoleLine() {
+    String out = sg98_version::role();
+    out.toUpperCase();
+    return out;
+}
+
+void drawAboutRow(RemoteCanvas& canvas,
+                  const Rect& row,
+                  const String& label,
+                  const String& value,
+                  uint16_t face,
+                  uint16_t labelColor,
+                  uint16_t valueColor) {
+    const RemoteTextStyle labelStyle = RemoteTextStyle::Tiny;
+    const RemoteTextStyle valueStyle = useRoundNavigation() ? RemoteTextStyle::Small : tinyTextStyle();
+    canvas.drawTextTopLeft(upperText(label),
+                           row.x,
+                           row.y,
+                           labelStyle,
+                           labelColor,
+                           face);
+    canvas.drawTextTopRight(fitTextToWidth(value, row.w, valueStyle, 56),
+                            static_cast<int16_t>(row.x + row.w),
+                            row.y,
+                            valueStyle,
+                            valueColor,
+                            face);
+}
+
+void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
+    canvas.fillScreen(kColorBg);
+    drawPill(canvas, layout.modeBadge, "ABOUT", kColorPanel, kColorText);
+    drawBatteryIndicator(canvas, layout, kColorBg);
+
+    const Rect content = useRoundNavigation()
+                             ? roundMenuContentRect(layout)
+                             : Rect(static_cast<int16_t>(layout.pad * 2),
+                                    layout.listTop,
+                                    static_cast<int16_t>(layout.width - layout.pad * 4),
+                                    static_cast<int16_t>(layout.listBottom - layout.listTop - layout.gap));
+    const int16_t panelPad = useRoundNavigation() ? 18 : 14;
+    const int16_t maxPanelW = useRoundNavigation() ? 334 : content.w;
+    const int16_t panelW = min<int16_t>(maxPanelW, static_cast<int16_t>(content.w - (useRoundNavigation() ? 12 : 0)));
+    const int16_t panelX = static_cast<int16_t>(content.x + (content.w - panelW) / 2);
+    const int16_t panelTop = useRoundNavigation()
+                                 ? static_cast<int16_t>(layout.modeBadge.y + layout.modeBadge.h + layout.gap + 8)
+                                 : content.y;
+    const int16_t panelBottom = useRoundNavigation()
+                                    ? static_cast<int16_t>(layout.footer.y + layout.footer.h - 2)
+                                    : static_cast<int16_t>(content.y + content.h);
+    const Rect panel = {
+        panelX,
+        panelTop,
+        panelW,
+        static_cast<int16_t>(panelBottom - panelTop)
+    };
+    const uint16_t accent = blendColor565(kColorAccent, kColorText, 0.08f);
+    const uint16_t face = blendColor565(kColorPanel, kColorBg, 0.24f);
+    drawNestCard(canvas, panel, face, blendColor565(accent, face, 0.18f), true);
+
+    const int16_t innerX = static_cast<int16_t>(panel.x + panelPad);
+    const int16_t innerW = static_cast<int16_t>(panel.w - panelPad * 2);
+    const int16_t versionY = static_cast<int16_t>(panel.y + panelPad + (useRoundNavigation() ? 18 : 10));
+    const RemoteTextStyle versionStyle = useRoundNavigation() ? RemoteTextStyle::Large : RemoteTextStyle::Medium;
+    const RemoteTextStyle envStyle = useRoundNavigation() ? RemoteTextStyle::Small : tinyTextStyle();
+    canvas.drawCenteredText(fitTextToWidth(sg98_version::shortVersion(), innerW, versionStyle, 2),
+                            static_cast<int16_t>(panel.x + panel.w / 2),
+                            versionY,
+                            versionStyle,
+                            accent,
+                            face);
+    canvas.drawCenteredText(aboutRoleLine(),
+                            static_cast<int16_t>(panel.x + panel.w / 2),
+                            static_cast<int16_t>(versionY + (useRoundNavigation() ? 34 : 24)),
+                            tinyTextStyle(),
+                            blendColor565(kColorMuted, face, 0.02f),
+                            face);
+    canvas.drawCenteredText(fitTextToWidthNoTilde(String(sg98_version::buildEnv()), innerW, envStyle, 2),
+                            static_cast<int16_t>(panel.x + panel.w / 2),
+                            static_cast<int16_t>(versionY + (useRoundNavigation() ? 58 : 42)),
+                            envStyle,
+                            kColorText,
+                            face);
+
+    const int16_t dividerY = static_cast<int16_t>(versionY + (useRoundNavigation() ? 78 : 58));
+    canvas.drawLine(innerX,
+                    dividerY,
+                    static_cast<int16_t>(innerX + innerW),
+                    dividerY,
+                    blendColor565(face, accent, 0.22f));
+
+    const char* labels[] = {"GIT", "BUILT", "OTA", "UPDATE"};
+    const String values[] = {
+        sg98_version::gitLabel(),
+        aboutBuildTimeLine(),
+        aboutOtaLine(),
+        String("NONE")
+    };
+    const uint8_t rowCount = static_cast<uint8_t>(sizeof(labels) / sizeof(labels[0]));
+    const int16_t rowH = useRoundNavigation() ? 30 : 22;
+    int16_t rowY = static_cast<int16_t>(dividerY + (useRoundNavigation() ? 12 : 9));
+    const uint16_t labelColor = blendColor565(kColorMuted, face, 0.04f);
+    for(uint8_t i = 0; i < rowCount; ++i) {
+        const Rect row = {innerX, rowY, innerW, rowH};
+        drawAboutRow(canvas,
+                     row,
+                     labels[i],
+                     values[i],
+                     face,
+                     labelColor,
+                     i == 2 ? blendColor565(kColorGood, kColorText, 0.10f) : kColorText);
+        rowY = static_cast<int16_t>(rowY + rowH);
+    }
+
+    if(!useRoundNavigation()) {
+        drawTabs(canvas, layout);
+    }
+}
+
 void drawMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title) {
     canvas.fillScreen(kColorBg);
 
@@ -6856,6 +7009,8 @@ void redrawUi() {
         drawHome(canvas, layout);
     } else if(app.screen == Screen::Profiler) {
         drawPressureProfiler(canvas, layout);
+    } else if(app.screen == Screen::About) {
+        drawAboutPage(canvas, layout);
     } else if(app.editing) {
         if(app.screen == Screen::Main) {
             drawEditor(canvas, layout, "SYSTEM");
@@ -8428,6 +8583,7 @@ String actionFeedbackLabel(const SettingItem& item) {
     }
     if(strcmp(item.action, "reset_network") == 0) return "Network reset";
     if(strcmp(item.action, "reset_defaults") == 0) return "Defaults reset";
+    if(strcmp(item.action, "about") == 0) return sg98_version::aboutVersionLine();
     if(strcmp(item.action, "calibrate") == 0) return "Calibration started";
     if(strcmp(item.action, "redetect") == 0) return "Detecting drive";
     if(strcmp(item.action, "drive") == 0) return "Drive applied";
@@ -8437,6 +8593,11 @@ String actionFeedbackLabel(const SettingItem& item) {
 
 void runConfirmAction(const SettingItem& item) {
     if(item.action == nullptr) {
+        return;
+    }
+
+    if(strcmp(item.action, "about") == 0) {
+        setToast(sg98_version::buildId(), 2600);
         return;
     }
 
@@ -8585,6 +8746,8 @@ void activateSelectedItem() {
             setScreen(Screen::Drive);
         } else if(item.actionArg != nullptr && strcmp(item.actionArg, "audio") == 0) {
             setScreen(Screen::AudioDiag);
+        } else if(item.actionArg != nullptr && strcmp(item.actionArg, "about") == 0) {
+            setScreen(Screen::About);
         } else if(isControllerLinkItem(item)) {
             if(controllerLinkUsesWebSocketScan()) {
                 if(!remote_wifi_has_saved_network()) {
@@ -9102,10 +9265,15 @@ void handleSecondaryShortPress() {
             setScreen(Screen::Main);
         } else if(app.screen == Screen::EspNowPeers) {
             setScreen(Screen::Network);
+        } else if(app.screen == Screen::About) {
+            setScreen(Screen::Main);
         } else if(app.screen != Screen::Home) {
             setScreen(Screen::Home);
         }
         return;
+    }
+    if(app.screen == Screen::About) {
+        setScreen(Screen::Main);
     }
 }
 
@@ -9845,6 +10013,14 @@ void appendRemoteStatusJson(String& out) {
     out += '{';
     out += "\"board\":";
     appendJsonQuoted(out, remote_board_info().name);
+    out += ",\"firmwareVersion\":";
+    appendJsonQuoted(out, sg98_version::release());
+    out += ",\"firmwareGitSha\":";
+    appendJsonQuoted(out, sg98_version::gitSha());
+    out += ",\"firmwareDirty\":";
+    out += sg98_version::dirty() ? "true" : "false";
+    out += ",\"buildEnv\":";
+    appendJsonQuoted(out, sg98_version::buildEnv());
     out += ",\"screen\":";
     appendJsonQuoted(out, screenTitle(app.screen));
     out += ",\"editing\":";
@@ -10547,6 +10723,173 @@ bool runWifiBounceTest(const String& ssid, String* message) {
     return staOk;
 }
 
+String runningApplicationOffsetHex() {
+    const esp_partition_t* partition = esp_ota_get_running_partition();
+    char out[12];
+    snprintf(out, sizeof(out), "0x%lx", static_cast<unsigned long>(partition != nullptr ? partition->address : 0x10000));
+    return String(out);
+}
+
+uint32_t runningApplicationSize() {
+    const esp_partition_t* partition = esp_ota_get_running_partition();
+    return partition != nullptr ? partition->size : 0;
+}
+
+String nextOtaOffsetHex() {
+    const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+    char out[12];
+    snprintf(out, sizeof(out), "0x%lx", static_cast<unsigned long>(partition != nullptr ? partition->address : 0));
+    return String(out);
+}
+
+uint32_t nextOtaSize() {
+    const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+    return partition != nullptr ? partition->size : 0;
+}
+
+const esp_partition_t* otaBootPartitionForToken(String token) {
+    token.toLowerCase();
+    if(token == "next") {
+        return esp_ota_get_next_update_partition(nullptr);
+    }
+    if(token == "running" || token == "current") {
+        return esp_ota_get_running_partition();
+    }
+    if(token == "app0" || token == "ota0" || token == "ota_0") {
+        return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_0, nullptr);
+    }
+    if(token == "app1" || token == "ota1" || token == "ota_1") {
+        return esp_partition_find_first(ESP_PARTITION_TYPE_APP, ESP_PARTITION_SUBTYPE_APP_OTA_1, nullptr);
+    }
+    return nullptr;
+}
+
+bool setOtaBootPartition(String target, String* message) {
+    const esp_partition_t* partition = otaBootPartitionForToken(target);
+    if(partition == nullptr) {
+        if(message != nullptr) {
+            *message = "usage: api ota boot <next|running|app0|app1> [reboot]";
+        }
+        return false;
+    }
+
+    const esp_err_t err = esp_ota_set_boot_partition(partition);
+    if(err != ESP_OK) {
+        if(message != nullptr) {
+            *message = String("set boot failed err=") + String(static_cast<int>(err));
+        }
+        return false;
+    }
+
+    if(message != nullptr) {
+        char offset[12];
+        snprintf(offset, sizeof(offset), "0x%lx", static_cast<unsigned long>(partition->address));
+        *message = String("boot=") + partition->label + " offset=" + offset + " reboot required";
+    }
+    return true;
+}
+
+struct RemoteOtaWifiGuard {
+    LinkTransport previousTransport = LinkTransport::None;
+    bool switchedTransport = false;
+};
+
+void restoreOtaWifi(const RemoteOtaWifiGuard& guard) {
+    if(guard.switchedTransport && guard.previousTransport != LinkTransport::WebSocket) {
+        switchTransportNow(guard.previousTransport);
+    }
+}
+
+bool ensureOtaWifi(RemoteOtaWifiGuard* guard, String* message) {
+    if(guard == nullptr) {
+        return false;
+    }
+    guard->previousTransport = app.currentTransport;
+
+    if(remote_wifi_sta_connected()) {
+        return true;
+    }
+    if(!remote_wifi_has_saved_network()) {
+        if(message != nullptr) {
+            *message = "no saved wifi";
+        }
+        return false;
+    }
+
+    if(app.currentTransport != LinkTransport::WebSocket || !remote_wifi_is_active()) {
+        switchTransportNow(LinkTransport::WebSocket);
+        guard->switchedTransport = true;
+    }
+
+    const uint32_t startedAt = millis();
+    while(static_cast<uint32_t>(millis() - startedAt) < 30000UL) {
+        remote_wifi_poll();
+        if(remote_wifi_sta_connected()) {
+            return true;
+        }
+        delay(50);
+        yield();
+    }
+
+    restoreOtaWifi(*guard);
+    if(message != nullptr) {
+        *message = "wifi connect timeout";
+    }
+    return false;
+}
+
+bool downloadOtaImage(String url, String* message) {
+    if(url.length() == 0) {
+        if(message != nullptr) {
+            *message = "usage: api ota download <url> [boot|reboot]";
+        }
+        return false;
+    }
+
+    RemoteOtaWifiGuard guard;
+    String wifiMessage;
+    if(!ensureOtaWifi(&guard, &wifiMessage)) {
+        if(message != nullptr) {
+            *message = wifiMessage;
+        }
+        return false;
+    }
+
+    sg98_ota_download::Result result;
+    const bool ok = sg98_ota_download::downloadToNextSlot(url, &result);
+    restoreOtaWifi(guard);
+    if(message != nullptr) {
+        *message = result.message;
+    }
+    return ok;
+}
+
+bool downloadOtaManifest(String url, String* message) {
+    if(url.length() == 0) {
+        if(message != nullptr) {
+            *message = "usage: api ota manifest <url> [boot|reboot]";
+        }
+        return false;
+    }
+
+    RemoteOtaWifiGuard guard;
+    String wifiMessage;
+    if(!ensureOtaWifi(&guard, &wifiMessage)) {
+        if(message != nullptr) {
+            *message = wifiMessage;
+        }
+        return false;
+    }
+
+    sg98_ota_download::Result result;
+    const bool ok = sg98_ota_download::downloadManifestToNextSlot(url, &result);
+    restoreOtaWifi(guard);
+    if(message != nullptr) {
+        *message = result.message;
+    }
+    return ok;
+}
+
 void printRemoteConsoleAck(const String& cmd, bool ok, const String& message) {
     String out;
     out.reserve(256);
@@ -10576,6 +10919,29 @@ void printRemoteConsoleDevice() {
     appendJsonQuoted(out, remote_board_info().name);
     out += ",\"mac\":";
     appendJsonQuoted(out, stableRemoteMacAddress());
+    out += ",\"firmwareVersion\":";
+    appendJsonQuoted(out, sg98_version::release());
+    out += ",\"gitSha\":";
+    appendJsonQuoted(out, sg98_version::gitSha());
+    out += ",\"gitDirty\":";
+    out += sg98_version::dirty() ? "true" : "false";
+    out += ",\"buildEnv\":";
+    appendJsonQuoted(out, sg98_version::buildEnv());
+    out += ",\"buildDate\":";
+    appendJsonQuoted(out, SG98_BUILD_DATE);
+    out += ",\"buildTime\":";
+    appendJsonQuoted(out, SG98_BUILD_TIME);
+    out += ",\"supportsAppOnlyUpdate\":true";
+    out += ",\"applicationOffset\":";
+    appendJsonQuoted(out, runningApplicationOffsetHex());
+    out += ",\"applicationSize\":";
+    out += String(static_cast<unsigned long>(runningApplicationSize()));
+    out += ",\"supportsOtaUpdate\":";
+    out += nextOtaSize() > 0 ? "true" : "false";
+    out += ",\"otaNextOffset\":";
+    appendJsonQuoted(out, nextOtaOffsetHex());
+    out += ",\"otaNextSize\":";
+    out += String(static_cast<unsigned long>(nextOtaSize()));
     out += ",\"transport\":";
     appendJsonQuoted(out, transportName(app.currentTransport));
     out += ",\"apSSID\":";
@@ -10605,6 +10971,7 @@ void printRemoteConsolePeers() {
 void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
+    Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot] | api reboot");
     Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
@@ -11100,6 +11467,78 @@ void handleRemoteConsoleLine(const char* rawLine) {
         sub.toLowerCase();
         if(sub == "device" || sub == "identity") {
             printRemoteConsoleDevice();
+            return;
+        }
+        if(sub == "ota") {
+            String action = takeToken(&tail);
+            action.toLowerCase();
+            if(action == "boot") {
+                const String target = takeToken(&tail);
+                String rebootToken = takeToken(&tail);
+                rebootToken.toLowerCase();
+                String message;
+                const bool ok = setOtaBootPartition(target, &message);
+                printRemoteConsoleAck(line, ok, message);
+                if(ok && rebootToken == "reboot") {
+                    delay(150);
+                    Serial.flush();
+                    ESP.restart();
+                }
+                return;
+            }
+            if(action == "download") {
+                const String url = takeToken(&tail);
+                String bootToken = takeToken(&tail);
+                bootToken.toLowerCase();
+                String message;
+                const bool ok = downloadOtaImage(url, &message);
+                printRemoteConsoleAck(line, ok, message);
+                if(ok && (bootToken == "boot" || bootToken == "reboot")) {
+                    String bootMessage;
+                    const bool bootOk = setOtaBootPartition("next", &bootMessage);
+                    printRemoteConsoleAck(line, bootOk, bootMessage);
+                    if(bootOk && bootToken == "reboot") {
+                        delay(150);
+                        Serial.flush();
+                        ESP.restart();
+                    }
+                }
+                return;
+            }
+            if(action == "manifest") {
+                const String url = takeToken(&tail);
+                String bootToken = takeToken(&tail);
+                bootToken.toLowerCase();
+                String message;
+                const bool ok = downloadOtaManifest(url, &message);
+                printRemoteConsoleAck(line, ok, message);
+                if(ok && (bootToken == "boot" || bootToken == "reboot")) {
+                    String bootMessage;
+                    const bool bootOk = setOtaBootPartition("next", &bootMessage);
+                    printRemoteConsoleAck(line, bootOk, bootMessage);
+                    if(bootOk && bootToken == "reboot") {
+                        delay(150);
+                        Serial.flush();
+                        ESP.restart();
+                    }
+                }
+                return;
+            }
+            if(action == "reboot") {
+                printRemoteConsoleAck(line, true, "rebooting");
+                delay(150);
+                Serial.flush();
+                ESP.restart();
+                return;
+            }
+            printRemoteConsoleAck(line, false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot]");
+            return;
+        }
+        if(sub == "reboot") {
+            printRemoteConsoleAck(line, true, "rebooting");
+            delay(150);
+            Serial.flush();
+            ESP.restart();
             return;
         }
         if(sub == "set") {

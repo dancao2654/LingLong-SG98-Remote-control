@@ -18,7 +18,7 @@ void purge_prepare_for_grinding();
 void purge_cancel_pending();
 void purge_mark_started();
 
-enum States{SLEEPING, IDLE, IDLE_GBW, GRINDING, PURGING, GRINDING_GBW, MENU1, MENU2, MENU3, MENU4, MENU5, CALIBRATING, MOTOR_SELECT, NETWORK_INFO};
+enum States{SLEEPING, IDLE, IDLE_GBW, GRINDING, PURGING, GRINDING_GBW, MENU1, MENU2, MENU3, MENU4, MENU5, CALIBRATING, MOTOR_SELECT, NETWORK_INFO, ABOUT_INFO};
 
 bool controller_is_menu_state(States currentState);
 
@@ -50,6 +50,7 @@ enum Menu1Items{
     INVERT_SCROLL,
     RESET,
     NETWORKINFO,
+    ABOUT,
     NUM_MENU1_ITEMS
 };
 

@@ -9,6 +9,8 @@
 #include <string.h>
 #include <time.h>
 
+#include <esp_ota_ops.h>
+
 #include "comm.h"
 #include "controller_env.h"
 #include "gbw.h"
@@ -16,6 +18,7 @@
 #include "main.h"
 #include "motor_hal.h"
 #include "radio_mode.h"
+#include "sg98_version.h"
 #include "wifi_ui.h"
 
 namespace {
@@ -250,6 +253,23 @@ String networkInfoText() {
     }
     out += "\nWxAge ";
     out += ageLabel(controller_env_last_weather_fetch_ms());
+    return out;
+}
+
+String aboutInfoText() {
+    String out;
+    out.reserve(180);
+    out += "Version ";
+    out += sg98_version::shortVersion();
+    out += "\nBuild   ";
+    out += fitText(sg98_version::buildEnv(), 19);
+    out += "\nGit     ";
+    out += fitText(sg98_version::gitLabel(), 19);
+    out += "\nDate    ";
+    out += SG98_BUILD_DATE;
+    out += "\nOTA     ";
+    out += esp_ota_get_next_update_partition(nullptr) != nullptr ? "App slot" : "Full flash";
+    out += "\nUpdate  None";
     return out;
 }
 
@@ -623,6 +643,9 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
         return "Open";
     }
+    if(menuNum == 1 && selectedIdx == Menu1Items::ABOUT) {
+        return sg98_version::shortVersion();
+    }
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) {
         return radio_mode_value_label(item.value);
     }
@@ -636,7 +659,8 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
             selectedIdx == JMCBAUDMENU ||
             selectedIdx == DRIVESETTINGS ||
             selectedIdx == RADIOMODE ||
-            selectedIdx == NETWORKINFO)) return "Open";
+            selectedIdx == NETWORKINFO ||
+            selectedIdx == ABOUT)) return "Open";
         if(menuNum == 5 &&
            (selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO ||
             selectedIdx == Menu5Items::WIRELESS_RESET_NETWORK)) return "Open";
@@ -660,6 +684,7 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
 
 String menuDetailValue(const menuEntry& item, int menuNum, int selectedIdx) {
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return String(baudForJmcMenuItem(selectedIdx));
+    if(menuNum == 1 && selectedIdx == Menu1Items::ABOUT) return sg98_version::aboutVersionLine();
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) {
         if(menuNum == 1 && selectedIdx == CALIBRATE) return "Ready";
         return "Select";
@@ -677,6 +702,7 @@ String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO) return "Shows cached network and sync status";
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Writes drive baud for next boot";
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Wireless mode, status, and reset";
+    if(menuNum == 1 && selectedIdx == Menu1Items::ABOUT) return sg98_version::aboutBuildLine();
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) return "WiFi opens setup, ESP-NOW parks low power";
     if(menuNum == 1 && selectedIdx == Menu1Items::RESET) return "Reset needs encoder confirm";
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RESET_NETWORK) return "Clears saved WiFi and setup state";
@@ -693,6 +719,7 @@ String menuDetailHint(const menuEntry& item, int menuNum, int selectedIdx) {
     }
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Encoder writes. Power cycle drive after the change.";
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Encoder opens. Start goes back.";
+    if(menuNum == 1 && selectedIdx == Menu1Items::ABOUT) return sg98_version::gitLabel();
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) return "Radio Off is local-only standby.";
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO) return "Start or encoder goes back.";
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Start cancels and goes back.";
@@ -767,6 +794,7 @@ uint32_t currentViewTint() {
         case MENU5:
         case MOTOR_SELECT:
         case NETWORK_INFO:
+        case ABOUT_INFO:
             return kColorAccent;
         case MENU1:
         case MENU4:
@@ -1459,6 +1487,25 @@ void syncNetworkInfo() {
     setHidden(ui.detailHint, false);
 }
 
+void syncAboutInfo() {
+    lv_label_set_text(ui.detailTitle, "");
+    setHidden(ui.detailTitle, true);
+
+    lv_obj_set_width(ui.detailValue, 214);
+    lv_obj_set_style_text_font(ui.detailValue, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_align(ui.detailValue, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_color(ui.detailValue, lvColor(kColorSoft), 0);
+    lv_obj_set_style_text_line_space(ui.detailValue, 3, 0);
+    lv_obj_align(ui.detailValue, LV_ALIGN_TOP_LEFT, -3, -4);
+    lv_label_set_text(ui.detailValue, aboutInfoText().c_str());
+
+    lv_label_set_text(ui.detailMeta, "");
+    setHidden(ui.detailMeta, true);
+    lv_label_set_text(ui.detailHint, "Start / encoder: back");
+    lv_obj_set_style_text_color(ui.detailHint, lvColor(kColorMuted), 0);
+    setHidden(ui.detailHint, false);
+}
+
 void syncMotorSelect() {
     lv_label_set_text(ui.selectTitle, "");
     setHidden(ui.selectTitle, true);
@@ -1516,6 +1563,14 @@ void syncViewForState() {
     if(state == NETWORK_INFO) {
         showView(ActiveView::Detail);
         syncNetworkInfo();
+        syncHeader();
+        syncErrorBanner();
+        return;
+    }
+
+    if(state == ABOUT_INFO) {
+        showView(ActiveView::Detail);
+        syncAboutInfo();
         syncHeader();
         syncErrorBanner();
         return;

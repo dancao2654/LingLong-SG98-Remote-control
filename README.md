@@ -56,6 +56,37 @@ Those aggregate/default project builds now target only:
 The board-specific environments remain available for forced hardware debugging,
 but they are no longer part of the normal aggregate build flow.
 
+#### Versioning and upgrades
+
+Firmware releases use the root `VERSION` file as the public release train, for
+example `2026.04.28`. PlatformIO stamps every controller and remote build with:
+
+- release version
+- controller/remote role
+- PlatformIO environment
+- git short SHA
+- dirty build marker
+- UTC build date/time
+
+That same identity appears in the last menu entry, `About`, and in the USB-C
+`api device` response. The older `BUILD_ID` in `src/definitions.h` is still only
+for saved-settings schema resets and should not be changed for normal releases.
+
+Updater bundles use the same version metadata. From `2026.04.28` forward,
+devices report `supportsAppOnlyUpdate=true`; the desktop updater and future
+online updater can flash only the application partition when the running device
+is at least the bundle's `appOnlySince` version, role/environment matches the
+bundle, and the new app fits the current app partition. Older firmware,
+unreadable devices, incompatible layout, or recovery cases fall back to full
+flash. A release can force full flash by building the bundle with
+`SG98_UPDATE_DEFAULT_MODE=full` or by raising `SG98_APP_ONLY_SINCE`.
+
+The generic controller build uses `partitions/controller_8mb_ota.csv`, which
+keeps two 3.5 MB app slots on 8 MB controller hardware. Moving an existing
+controller from the older single-app layout to this layout requires one USB full
+flash. After that, the device can report `supportsOtaUpdate=true` and future
+online updates can use the inactive OTA app slot.
+
 Do not flash `sg98-remote` onto the SG98 controller box.
 
 If the box boots with serial or screen text such as `SG98 remote`, `Set target MAC`, `MANUAL`, or `ESP-NOW ch1`, the remote firmware is on the wrong device.

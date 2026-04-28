@@ -42,6 +42,7 @@ const char* stateTextCompact(States value) {
         case CALIBRATING: return "CALIBRATING";
         case MOTOR_SELECT: return "MOTOR_SELECT";
         case NETWORK_INFO: return "NETWORK_INFO";
+        case ABOUT_INFO: return "ABOUT_INFO";
         default: return "UNKNOWN";
     }
 }

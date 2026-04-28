@@ -12,16 +12,24 @@ constexpr unsigned long HEADLESS_ESPNOW_BOOT_RECOVERY_MS = 60000;
 constexpr unsigned long HEADLESS_ESPNOW_REMOTE_LOST_MS = 60000;
 constexpr unsigned long ESPNOW_LINK_HEALTHY_MS = 5000;
 constexpr unsigned long HOME_WIFI_SYNC_GRACE_MS = 120000;
+constexpr unsigned long INTERNET_SYNC_GRACE_MS = 45000;
 constexpr unsigned long WIFI_SESSION_IDLE_TIMEOUT_MS = 600000;
 constexpr unsigned long CAPTIVE_DONE_CLOSE_GRACE_MS = 7000;
+constexpr unsigned long INTERNET_SYNC_STARTUP_DELAY_MS = 3500;
+constexpr unsigned long INTERNET_SYNC_INTERVAL_MS = 60UL * 60UL * 1000UL;
+constexpr unsigned long INTERNET_SYNC_RETRY_MS = 10UL * 60UL * 1000UL;
 
 RadioMode currentMode = RADIO_MODE_WEB;
 bool initialized = false;
 bool espnowRecoveryWatchActive = false;
 bool webRecoveryActive = false;
+bool internetSyncPending = false;
+bool internetSyncActive = false;
 unsigned long espnowRecoveryWatchStartedAt = 0;
 unsigned long homeWifiOnlineSince = 0;
 unsigned long captiveDoneMarkedAt = 0;
+unsigned long nextInternetSyncAt = 0;
+unsigned long internetSyncStartedAt = 0;
 
 bool isMenuOrIdleState(States currentState) {
     switch(currentState) {
@@ -34,6 +42,7 @@ bool isMenuOrIdleState(States currentState) {
         case MENU5:
         case MOTOR_SELECT:
         case NETWORK_INFO:
+        case ABOUT_INFO:
             return true;
         default:
             return false;
@@ -120,9 +129,25 @@ bool espNowLinkHealthy() {
     return lastCommandAt != 0 && (millis() - lastCommandAt) <= ESPNOW_LINK_HEALTHY_MS;
 }
 
+bool localEnvironmentSynced() {
+    return controller_env_time_valid() || controller_env_weather_valid();
+}
+
+bool localEnvironmentSyncedSince(unsigned long since) {
+    const uint32_t ntpAt = controller_env_last_ntp_sync_ms();
+    const uint32_t weatherAt = controller_env_last_weather_fetch_ms();
+    return (ntpAt != 0 && ntpAt >= since) ||
+           (weatherAt != 0 && weatherAt >= since);
+}
+
 bool homeWifiSetupSynced() {
-    return wifi_ui_home_setup_online() &&
-           (controller_env_time_valid() || controller_env_weather_valid());
+    if(!wifi_ui_home_setup_online()) {
+        return false;
+    }
+    if(internetSyncActive && internetSyncStartedAt != 0) {
+        return localEnvironmentSyncedSince(internetSyncStartedAt);
+    }
+    return localEnvironmentSynced();
 }
 
 bool homeWifiSetupReadyByTimeout() {
@@ -134,7 +159,8 @@ bool homeWifiSetupReadyByTimeout() {
         homeWifiOnlineSince = millis();
         return false;
     }
-    return (millis() - homeWifiOnlineSince) >= HOME_WIFI_SYNC_GRACE_MS;
+    const unsigned long graceMs = internetSyncActive ? INTERNET_SYNC_GRACE_MS : HOME_WIFI_SYNC_GRACE_MS;
+    return (millis() - homeWifiOnlineSince) >= graceMs;
 }
 
 const int32_t* radioModeUserValues(uint8_t* count) {
@@ -159,6 +185,8 @@ void closeWebBridgeIfReady() {
     if(currentMode != RADIO_MODE_WEB) {
         homeWifiOnlineSince = 0;
         captiveDoneMarkedAt = 0;
+        internetSyncActive = false;
+        internetSyncStartedAt = 0;
         wifi_ui_set_captive_setup_complete(false);
         return;
     }
@@ -167,7 +195,7 @@ void closeWebBridgeIfReady() {
     const bool syncTimedOut = !internetSynced && homeWifiSetupReadyByTimeout();
     const bool setupReady = internetSynced || syncTimedOut;
     const bool idleTimedOut = wifi_ui_web_idle_for(WIFI_SESSION_IDLE_TIMEOUT_MS);
-    const bool shouldAutoPark = webRecoveryActive || idleTimedOut;
+    const bool shouldAutoPark = webRecoveryActive || internetSyncActive || idleTimedOut;
     if(!setupReady && !idleTimedOut) {
         captiveDoneMarkedAt = 0;
         wifi_ui_set_captive_setup_complete(false);
@@ -200,6 +228,10 @@ void closeWebBridgeIfReady() {
     if(espnow_control_start()) {
         currentMode = RADIO_MODE_ESPNOW;
         webRecoveryActive = false;
+        internetSyncActive = false;
+        internetSyncStartedAt = 0;
+        internetSyncPending = true;
+        nextInternetSyncAt = millis() + (internetSynced ? INTERNET_SYNC_INTERVAL_MS : INTERNET_SYNC_RETRY_MS);
         homeWifiOnlineSince = 0;
         captiveDoneMarkedAt = 0;
         startEspNowRecoveryWatchIfNeeded();
@@ -213,8 +245,54 @@ void closeWebBridgeIfReady() {
         currentMode = RADIO_MODE_WEB;
         Menu1[Menu1Items::RADIOMODE].value = RADIO_MODE_WEB;
         webRecoveryActive = true;
+        internetSyncActive = false;
+        internetSyncStartedAt = 0;
         captiveDoneMarkedAt = 0;
         Serial.println("[radio] ESP-NOW park failed; Wi-Fi remains active");
+    }
+}
+
+void startInternetSyncIfReady() {
+    if(!internetSyncPending) {
+        return;
+    }
+    if(currentMode == RADIO_MODE_OFF || !wifi_ui_has_saved_network()) {
+        internetSyncPending = false;
+        return;
+    }
+    if(controller_board_requires_remote_recovery()) {
+        internetSyncPending = false;
+        return;
+    }
+    if(currentMode != RADIO_MODE_ESPNOW || !isMenuOrIdleState(state)) {
+        return;
+    }
+    if(static_cast<int32_t>(millis() - nextInternetSyncAt) < 0) {
+        return;
+    }
+
+    internetSyncPending = false;
+    clearEspNowRecoveryWatch();
+    espnow_control_stop();
+    if(wifi_ui_start()) {
+        currentMode = RADIO_MODE_WEB;
+        Menu1[Menu1Items::RADIOMODE].value = RADIO_MODE_WEB;
+        webRecoveryActive = false;
+        internetSyncActive = true;
+        internetSyncStartedAt = millis();
+        captiveDoneMarkedAt = 0;
+        disp_updateRequired = true;
+        Serial.println("[radio] internet maintenance sync active; will park back to ESP-NOW");
+        return;
+    }
+
+    if(espnow_control_start()) {
+        currentMode = RADIO_MODE_ESPNOW;
+        internetSyncPending = true;
+        nextInternetSyncAt = millis() + INTERNET_SYNC_RETRY_MS;
+        startEspNowRecoveryWatchIfNeeded();
+        disp_updateRequired = true;
+        Serial.println("[radio] internet maintenance sync failed; restored ESP-NOW");
     }
 }
 }
@@ -227,9 +305,12 @@ void radio_mode_init() {
     }
     initialized = false;
     radio_mode_apply(true);
+    internetSyncPending = bootMode != RADIO_MODE_OFF && wifi_ui_has_saved_network();
+    nextInternetSyncAt = millis() + INTERNET_SYNC_STARTUP_DELAY_MS;
 }
 
 void radio_mode_poll() {
+    startInternetSyncIfReady();
     if(radio_mode_is_web() || radio_mode_is_dual() || wifi_ui_is_active()) {
         wifi_ui_poll();
         closeWebBridgeIfReady();
@@ -253,6 +334,12 @@ bool radio_mode_apply(bool force) {
     if(initialized || force) {
         clearEspNowRecoveryWatch();
         webRecoveryActive = false;
+        internetSyncActive = false;
+        internetSyncStartedAt = 0;
+        if(desiredMode == RADIO_MODE_OFF) {
+            internetSyncPending = false;
+            nextInternetSyncAt = 0;
+        }
         wifi_ui_stop();
         espnow_control_stop();
     }
@@ -460,6 +547,9 @@ String radio_mode_lcd_status() {
     if(radio_mode_web_recovery_active()) {
         return "Web recovery";
     }
+    if(internetSyncActive) {
+        return "Internet sync";
+    }
     return wifi_ui_lcd_status();
 }
 
@@ -475,6 +565,9 @@ String radio_mode_status_text() {
     }
     if(radio_mode_web_recovery_active()) {
         return String("Web recovery; saved ESP-NOW");
+    }
+    if(internetSyncActive) {
+        return String("Internet sync; saved ESP-NOW");
     }
     return wifi_ui_is_active() ? wifi_ui_lcd_status() : String("Web off");
 }

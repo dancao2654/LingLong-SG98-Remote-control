@@ -26,22 +26,35 @@ internal static class Program
         try
         {
             string port = ResolvePort(args);
+            UpdateMode requestedMode = ResolveUpdateMode(args);
             selectedPort = port;
             string workDir = Path.Combine(Path.GetTempPath(), "SG98Updater");
             Directory.CreateDirectory(workDir);
             FlashManifest manifest = LoadFlashManifest();
             IReadOnlyList<ExtractedFlashSegment> flashSegments = ExtractFlashSegments(manifest, workDir);
+            DeviceIdentity? device = TryReadDeviceIdentity(port);
+            IReadOnlyList<ExtractedFlashSegment> selectedSegments =
+                SelectFlashSegments(manifest, flashSegments, device, requestedMode);
 
             Console.WriteLine($"Port: {port}");
             Console.WriteLine($"Bundle: {manifest.EnvName}");
-            Console.WriteLine("Flashing full image set...");
-            foreach (ExtractedFlashSegment segment in flashSegments)
+            if (!string.IsNullOrWhiteSpace(manifest.Version))
+            {
+                Console.WriteLine($"Version: v{manifest.Version} {manifest.GitSha}".TrimEnd());
+            }
+            if (device is not null)
+            {
+                Console.WriteLine($"Detected: {device.Role} v{device.FirmwareVersion} {device.BuildEnv}".TrimEnd());
+            }
+            Console.WriteLine($"Update mode: {UpdateModeDescription(selectedSegments, flashSegments)}");
+            Console.WriteLine(selectedSegments.Count == flashSegments.Count ? "Flashing full image set..." : "Flashing application firmware...");
+            foreach (ExtractedFlashSegment segment in selectedSegments)
             {
                 Console.WriteLine($"  {segment.Offset} -> {segment.FileName}");
             }
             Console.WriteLine();
 
-            string flasherArgs = BuildWriteFlashArgs(port, flashSegments);
+            string flasherArgs = BuildWriteFlashArgs(port, selectedSegments);
             var flasher = ResolveFlasher(workDir);
             int exitCode = RunProcess(flasher.FileName, flasher.ArgumentsPrefix + flasherArgs);
             if (exitCode != 0)
@@ -105,10 +118,283 @@ internal static class Program
             string segmentPath = ExtractResource(
                 $"Assets.{segment.FileName}",
                 Path.Combine(workDir, segment.FileName));
-            extracted.Add(new ExtractedFlashSegment(segment.Offset, segment.FileName, segmentPath));
+            extracted.Add(new ExtractedFlashSegment(segment.Offset, segment.FileName, segmentPath, segment.Kind ?? string.Empty));
         }
 
         return extracted;
+    }
+
+    private static UpdateMode ResolveUpdateMode(string[] args)
+    {
+        for (int i = 0; i < args.Length; i++)
+        {
+            if (string.Equals(args[i], "--full", StringComparison.OrdinalIgnoreCase))
+            {
+                return UpdateMode.Full;
+            }
+            if (string.Equals(args[i], "--app-only", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(args[i], "--application-only", StringComparison.OrdinalIgnoreCase))
+            {
+                return UpdateMode.Application;
+            }
+            if (string.Equals(args[i], "--mode", StringComparison.OrdinalIgnoreCase) && i + 1 < args.Length)
+            {
+                string mode = args[i + 1];
+                if (string.Equals(mode, "full", StringComparison.OrdinalIgnoreCase))
+                {
+                    return UpdateMode.Full;
+                }
+                if (string.Equals(mode, "application", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(mode, "app", StringComparison.OrdinalIgnoreCase))
+                {
+                    return UpdateMode.Application;
+                }
+            }
+        }
+
+        return UpdateMode.Auto;
+    }
+
+    private static IReadOnlyList<ExtractedFlashSegment> SelectFlashSegments(
+        FlashManifest manifest,
+        IReadOnlyList<ExtractedFlashSegment> allSegments,
+        DeviceIdentity? device,
+        UpdateMode requestedMode)
+    {
+        ExtractedFlashSegment? application = allSegments.FirstOrDefault(segment =>
+            string.Equals(segment.Kind, "application", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(segment.Offset, manifest.ApplicationOffset ?? "0x10000", StringComparison.OrdinalIgnoreCase));
+
+        if (requestedMode == UpdateMode.Full || application is null)
+        {
+            return allSegments;
+        }
+
+        if (requestedMode == UpdateMode.Application)
+        {
+            return [application];
+        }
+
+        if (string.Equals(manifest.UpdatePolicy?.DefaultMode, "application", StringComparison.OrdinalIgnoreCase)
+            && DeviceAllowsApplicationOnly(manifest, device))
+        {
+            return [application];
+        }
+
+        return allSegments;
+    }
+
+    private static bool DeviceAllowsApplicationOnly(FlashManifest manifest, DeviceIdentity? device)
+    {
+        if (device is null || !device.SupportsAppOnlyUpdate)
+        {
+            return false;
+        }
+
+        if (!DeviceMeetsAppOnlySince(manifest, device))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(manifest.Role)
+            && !string.Equals(manifest.Role, device.Role, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (!string.IsNullOrWhiteSpace(manifest.EnvName)
+            && !string.IsNullOrWhiteSpace(device.BuildEnv)
+            && !string.Equals(manifest.EnvName, device.BuildEnv, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (manifest.Application is not null)
+        {
+            if (!string.IsNullOrWhiteSpace(manifest.Application.Offset)
+                && !string.IsNullOrWhiteSpace(device.ApplicationOffset)
+                && !string.Equals(manifest.Application.Offset, device.ApplicationOffset, StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+
+            if (manifest.Application.Size > 0
+                && device.ApplicationSize > 0
+                && manifest.Application.Size > device.ApplicationSize)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool DeviceMeetsAppOnlySince(FlashManifest manifest, DeviceIdentity device)
+    {
+        string? appOnlySince = manifest.UpdatePolicy?.AppOnlySince;
+        if (string.IsNullOrWhiteSpace(appOnlySince))
+        {
+            return true;
+        }
+
+        if (string.IsNullOrWhiteSpace(device.FirmwareVersion))
+        {
+            return false;
+        }
+
+        return CompareVersionLabels(device.FirmwareVersion, appOnlySince) >= 0;
+    }
+
+    private static int CompareVersionLabels(string left, string right)
+    {
+        string[] leftParts = VersionParts(left);
+        string[] rightParts = VersionParts(right);
+        int count = Math.Max(leftParts.Length, rightParts.Length);
+        for (int i = 0; i < count; i++)
+        {
+            string leftPart = i < leftParts.Length ? leftParts[i] : "0";
+            string rightPart = i < rightParts.Length ? rightParts[i] : "0";
+
+            bool leftIsNumber = int.TryParse(leftPart, out int leftNumber);
+            bool rightIsNumber = int.TryParse(rightPart, out int rightNumber);
+            int comparison = leftIsNumber && rightIsNumber
+                ? leftNumber.CompareTo(rightNumber)
+                : string.Compare(leftPart, rightPart, StringComparison.OrdinalIgnoreCase);
+            if (comparison != 0)
+            {
+                return comparison;
+            }
+        }
+
+        return 0;
+    }
+
+    private static string[] VersionParts(string value)
+    {
+        string cleaned = value.Trim();
+        if (cleaned.StartsWith("v", StringComparison.OrdinalIgnoreCase))
+        {
+            cleaned = cleaned[1..];
+        }
+        int suffixIndex = cleaned.IndexOf('-');
+        if (suffixIndex >= 0)
+        {
+            cleaned = cleaned[..suffixIndex];
+        }
+        return cleaned.Split(['.', '_'], StringSplitOptions.RemoveEmptyEntries);
+    }
+
+    private static string UpdateModeDescription(
+        IReadOnlyList<ExtractedFlashSegment> selectedSegments,
+        IReadOnlyList<ExtractedFlashSegment> allSegments)
+    {
+        return selectedSegments.Count == allSegments.Count
+            ? "full flash"
+            : "application only";
+    }
+
+    private static DeviceIdentity? TryReadDeviceIdentity(string portName)
+    {
+        try
+        {
+            using SerialPort port = new(portName, 115200)
+            {
+                DtrEnable = false,
+                RtsEnable = false,
+                NewLine = "\n",
+                ReadTimeout = 250,
+                WriteTimeout = 250,
+            };
+
+            port.Open();
+            port.DiscardInBuffer();
+            port.WriteLine("api device");
+
+            Stopwatch deadline = Stopwatch.StartNew();
+            bool retried = false;
+            while (deadline.Elapsed < TimeSpan.FromMilliseconds(1800))
+            {
+                try
+                {
+                    string line = port.ReadLine().Trim();
+                    DeviceIdentity? identity = TryParseDeviceIdentity(line);
+                    if (identity is not null)
+                    {
+                        return identity;
+                    }
+                }
+                catch (TimeoutException)
+                {
+                    if (!retried && deadline.Elapsed > TimeSpan.FromMilliseconds(600))
+                    {
+                        port.WriteLine("api device");
+                        retried = true;
+                    }
+                }
+            }
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            System.Threading.Thread.Sleep(250);
+        }
+
+        return null;
+    }
+
+    private static DeviceIdentity? TryParseDeviceIdentity(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line) || !line.TrimStart().StartsWith('{'))
+        {
+            return null;
+        }
+
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(line);
+            JsonElement root = document.RootElement;
+            if (!string.Equals(JsonString(root, "type"), "device", StringComparison.OrdinalIgnoreCase))
+            {
+                return null;
+            }
+
+            return new DeviceIdentity(
+                JsonString(root, "role") ?? string.Empty,
+                JsonString(root, "firmwareVersion") ?? string.Empty,
+                JsonString(root, "buildEnv") ?? string.Empty,
+                JsonBool(root, "supportsAppOnlyUpdate"),
+                JsonString(root, "applicationOffset") ?? string.Empty,
+                JsonLong(root, "applicationSize"));
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string? JsonString(JsonElement root, string name)
+    {
+        return root.TryGetProperty(name, out JsonElement value) && value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+    }
+
+    private static bool JsonBool(JsonElement root, string name)
+    {
+        return root.TryGetProperty(name, out JsonElement value)
+            && value.ValueKind == JsonValueKind.True;
+    }
+
+    private static long JsonLong(JsonElement root, string name)
+    {
+        return root.TryGetProperty(name, out JsonElement value)
+            && value.ValueKind == JsonValueKind.Number
+            && value.TryGetInt64(out long result)
+                ? result
+                : 0;
     }
 
     private static string BuildWriteFlashArgs(string port, IReadOnlyList<ExtractedFlashSegment> flashSegments)
@@ -413,10 +699,34 @@ internal static class Program
 
     private sealed class FlashManifest
     {
+        public string? Schema { get; init; }
+        public string? Version { get; init; }
+        public string? GitSha { get; init; }
+        public string? Role { get; init; }
         public string EnvName { get; init; } = string.Empty;
         public string? BoardName { get; init; }
         public string? ApplicationOffset { get; init; }
+        public ApplicationInfo? Application { get; init; }
+        public UpdatePolicy? UpdatePolicy { get; init; }
         public List<FlashSegment> Segments { get; init; } = [];
+    }
+
+    private sealed class ApplicationInfo
+    {
+        public string? Offset { get; init; }
+        public string? FileName { get; init; }
+        public string? Sha256 { get; init; }
+        public long Size { get; init; }
+    }
+
+    private sealed class UpdatePolicy
+    {
+        public string? DefaultMode { get; init; }
+        public string? AppOnlySince { get; init; }
+        public string? ApplicationOffset { get; init; }
+        public string? RequiresDeviceCapability { get; init; }
+        public string? FallbackMode { get; init; }
+        public string? FallbackReason { get; init; }
     }
 
     private sealed class FlashSegment
@@ -427,5 +737,20 @@ internal static class Program
         public string? Kind { get; init; }
     }
 
-    private sealed record ExtractedFlashSegment(string Offset, string FileName, string Path);
+    private sealed record ExtractedFlashSegment(string Offset, string FileName, string Path, string Kind);
+
+    private sealed record DeviceIdentity(
+        string Role,
+        string FirmwareVersion,
+        string BuildEnv,
+        bool SupportsAppOnlyUpdate,
+        string ApplicationOffset,
+        long ApplicationSize);
+
+    private enum UpdateMode
+    {
+        Auto,
+        Application,
+        Full,
+    }
 }

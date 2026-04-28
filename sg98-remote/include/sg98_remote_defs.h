@@ -69,6 +69,7 @@ enum Menu1Items {
     INVERT_SCROLL,
     RESET,
     NETWORKINFO,
+    ABOUT,
     NUM_MENU1_ITEMS
 };
 

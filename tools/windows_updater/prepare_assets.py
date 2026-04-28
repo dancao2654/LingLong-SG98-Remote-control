@@ -2,10 +2,18 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
+
+TOOLS_DIR = Path(__file__).resolve().parents[1]
+if str(TOOLS_DIR) not in sys.path:
+    sys.path.insert(0, str(TOOLS_DIR))
+
+from sg98_version import APP_ONLY_UPDATE_SINCE, metadata  # noqa: E402
 
 SEGMENTS = [
     {
@@ -132,22 +140,93 @@ def board_name_for_manifest(env_name: str, idedata: dict) -> str:
     return idedata.get("board_name") or idedata.get("env_name") or env_name
 
 
-def write_manifest(assets: Path, env_name: str, board_name: str, segments: list[dict]) -> Path:
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def update_default_mode() -> str:
+    mode = os.environ.get("SG98_UPDATE_DEFAULT_MODE", "application").strip().lower()
+    if mode not in ("application", "full"):
+        raise ValueError("SG98_UPDATE_DEFAULT_MODE must be 'application' or 'full'")
+    return mode
+
+
+def app_only_since_version() -> str:
+    return os.environ.get("SG98_APP_ONLY_SINCE", APP_ONLY_UPDATE_SINCE).strip() or APP_ONLY_UPDATE_SINCE
+
+
+def write_manifest(assets: Path, build_info: dict, env_name: str, board_name: str, segments: list[dict]) -> Path:
+    application = next((segment for segment in segments if segment["kind"] == "application"), None)
+    default_mode = update_default_mode()
     manifest = {
+        "schema": "sg98-flash-manifest-v2",
+        "version": build_info["version"],
+        "gitSha": build_info["gitSha"],
+        "gitDirty": build_info["gitDirty"],
+        "role": build_info["role"],
         "envName": env_name,
         "boardName": board_name,
         "applicationOffset": "0x10000",
+        "generatedAtUtc": build_info["generatedAtUtc"],
+        "updatePolicy": {
+            "schema": "sg98-update-policy-v1",
+            "defaultMode": default_mode,
+            "appOnlySince": app_only_since_version(),
+            "applicationOffset": "0x10000",
+            "requiresDeviceCapability": "supportsAppOnlyUpdate",
+            "fallbackMode": "full",
+            "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery.",
+        },
+        "application": {
+            "offset": application["offset"] if application else "0x10000",
+            "fileName": application["file_name"] if application else "flash-03-0x10000-firmware.bin",
+            "sha256": sha256_file(assets / application["file_name"]) if application else "",
+            "size": (assets / application["file_name"]).stat().st_size if application else 0,
+        },
         "segments": [
             {
                 "offset": segment["offset"],
                 "fileName": segment["file_name"],
                 "sourceName": segment["source_name"],
                 "kind": segment["kind"],
+                "sha256": sha256_file(assets / segment["file_name"]),
+                "size": (assets / segment["file_name"]).stat().st_size,
             }
             for segment in segments
         ],
     }
     manifest_path = assets / "sg98-flash-manifest.json"
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
+
+
+def write_ota_manifest(assets: Path, build_info: dict, env_name: str, board_name: str, segments: list[dict]) -> Path:
+    application = next((segment for segment in segments if segment["kind"] == "application"), None)
+    if application is None:
+        raise ValueError("Cannot write OTA manifest without an application segment")
+
+    app_path = assets / application["file_name"]
+    manifest = {
+        "schema": "sg98-ota-manifest-v1",
+        "version": build_info["version"],
+        "gitSha": build_info["gitSha"],
+        "gitDirty": build_info["gitDirty"],
+        "role": build_info["role"],
+        "envName": env_name,
+        "boardName": board_name,
+        "generatedAtUtc": build_info["generatedAtUtc"],
+        "application": {
+            "offset": application["offset"],
+            "fileName": application["file_name"],
+            "sha256": sha256_file(app_path),
+            "size": app_path.stat().st_size,
+        },
+    }
+    manifest_path = assets / "sg98-ota-manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return manifest_path
 
@@ -161,6 +240,9 @@ def clear_staged_assets(assets: Path) -> None:
     manifest_path = assets / "sg98-flash-manifest.json"
     if manifest_path.exists():
         manifest_path.unlink()
+    ota_manifest_path = assets / "sg98-ota-manifest.json"
+    if ota_manifest_path.exists():
+        ota_manifest_path.unlink()
 
 
 def main() -> int:
@@ -175,6 +257,7 @@ def main() -> int:
     idedata = load_idedata(build_dir)
     board_name = board_name_for_manifest(env_name, idedata)
     segments = resolve_segment_sources(build_dir, firmware_path)
+    build_info = metadata(repo, env_name)
 
     for segment in segments:
         source = segment["source_path"]
@@ -184,8 +267,10 @@ def main() -> int:
         shutil.copy2(source, target)
         print(f"[copied] {source} -> {target}")
 
-    manifest_path = write_manifest(assets, env_name, board_name, segments)
+    manifest_path = write_manifest(assets, build_info, env_name, board_name, segments)
     print(f"[wrote] {manifest_path}")
+    ota_manifest_path = write_ota_manifest(assets, build_info, env_name, board_name, segments)
+    print(f"[wrote] {ota_manifest_path}")
     return 0
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -169,6 +170,61 @@ def write_md5_file(archive_path: Path) -> Path:
     return md5_path
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def update_release_manifest(bundle_root: Path, archive_path: Path, md5_path: Path, rid: str, manifest: dict) -> Path:
+    release_manifest_path = bundle_root / "sg98-release-manifest.json"
+    if release_manifest_path.exists():
+        release_manifest = json.loads(release_manifest_path.read_text(encoding="utf-8"))
+    else:
+        release_manifest = {
+            "schema": "sg98-public-release-manifest-v1",
+            "artifacts": [],
+        }
+
+    artifact = {
+        "fileName": archive_path.name,
+        "md5FileName": md5_path.name,
+        "runtime": rid,
+        "role": manifest.get("role"),
+        "envName": manifest.get("envName"),
+        "boardName": manifest.get("boardName"),
+        "version": manifest.get("version"),
+        "gitSha": manifest.get("gitSha"),
+        "gitDirty": manifest.get("gitDirty", False),
+        "size": archive_path.stat().st_size,
+        "sha256": sha256_file(archive_path),
+        "md5": md5_path.read_text(encoding="ascii").split()[0],
+        "application": manifest.get("application"),
+        "updatePolicy": manifest.get("updatePolicy"),
+    }
+
+    artifacts = [
+        item for item in release_manifest.get("artifacts", [])
+        if item.get("fileName") != archive_path.name
+    ]
+    artifacts.append(artifact)
+    artifacts.sort(key=lambda item: (str(item.get("role") or ""), str(item.get("runtime") or ""), str(item.get("fileName") or "")))
+
+    release_manifest.update(
+        {
+            "schema": "sg98-public-release-manifest-v1",
+            "generatedAtUtc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "version": manifest.get("version"),
+            "gitSha": manifest.get("gitSha"),
+            "artifacts": artifacts,
+        }
+    )
+    release_manifest_path.write_text(json.dumps(release_manifest, indent=2) + "\n", encoding="utf-8")
+    return release_manifest_path
+
+
 def load_manifest(assets: Path) -> dict:
     manifest_path = assets / "sg98-flash-manifest.json"
     if not manifest_path.exists():
@@ -190,7 +246,11 @@ def main() -> int:
     root = Path(__file__).resolve().parent
     assets = root / "assets"
     manifest = load_manifest(assets)
-    required_assets = ["sg98-flash-manifest.json", *[segment["fileName"] for segment in manifest["segments"]]]
+    required_assets = [
+        "sg98-flash-manifest.json",
+        "sg98-ota-manifest.json",
+        *[segment["fileName"] for segment in manifest["segments"]],
+    ]
     if rid.startswith("win"):
         required_assets.append("esptool.exe")
 
@@ -236,9 +296,11 @@ def main() -> int:
     vendor_homebrew_brotli(output_path, cwd=root)
     archive_path = create_release_archive(bundle_root, publish_dir, output_base, rid, cwd=root)
     md5_path = write_md5_file(archive_path)
+    release_manifest_path = update_release_manifest(bundle_root, archive_path, md5_path, rid, manifest)
     print(f"[ok] {output_path}")
     print(f"[ok] {archive_path}")
     print(f"[ok] {md5_path}")
+    print(f"[ok] {release_manifest_path}")
     return 0
 
 

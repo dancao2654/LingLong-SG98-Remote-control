@@ -16,6 +16,7 @@
 #include "radio_mode.h"
 #include "remote_link.h"
 #include "smart_purge_learning.h"
+#include "sg98_version.h"
 
 States state = IDLE;
 int8_t menu1Selected = EXITMENU;
@@ -48,6 +49,7 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 16
     {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 17
     {"Network info", 0, 0, 0, 0, "NETINFO", ""},          // 18
+    {"About", 0, 0, 0, 0, "ABOUT", ""},                  // 19
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {
@@ -226,6 +228,7 @@ bool controller_is_menu_state(States currentState) {
         case MENU5:
         case MOTOR_SELECT:
         case NETWORK_INFO:
+        case ABOUT_INFO:
             return true;
         default:
             return false;
@@ -297,7 +300,7 @@ void setup() {
     #else
     delay(250);
     #endif
-    Serial.printf("[fw] SG98 controller build=%s\n", BUILD_ID);
+    Serial.printf("[fw] SG98 controller %s prefs=%s\n", sg98_version::buildId().c_str(), BUILD_ID);
     Serial.printf("[fw] target=%s\n", controller_board_target_name());
     
     setCpuFrequencyMhz(80);
@@ -430,6 +433,10 @@ void loop() {
     }
 
     if(state == NETWORK_INFO) {
+        motor_setRPM = 0;
+    }
+
+    if(state == ABOUT_INFO) {
         motor_setRPM = 0;
     }
 
