@@ -1,0 +1,60 @@
+{
+  "schema": "sg98-flash-manifest-v2",
+  "version": "2026.04.28",
+  "gitSha": "79aafbf3",
+  "gitDirty": false,
+  "role": "remote",
+  "envName": "remote-universal-s3",
+  "boardName": "remote-universal-s3",
+  "applicationOffset": "0x10000",
+  "generatedAtUtc": "2026-04-28T07:46:36Z",
+  "updatePolicy": {
+    "schema": "sg98-update-policy-v1",
+    "defaultMode": "application",
+    "appOnlySince": "2026.04.28",
+    "applicationOffset": "0x10000",
+    "requiresDeviceCapability": "supportsAppOnlyUpdate",
+    "fallbackMode": "full",
+    "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+  },
+  "application": {
+    "offset": "0x10000",
+    "fileName": "flash-03-0x10000-firmware.bin",
+    "sha256": "b5a2a82d67a4d0a98c1c4201b61ba8f39b60d2eb55f648ef8186354e964abed8",
+    "size": 1983232
+  },
+  "segments": [
+    {
+      "offset": "0x0000",
+      "fileName": "flash-00-0x0000-bootloader.bin",
+      "sourceName": "bootloader.bin",
+      "kind": "bootloader",
+      "sha256": "b68c1ed33c43a4290375213f24d608c125e31e22880d16d4a5dcba89e083716d",
+      "size": 19984
+    },
+    {
+      "offset": "0x8000",
+      "fileName": "flash-01-0x8000-partitions.bin",
+      "sourceName": "partitions.bin",
+      "kind": "partitions",
+      "sha256": "bd0f7954aca2ef7d925ee21aaa1f3dc8822d1d6ce5cbbd26a135e5886bfff6ce",
+      "size": 3072
+    },
+    {
+      "offset": "0xe000",
+      "fileName": "flash-02-0xe000-boot_app0.bin",
+      "sourceName": "boot_app0.bin",
+      "kind": "boot_app0",
+      "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0",
+      "size": 8192
+    },
+    {
+      "offset": "0x10000",
+      "fileName": "flash-03-0x10000-firmware.bin",
+      "sourceName": "firmware.bin",
+      "kind": "application",
+      "sha256": "b5a2a82d67a4d0a98c1c4201b61ba8f39b60d2eb55f648ef8186354e964abed8",
+      "size": 1983232
+    }
+  ]
+}

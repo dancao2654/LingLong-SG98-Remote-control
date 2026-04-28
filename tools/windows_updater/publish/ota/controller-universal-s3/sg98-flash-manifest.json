@@ -1,0 +1,60 @@
+{
+  "schema": "sg98-flash-manifest-v2",
+  "version": "2026.04.28",
+  "gitSha": "79aafbf3",
+  "gitDirty": false,
+  "role": "controller",
+  "envName": "controller-universal-s3",
+  "boardName": "controller-universal-s3",
+  "applicationOffset": "0x10000",
+  "generatedAtUtc": "2026-04-28T07:46:35Z",
+  "updatePolicy": {
+    "schema": "sg98-update-policy-v1",
+    "defaultMode": "application",
+    "appOnlySince": "2026.04.28",
+    "applicationOffset": "0x10000",
+    "requiresDeviceCapability": "supportsAppOnlyUpdate",
+    "fallbackMode": "full",
+    "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+  },
+  "application": {
+    "offset": "0x10000",
+    "fileName": "flash-03-0x10000-firmware.bin",
+    "sha256": "d63cdf49a59a7a815cd2e46785a81e3df791a5c3ae0b525020465179c43cd84a",
+    "size": 1968816
+  },
+  "segments": [
+    {
+      "offset": "0x0000",
+      "fileName": "flash-00-0x0000-bootloader.bin",
+      "sourceName": "bootloader.bin",
+      "kind": "bootloader",
+      "sha256": "6f232c4aafe7d21239a1c59404723ca2cfdca063ef73501a21126a8cef39f432",
+      "size": 19984
+    },
+    {
+      "offset": "0x8000",
+      "fileName": "flash-01-0x8000-partitions.bin",
+      "sourceName": "partitions.bin",
+      "kind": "partitions",
+      "sha256": "2637e4e91339f4e1dc4d88f4fcadad9801ae8b277a5d874d6e19a1dcdab45426",
+      "size": 3072
+    },
+    {
+      "offset": "0xe000",
+      "fileName": "flash-02-0xe000-boot_app0.bin",
+      "sourceName": "boot_app0.bin",
+      "kind": "boot_app0",
+      "sha256": "f94c5d786a7a8fab06ac5d10e33bf37711a6697636dc037559ea19cc410a17f0",
+      "size": 8192
+    },
+    {
+      "offset": "0x10000",
+      "fileName": "flash-03-0x10000-firmware.bin",
+      "sourceName": "firmware.bin",
+      "kind": "application",
+      "sha256": "d63cdf49a59a7a815cd2e46785a81e3df791a5c3ae0b525020465179c43cd84a",
+      "size": 1968816
+    }
+  ]
+}
