@@ -8,6 +8,10 @@ import subprocess
 
 DEFAULT_VERSION = "0.0.0"
 APP_ONLY_UPDATE_SINCE = "2026.04.28"
+DIRTY_PATHSPEC = [
+    ".",
+    ":(exclude)tools/windows_updater/publish/**",
+]
 
 
 def repo_root_from(path: Path) -> Path:
@@ -50,8 +54,8 @@ def git_short_sha(repo: Path) -> str:
 
 def git_dirty(repo: Path) -> bool:
     try:
-        subprocess.run(["git", "diff", "--quiet"], cwd=repo, check=True)
-        subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=repo, check=True)
+        subprocess.run(["git", "diff", "--quiet", "--", *DIRTY_PATHSPEC], cwd=repo, check=True)
+        subprocess.run(["git", "diff", "--cached", "--quiet", "--", *DIRTY_PATHSPEC], cwd=repo, check=True)
         return False
     except (OSError, subprocess.CalledProcessError):
         return True

@@ -2,6 +2,7 @@ assets/esptool.exe
 assets/sg98-firmware.bin
 assets/flash-*.bin
 assets/sg98-flash-manifest.json
+assets/sg98-ota-manifest.json
 publish/
 obj/
 bin/
