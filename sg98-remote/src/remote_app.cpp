@@ -26,6 +26,7 @@
 #include "remote_wifi.h"
 #include "sg98_remote_defs.h"
 #include "sg98_ota_download.h"
+#include "sg98_ota_source.h"
 #include "sg98_version.h"
 #include <sg98_remote_protocol.h>
 
@@ -1704,10 +1705,21 @@ bool statusStateIsStopped(const String& state) {
     return state == "IDLE" || state == "IDLE_GBW";
 }
 
+void ensureDockClockTimezone() {
+    static bool timezoneApplied = false;
+    if(timezoneApplied) {
+        return;
+    }
+    setenv("TZ", remote_config::kDockClockTimezone, 1);
+    tzset();
+    timezoneApplied = true;
+}
+
 bool localClockTime(struct tm* out) {
     if(out == nullptr) {
         return false;
     }
+    ensureDockClockTimezone();
     const time_t now = time(nullptr);
     if(now < static_cast<time_t>(kValidUnixTime)) {
         return false;
@@ -1805,6 +1817,7 @@ void serviceDockClockTime(uint32_t now) {
     if(!remote_wifi_sta_connected()) {
         return;
     }
+    ensureDockClockTimezone();
     if(app.dockClockTimeConfigured &&
        (now - app.dockClockLastNtpSyncAt) < remote_config::kDockClockNtpSyncMs) {
         return;
@@ -8200,8 +8213,7 @@ void consumeEnvironmentFrame(const sg98_protocol::EnvironmentFrame& frame) {
     bool changed = false;
     struct tm existingTime = {};
     if(frame.timeValid && frame.unixTime >= kValidUnixTime && !localClockTime(&existingTime)) {
-        setenv("TZ", remote_config::kDockClockTimezone, 1);
-        tzset();
+        ensureDockClockTimezone();
         timeval tv = {};
         tv.tv_sec = static_cast<time_t>(frame.unixTime);
         settimeofday(&tv, nullptr);
@@ -10865,9 +10877,10 @@ bool downloadOtaImage(String url, String* message) {
 }
 
 bool downloadOtaManifest(String url, String* message) {
-    if(url.length() == 0) {
+    const String resolvedUrl = sg98_ota_source::resolveManifestUrl(url);
+    if(resolvedUrl.length() == 0) {
         if(message != nullptr) {
-            *message = "usage: api ota manifest <url> [boot|reboot]";
+            *message = "usage: api ota manifest <url|latest> [boot|reboot]";
         }
         return false;
     }
@@ -10882,7 +10895,7 @@ bool downloadOtaManifest(String url, String* message) {
     }
 
     sg98_ota_download::Result result;
-    const bool ok = sg98_ota_download::downloadManifestToNextSlot(url, &result);
+    const bool ok = sg98_ota_download::downloadManifestToNextSlot(resolvedUrl, &result);
     restoreOtaWifi(guard);
     if(message != nullptr) {
         *message = result.message;
@@ -10938,6 +10951,8 @@ void printRemoteConsoleDevice() {
     out += String(static_cast<unsigned long>(runningApplicationSize()));
     out += ",\"supportsOtaUpdate\":";
     out += nextOtaSize() > 0 ? "true" : "false";
+    out += ",\"otaManifestUrl\":";
+    appendJsonQuoted(out, sg98_ota_source::latestManifestUrl());
     out += ",\"otaNextOffset\":";
     appendJsonQuoted(out, nextOtaOffsetHex());
     out += ",\"otaNextSize\":";
@@ -10971,7 +10986,7 @@ void printRemoteConsolePeers() {
 void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot] | api reboot");
+    Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
@@ -11531,7 +11546,7 @@ void handleRemoteConsoleLine(const char* rawLine) {
                 ESP.restart();
                 return;
             }
-            printRemoteConsoleAck(line, false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot]");
+            printRemoteConsoleAck(line, false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
             return;
         }
         if(sub == "reboot") {

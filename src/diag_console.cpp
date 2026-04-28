@@ -21,6 +21,7 @@
 #include "radio_mode.h"
 #include "remote_ws.h"
 #include "sg98_ota_download.h"
+#include "sg98_ota_source.h"
 #include "sg98_version.h"
 #include "wifi_ui.h"
 
@@ -538,9 +539,10 @@ bool apiDownloadOta(const char* url, String* message) {
 }
 
 bool apiDownloadOtaManifest(const char* url, String* message) {
-    if(url == nullptr || url[0] == '\0') {
+    const String resolvedUrl = sg98_ota_source::resolveManifestUrl(url != nullptr ? String(url) : String());
+    if(resolvedUrl.length() == 0) {
         if(message != nullptr) {
-            *message = "usage: api ota manifest <url> [boot|reboot]";
+            *message = "usage: api ota manifest <url|latest> [boot|reboot]";
         }
         return false;
     }
@@ -555,7 +557,7 @@ bool apiDownloadOtaManifest(const char* url, String* message) {
     }
 
     sg98_ota_download::Result result;
-    const bool ok = sg98_ota_download::downloadManifestToNextSlot(String(url), &result);
+    const bool ok = sg98_ota_download::downloadManifestToNextSlot(resolvedUrl, &result);
     restoreOtaWifi(guard);
     if(message != nullptr) {
         *message = result.message;
@@ -589,6 +591,8 @@ void apiPrintDevice() {
     Serial.print(static_cast<unsigned long>(runningApplicationSize()));
     Serial.print(",\"supportsOtaUpdate\":");
     Serial.print(nextOtaSize() > 0 ? "true" : "false");
+    Serial.print(",\"otaManifestUrl\":");
+    jsonPrintQuoted(sg98_ota_source::latestManifestUrl());
     Serial.print(",\"otaNextOffset\":");
     jsonPrintQuoted(nextOtaOffsetHex());
     Serial.print(",\"otaNextSize\":");
@@ -1444,7 +1448,7 @@ void printHelp() {
     Serial.println("[diag] raw-uart: mru <baud> <8N1|8N2|8E1|8E2|8O1|8O2> <slave> <reg> <count> | mwu <baud> <mode> <slave> <reg> <value>");
     Serial.println("[diag] dbg: dbg status | dbg wifi <on|off|reset|scan> | dbg espnow <on|off|coexist> | dbg ws <on|off> | dbg all off");
     Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
-    Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot] | api reboot");
+    Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm>");
 }
@@ -2087,7 +2091,7 @@ void handleLineCommand(char* line) {
         if(strcmp(subcmd, "ota") == 0) {
             char* action = strtok_r(nullptr, " \t", &savePtr);
             if(action == nullptr) {
-                apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot]");
+                apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
                 return;
             }
             if(strcmp(action, "boot") == 0) {
@@ -2148,7 +2152,7 @@ void handleLineCommand(char* line) {
                 ESP.restart();
                 return;
             }
-            apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url> [boot|reboot]");
+            apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
             return;
         }
 
