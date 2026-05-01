@@ -95,10 +95,16 @@ $HOME/.platformio/penv/bin/platformio run \
   -e remote-universal-s3
 ```
 
-Prepare all desktop updater bundles and OTA files:
+Prepare desktop updater bundles:
 
 ```bash
 $HOME/.platformio/penv/bin/platformio run -t bundle_all_updaters
+```
+
+Prepare OTA files:
+
+```bash
+$HOME/.platformio/penv/bin/platformio run -t stage_all_ota_assets
 ```
 
 Generated files are written to:
@@ -108,6 +114,9 @@ tools/windows_updater/publish/bundles/
 tools/windows_updater/publish/ota/controller-universal-s3/
 tools/windows_updater/publish/ota/remote-universal-s3/
 ```
+
+The bundle and OTA commands are intentionally separate. Run and publish only the
+artifact family that changed.
 
 ## Verify Generated Metadata
 
@@ -148,13 +157,17 @@ cd /tmp/sg98-firmware-releases
 git pull --ff-only origin main
 ```
 
-Copy the public files from the private repo:
+Copy the public files from the private repo. For a full release, copy both
+families:
 
 ```bash
 SRC="/Users/dancao/Library/CloudStorage/OneDrive-Cisco/LingLong-SG98-Remote-control/tools/windows_updater/publish"
 rsync -a --delete "$SRC/bundles/" bundles/
 rsync -a --delete "$SRC/ota/" ota/
 ```
+
+For an OTA-only release, copy only `ota/`. For a full-bundle-only release, copy
+only `bundles/`.
 
 Update `CHANGELOG.md` with the new tag and a short summary. Then commit and
 push:
@@ -166,7 +179,8 @@ git tag <tag>
 git push origin main --tags
 ```
 
-Create the GitHub release and upload the bundles plus OTA assets:
+Create the GitHub release and upload the assets for the artifact family being
+published. A full release can include both bundles and OTA files:
 
 ```bash
 mkdir -p /tmp/sg98-release-upload
@@ -191,8 +205,9 @@ gh release create <tag> /tmp/sg98-release-upload/* \
   --notes-file CHANGELOG.md
 ```
 
-The raw `main` files are what devices use for daily OTA checks. The GitHub
-release assets are the archived human-downloadable copy of the same release.
+The raw `main` OTA files are what devices use for daily OTA checks. The GitHub
+release assets are the archived human-downloadable copy of the files published
+for that tag.
 
 ## First-Time Flash and Recovery
 
@@ -217,11 +232,12 @@ If any of those checks fail, use the full updater bundle.
 
 1. Commit source changes in the private repo.
 2. Build `controller-universal-s3` and `remote-universal-s3`.
-3. Run `bundle_all_updaters`.
-4. Verify OTA manifests are clean and match the source SHA.
-5. Commit and push private generated artifacts.
-6. Copy `bundles/` and `ota/` to the public release repo.
-7. Update changelog, commit, tag, and push public repo.
-8. Create the public GitHub release and upload assets.
-9. Verify both raw OTA manifest URLs with `curl`.
-10. On device, use About or USB diagnostics to confirm the expected version.
+3. Run `bundle_all_updaters` for full updater bundles when needed.
+4. Run `stage_all_ota_assets` for OTA files when needed.
+5. Verify OTA manifests are clean and match the source SHA when OTA files changed.
+6. Commit and push private generated artifacts for the changed family.
+7. Copy only the changed `bundles/` and/or `ota/` family to the public release repo.
+8. Update changelog, commit, tag, and push public repo.
+9. Create the public GitHub release and upload the changed assets.
+10. Verify raw OTA manifest URLs with `curl` when OTA files changed.
+11. On device, use About or USB diagnostics to confirm the expected version.

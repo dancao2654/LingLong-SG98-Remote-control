@@ -67,6 +67,8 @@ Available updater tasks:
 - `Bundle All Windows Updaters`
 - `Bundle All macOS ARM64 Updaters`
 - `Bundle All Updaters`
+- `Stage OTA Assets`
+- `Stage All OTA Assets`
 
 The aggregate tasks build the currently shipped updater set:
 
@@ -81,6 +83,10 @@ Bundle generation is pinned to the release runtimes:
 That means the same PlatformIO task can be run on both Windows and macOS
 machines and will still emit the same release bundle set.
 
+Full updater bundle tasks write only the desktop updater outputs. OTA staging is
+separate; use `Stage OTA Assets` or `Stage All OTA Assets` when preparing
+device-downloadable OTA files.
+
 ## Output Layout
 
 Unpacked runtime outputs are written under:
@@ -92,6 +98,11 @@ Unpacked runtime outputs are written under:
 Distributable zip bundles and checksums are written under:
 
 - `tools/windows_updater/publish/bundles/`
+
+Staged OTA manifests and application binaries are written under:
+
+- `tools/windows_updater/publish/ota/controller-universal-s3/`
+- `tools/windows_updater/publish/ota/remote-universal-s3/`
 
 Examples:
 
@@ -120,10 +131,21 @@ python3 tools/windows_updater/build_updater.py --rid win-x64 --output-base SG98-
 python3 tools/windows_updater/build_updater.py --rid osx-arm64 --output-base SG98-Remote-Updater --publish-subdir remote
 ```
 
+Stage OTA assets from the repo root:
+
+```bash
+python3 tools/windows_updater/prepare_assets.py --env controller-universal-s3
+python3 tools/windows_updater/stage_ota_assets.py --env controller-universal-s3
+python3 tools/windows_updater/prepare_assets.py --env remote-universal-s3
+python3 tools/windows_updater/stage_ota_assets.py --env remote-universal-s3
+```
+
 ## Notes
 
 - Windows bundles embed `esptool.exe`.
 - macOS bundles use the local `python3 -m esptool` path at runtime.
 - Bundles flash the full image set instead of only replacing the app at `0x10000`.
+- OTA staging copies only `sg98-ota-manifest.json`,
+  `sg98-flash-manifest.json`, and the application firmware binary.
 - Each generated zip also gets a matching `.md5` file.
 - `tools/windows_updater/assets/` is a transient staging area.
