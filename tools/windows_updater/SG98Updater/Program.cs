@@ -696,6 +696,11 @@ internal static class Program
 
         if (!string.IsNullOrWhiteSpace(explicitPort))
         {
+            if (IsUsuallyWrongPort(explicitPort!))
+            {
+                throw new InvalidOperationException(
+                    $"{explicitPort} is not an ESP32-S3 USB flashing port. Connect the SG98 board over USB-C and use --list to find a /dev/cu.usbmodem* or /dev/cu.usbserial* port.");
+            }
             return explicitPort!;
         }
 
@@ -717,7 +722,7 @@ internal static class Program
             return likelyPorts[0];
         }
 
-        if (ports.Length == 1)
+        if (ports.Length == 1 && IsSelectableInteractivePort(ports[0]))
         {
             return ports[0];
         }
@@ -728,19 +733,38 @@ internal static class Program
             Console.WriteLine($"  {i + 1}. {ports[i]}{PortHintSuffix(ports[i])}");
         }
         Console.WriteLine();
+
+        string[] selectablePorts = ports
+            .Where(IsSelectableInteractivePort)
+            .ToArray();
+        if (selectablePorts.Length == 0)
+        {
+            throw new InvalidOperationException(
+                $"No SG98 USB flashing port is visible. Connect the board over USB-C and look for a /dev/cu.usbmodem* or /dev/cu.usbserial* port.");
+        }
+
         if (likelyPorts.Length > 0)
         {
             Console.WriteLine("Ports marked [USB] are the best SG98 flashing candidates.");
             Console.WriteLine();
         }
-        Console.Write($"Choose {PortLabelSingular()} number: ");
-        string? input = Console.ReadLine();
-        if (!int.TryParse(input, out int selected) || selected < 1 || selected > ports.Length)
+        while (true)
         {
-            throw new InvalidOperationException($"Invalid {PortLabelSingular()} selection.");
-        }
+            Console.Write($"Choose {PortLabelSingular()} number: ");
+            string? input = Console.ReadLine();
+            if (!int.TryParse(input, out int selected) || selected < 1 || selected > ports.Length)
+            {
+                throw new InvalidOperationException($"Invalid {PortLabelSingular()} selection.");
+            }
 
-        return ports[selected - 1];
+            string selectedPort = ports[selected - 1];
+            if (IsSelectableInteractivePort(selectedPort))
+            {
+                return selectedPort;
+            }
+
+            Console.WriteLine($"{selectedPort} is marked [skip] and is not an ESP32-S3 USB flashing port.");
+        }
     }
 
     private static string[] GetInteractivePorts()
@@ -898,6 +922,8 @@ internal static class Program
         return normalized.Contains("bluetooth", StringComparison.Ordinal)
             || normalized.Contains("debug-console", StringComparison.Ordinal);
     }
+
+    private static bool IsSelectableInteractivePort(string port) => !IsUsuallyWrongPort(port);
 
     private static string PortHintSuffix(string port)
     {
