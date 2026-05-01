@@ -204,9 +204,10 @@ internal static class Program
         for (int i = 0; i < ports.Length; i++)
         {
             string port = ports[i];
-            bool probe = IsLikelyUsbFlashingPort(port);
-            DeviceIdentity? identity = probe ? TryReadDeviceIdentity(port) : null;
-            EspToolChipIdentity? chip = probe && identity is null ? TryReadEspToolChipIdentity(port, workDir) : null;
+            bool identityProbe = IsLikelyUsbFlashingPort(port);
+            bool chipProbe = identityProbe || IsRecoveryOnlyPort(port);
+            DeviceIdentity? identity = identityProbe ? TryReadDeviceIdentity(port) : null;
+            EspToolChipIdentity? chip = chipProbe && identity is null ? TryReadEspToolChipIdentity(port, workDir) : null;
 
             Console.WriteLine($"  {i + 1}. {port}{PortHintSuffix(port)}");
             if (identity is not null)
@@ -221,21 +222,26 @@ internal static class Program
             }
             else if (IsRecoveryOnlyPort(port))
             {
+                Console.WriteLine("     hardware: not detected by ESP32-S3 recovery probe");
                 Console.WriteLine("     identity: skipped; recovery-only port name");
             }
             else
             {
-                Console.WriteLine(probe
+                Console.WriteLine(identityProbe
                     ? "     identity: unavailable"
                     : "     identity: skipped; not a likely USB flashing port");
             }
-            if (probe)
+            if (identityProbe)
             {
                 Console.WriteLine($"     force: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(port)}");
             }
+            else if (IsRecoveryOnlyPort(port) && chip is not null)
+            {
+                Console.WriteLine($"     force: verified recovery: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(port)}");
+            }
             else if (IsRecoveryOnlyPort(port))
             {
-                Console.WriteLine($"     force: recovery only: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(port)}");
+                Console.WriteLine($"     force: recovery only after SG98 reconnect: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(port)}");
             }
             else
             {
