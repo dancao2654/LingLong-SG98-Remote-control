@@ -39,9 +39,9 @@ internal static class Program
                 return 0;
             }
 
-            string port = ResolvePort(args);
-            UpdateMode requestedMode = ResolveUpdateMode(args);
             bool forceMode = ForceModeRequested(args);
+            string port = ResolvePort(args, forceMode);
+            UpdateMode requestedMode = ResolveUpdateMode(args);
             if (forceMode && requestedMode == UpdateMode.Application)
             {
                 throw new InvalidOperationException("--force cannot be combined with --app-only.");
@@ -219,15 +219,28 @@ internal static class Program
                 Console.WriteLine($"     hardware: {chip.ChipName}{mac}".TrimEnd());
                 Console.WriteLine("     identity: unavailable; SG98 firmware metadata was not readable");
             }
+            else if (IsRecoveryOnlyPort(port))
+            {
+                Console.WriteLine("     identity: skipped; recovery-only port name");
+            }
             else
             {
                 Console.WriteLine(probe
                     ? "     identity: unavailable"
                     : "     identity: skipped; not a likely USB flashing port");
             }
-            Console.WriteLine(probe
-                ? $"     force: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(port)}"
-                : "     force: not recommended for this port");
+            if (probe)
+            {
+                Console.WriteLine($"     force: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(port)}");
+            }
+            else if (IsRecoveryOnlyPort(port))
+            {
+                Console.WriteLine($"     force: recovery only: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(port)}");
+            }
+            else
+            {
+                Console.WriteLine("     force: not recommended for this port");
+            }
         }
 
         Console.WriteLine();
@@ -682,7 +695,7 @@ internal static class Program
             "esptool is not available on this system. Install it with: python3 -m pip install --user esptool");
     }
 
-    private static string ResolvePort(string[] args)
+    private static string ResolvePort(string[] args, bool forceMode)
     {
         string? explicitPort = null;
         for (int i = 0; i < args.Length; i++)
@@ -696,11 +709,17 @@ internal static class Program
 
         if (!string.IsNullOrWhiteSpace(explicitPort))
         {
-            if (IsUsuallyWrongPort(explicitPort!))
+            if (IsNeverFlashingPort(explicitPort!))
             {
                 throw new InvalidOperationException(
                     $"{explicitPort} is not an ESP32-S3 USB flashing port. Connect the SG98 board over USB-C and use --list to find a /dev/cu.usbmodem* or /dev/cu.usbserial* port.");
             }
+            if (IsRecoveryOnlyPort(explicitPort!) && !forceMode)
+            {
+                throw new InvalidOperationException(
+                    $"{explicitPort} is a recovery-only port name on some Macs. Retry with --force --port {QuoteArgumentForDisplay(explicitPort!)} only if this port appears after reconnecting the SG98 board.");
+            }
+            WarnIfRecoveryPort(explicitPort!, forceMode);
             return explicitPort!;
         }
 
@@ -722,8 +741,9 @@ internal static class Program
             return likelyPorts[0];
         }
 
-        if (ports.Length == 1 && IsSelectableInteractivePort(ports[0]))
+        if (ports.Length == 1 && IsSelectableInteractivePort(ports[0], forceMode))
         {
+            WarnIfRecoveryPort(ports[0], forceMode);
             return ports[0];
         }
 
@@ -735,12 +755,12 @@ internal static class Program
         Console.WriteLine();
 
         string[] selectablePorts = ports
-            .Where(IsSelectableInteractivePort)
+            .Where(port => IsSelectableInteractivePort(port, forceMode))
             .ToArray();
         if (selectablePorts.Length == 0)
         {
             throw new InvalidOperationException(
-                $"No SG98 USB flashing port is visible. Connect the board over USB-C and look for a /dev/cu.usbmodem* or /dev/cu.usbserial* port.");
+                $"No SG98 USB flashing port is visible. Connect the board over USB-C and look for a /dev/cu.usbmodem*, /dev/cu.usbserial*, or recovery-only /dev/cu.debug-console port.");
         }
 
         if (likelyPorts.Length > 0)
@@ -758,12 +778,20 @@ internal static class Program
             }
 
             string selectedPort = ports[selected - 1];
-            if (IsSelectableInteractivePort(selectedPort))
+            if (IsSelectableInteractivePort(selectedPort, forceMode))
             {
+                WarnIfRecoveryPort(selectedPort, forceMode);
                 return selectedPort;
             }
 
-            Console.WriteLine($"{selectedPort} is marked [skip] and is not an ESP32-S3 USB flashing port.");
+            if (IsRecoveryOnlyPort(selectedPort))
+            {
+                Console.WriteLine($"{selectedPort} is marked [recovery] and requires --force.");
+            }
+            else
+            {
+                Console.WriteLine($"{selectedPort} is marked [skip] and is not an ESP32-S3 USB flashing port.");
+            }
         }
     }
 
@@ -895,6 +923,11 @@ internal static class Program
             return 0;
         }
 
+        if (IsRecoveryOnlyPort(port))
+        {
+            return 1;
+        }
+
         if (IsUsuallyWrongPort(port))
         {
             return 2;
@@ -923,13 +956,45 @@ internal static class Program
             || normalized.Contains("debug-console", StringComparison.Ordinal);
     }
 
-    private static bool IsSelectableInteractivePort(string port) => !IsUsuallyWrongPort(port);
+    private static bool IsNeverFlashingPort(string port)
+    {
+        string normalized = port.ToLowerInvariant();
+        return normalized.Contains("bluetooth", StringComparison.Ordinal);
+    }
+
+    private static bool IsRecoveryOnlyPort(string port)
+    {
+        string normalized = port.ToLowerInvariant();
+        return normalized.Contains("debug-console", StringComparison.Ordinal);
+    }
+
+    private static bool IsSelectableInteractivePort(string port, bool forceMode)
+    {
+        return !IsUsuallyWrongPort(port) || (forceMode && IsRecoveryOnlyPort(port));
+    }
+
+    private static void WarnIfRecoveryPort(string port, bool forceMode)
+    {
+        if (!forceMode || !IsRecoveryOnlyPort(port))
+        {
+            return;
+        }
+
+        Console.WriteLine($"{port} is a recovery-only port name; continuing because --force was requested.");
+        Console.WriteLine("Use it only if it appears after reconnecting the SG98 board.");
+        Console.WriteLine();
+    }
 
     private static string PortHintSuffix(string port)
     {
         if (IsLikelyUsbFlashingPort(port))
         {
             return "  [USB]";
+        }
+
+        if (IsRecoveryOnlyPort(port))
+        {
+            return "  [recovery]";
         }
 
         if (IsUsuallyWrongPort(port))
@@ -954,12 +1019,18 @@ internal static class Program
         }
         else
         {
-            if (!string.IsNullOrWhiteSpace(selectedPort) && !IsLikelyUsbFlashingPort(selectedPort))
+            if (!string.IsNullOrWhiteSpace(selectedPort) && IsRecoveryOnlyPort(selectedPort))
+            {
+                Console.WriteLine($"The selected port {selectedPort} is a recovery-only port name.");
+                Console.WriteLine("Use it only if it appears after reconnecting the SG98 board.");
+            }
+            else if (!string.IsNullOrWhiteSpace(selectedPort) && !IsLikelyUsbFlashingPort(selectedPort))
             {
                 Console.WriteLine($"The selected port {selectedPort} does not look like the ESP32-S3 USB flashing port.");
             }
 
             Console.WriteLine("Prefer a /dev/cu.usbmodem* or /dev/cu.usbserial* device for the SG98 board.");
+            Console.WriteLine("/dev/cu.debug-console can be used only as a force-mode recovery port if it tracks the SG98 USB reconnect.");
             Console.WriteLine("If flashing fails because esptool is missing, install it with:");
             Console.WriteLine("python3 -m pip install --user esptool");
         }
@@ -968,7 +1039,7 @@ internal static class Program
         Console.WriteLine("If this is the original SG98 controller board and the upgrade failed:");
         Console.WriteLine($"1. Run {DisplayCommandName()} --list.");
         Console.WriteLine("2. Pick the port that shows SG98 identity or ESP32-S3 hardware.");
-        if (!string.IsNullOrWhiteSpace(selectedPort) && IsLikelyUsbFlashingPort(selectedPort))
+        if (!string.IsNullOrWhiteSpace(selectedPort) && (IsLikelyUsbFlashingPort(selectedPort) || IsRecoveryOnlyPort(selectedPort)))
         {
             Console.WriteLine($"3. Retry with: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(selectedPort)}");
         }
