@@ -47,6 +47,10 @@ struct HttpsUrl {
 
 struct ManifestSpec {
     String version;
+    String gitSha;
+    bool gitDirty = false;
+    bool gitDirtyPresent = false;
+    String generatedAtUtc;
     String role;
     String envName;
     String imageUrl;
@@ -647,6 +651,18 @@ inline uint32_t jsonUint32(const cJSON* object, const char* key) {
     return static_cast<uint32_t>(item->valuedouble);
 }
 
+inline bool jsonBool(const cJSON* object, const char* key, bool* out) {
+    if(out == nullptr) {
+        return false;
+    }
+    const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
+    if(!cJSON_IsBool(item)) {
+        return false;
+    }
+    *out = cJSON_IsTrue(item);
+    return true;
+}
+
 inline bool parseManifest(const String& manifestUrl,
                           const String& payload,
                           ManifestSpec* spec,
@@ -677,6 +693,9 @@ inline bool parseManifest(const String& manifestUrl,
     }
 
     spec->version = jsonString(root, "version");
+    spec->gitSha = jsonString(root, "gitSha");
+    spec->generatedAtUtc = jsonString(root, "generatedAtUtc");
+    spec->gitDirtyPresent = jsonBool(root, "gitDirty", &spec->gitDirty);
     spec->role = jsonString(root, "role");
     spec->envName = jsonString(root, "envName");
     if(spec->envName.length() == 0) {
@@ -730,6 +749,37 @@ inline bool parseManifest(const String& manifestUrl,
         return false;
     }
     return true;
+}
+
+inline bool fetchManifestSpec(const String& manifestUrl, ManifestSpec* spec, Result* result) {
+    if(result != nullptr) {
+        *result = Result();
+        result->fromManifest = true;
+    }
+    if(manifestUrl.length() == 0) {
+        finish(result, false, "missing manifest url");
+        return false;
+    }
+    if(WiFi.status() != WL_CONNECTED || WiFi.localIP()[0] == 0) {
+        finish(result, false, "wifi not connected");
+        return false;
+    }
+
+    String payload;
+    if(!fetchHttpsString(manifestUrl, "application/json", kMaxManifestBytes, &payload, result)) {
+        return false;
+    }
+
+    const bool ok = parseManifest(manifestUrl, payload, spec, result);
+    if(ok && result != nullptr && spec != nullptr) {
+        result->ok = true;
+        result->version = spec->version;
+        result->sha256 = spec->sha256;
+        result->imageUrl = spec->imageUrl;
+        result->expected = spec->size;
+        result->message = "manifest ok";
+    }
+    return ok;
 }
 
 inline bool downloadToNextSlot(const String& url, const DownloadOptions& options, Result* result) {
@@ -804,13 +854,8 @@ inline bool downloadManifestToNextSlot(const String& manifestUrl, Result* result
         return false;
     }
 
-    String payload;
-    if(!fetchHttpsString(manifestUrl, "application/json", kMaxManifestBytes, &payload, result)) {
-        return false;
-    }
-
     ManifestSpec spec;
-    if(!parseManifest(manifestUrl, payload, &spec, result)) {
+    if(!fetchManifestSpec(manifestUrl, &spec, result)) {
         return false;
     }
 

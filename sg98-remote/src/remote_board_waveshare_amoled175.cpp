@@ -960,6 +960,22 @@ int8_t estimateBatteryPercentFromMillivolts(int32_t millivolts) {
     return kBatteryCurve[pointCount - 1].percent;
 }
 
+int8_t selectBatteryPercentForDisplay(bool usbPresent, bool charging, int8_t pmicPercent, int8_t voltagePercent) {
+    int8_t selected = -1;
+    if(voltagePercent >= 0 && pmicPercent >= 0) {
+        selected = min<int8_t>(voltagePercent, pmicPercent);
+    } else if(voltagePercent >= 0) {
+        selected = voltagePercent;
+    } else {
+        selected = pmicPercent;
+    }
+
+    if(usbPresent && charging && selected > 95) {
+        selected = 95;
+    }
+    return selected;
+}
+
 bool looksLikeLiPoVoltage(int32_t millivolts) {
     return millivolts >= 3200 && millivolts <= 4300;
 }
@@ -2188,7 +2204,10 @@ RemoteBatteryStatus waveshare_battery_status() {
             status.batteryPresent = true;
         }
         const int8_t voltagePercent = estimateBatteryPercentFromMillivolts(status.millivolts);
-        status.percent = status.usbPresent ? pmicPercent : (voltagePercent >= 0 ? voltagePercent : pmicPercent);
+        status.percent = selectBatteryPercentForDisplay(status.usbPresent,
+                                                        status.charging,
+                                                        pmicPercent,
+                                                        voltagePercent);
         g_pmicLastBatteryLevelAt = now;
     }
 

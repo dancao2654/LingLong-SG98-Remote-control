@@ -129,6 +129,16 @@ struct ProbeCycleResult {
     DriveType detectedType;
 };
 
+uint8_t probeBackendCount() {
+    uint8_t count = 0;
+    for(const MotorDescriptor& descriptor : MOTOR_DESCRIPTORS) {
+        if(descriptor.backend != nullptr && descriptor.backend->api.probe != nullptr) {
+            ++count;
+        }
+    }
+    return count;
+}
+
 const MotorDescriptor* findMotorDescriptor(DriveType driveType) {
     for(const MotorDescriptor& descriptor : MOTOR_DESCRIPTORS) {
         if(descriptor.driveType == driveType) {
@@ -136,6 +146,15 @@ const MotorDescriptor* findMotorDescriptor(DriveType driveType) {
         }
     }
     return &MOTOR_DESCRIPTORS[0];
+}
+
+void showProbeResult(DriveType detectedType) {
+    const char* label = "No drive";
+    if(detectedType != DRIVE_TYPE_UNKNOWN) {
+        label = findMotorDescriptor(detectedType)->label;
+    }
+    const uint8_t total = probeBackendCount();
+    display_show_motor_probe_progress(label, total, total, true);
 }
 
 const MotorCommandDescriptor* findCommandDescriptor(const MotorDescriptor* descriptor, MotorCommandId commandId) {
@@ -374,10 +393,21 @@ ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
     const uint16_t savedErrorCode = errorCode;
     const JmcCommRate initialPreferredJmcRate = preferredJmcRate;
     int bestPriority = -1;
+    const uint8_t probeTotal = probeBackendCount();
+    uint8_t probeStep = 0;
+
+    if(logResult) {
+        display_show_motor_probe_progress("RS-485", 0, probeTotal, false);
+    }
 
     for(const MotorDescriptor& descriptor : MOTOR_DESCRIPTORS) {
         if(descriptor.backend == nullptr || descriptor.backend->api.probe == nullptr) {
             continue;
+        }
+
+        ++probeStep;
+        if(logResult) {
+            display_show_motor_probe_progress(descriptor.label, probeStep, probeTotal, false);
         }
 
         MotorProbeReport candidateReport = {};
@@ -480,10 +510,8 @@ void detectDriveTypeIfNeeded(bool force) {
     autoProbeDone = true;
     if (detectedType != motorDriveType) {
         selectDriveType(detectedType, true);
-        if(detectedType != DRIVE_TYPE_UNKNOWN) {
-            display_show_motor_probe_splash(motor_get_type_label());
-        }
     }
+    showProbeResult(detectedType);
 }
 }
 
@@ -724,9 +752,11 @@ void motor_force_drive_type(DriveType driveType, bool persist) {
 
 void motor_redetect_drive(bool persist) {
     autoProbeDone = false;
-    selectDriveType(detectDriveTypeReadOnly(persist), persist);
+    const DriveType detectedType = detectDriveTypeReadOnly(persist);
+    selectDriveType(detectedType, persist);
     lastProbeAt = millis();
     autoProbeDone = true;
+    showProbeResult(detectedType);
 }
 
 MotorProbeReport motor_run_probe_report() {

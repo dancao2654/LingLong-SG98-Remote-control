@@ -13,3 +13,7 @@ uint32_t controller_env_last_weather_fetch_ms();
 String controller_env_location();
 int16_t controller_env_temperature_f();
 int8_t controller_env_precipitation_percent();
+String controller_env_ota_update_line();
+String controller_env_ota_update_detail();
+bool controller_env_ota_update_available();
+uint32_t controller_env_last_ota_check_ms();

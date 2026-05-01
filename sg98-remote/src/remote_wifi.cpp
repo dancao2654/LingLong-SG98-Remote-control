@@ -10,6 +10,8 @@
 namespace {
 
 constexpr uint32_t kStaRetryMs = 15000;
+constexpr uint32_t kHomeStaFirstMs = 20000;
+constexpr uint32_t kWebActivityHoldMs = 120000;
 constexpr uint16_t kDnsPort = 53;
 
 WebServer server(80);
@@ -27,6 +29,13 @@ bool apRunning = false;
 bool dnsRunning = false;
 bool serverStarted = false;
 uint32_t lastStaAttemptAt = 0;
+uint8_t staAttemptCount = 0;
+bool homeStaFirstActive = false;
+uint32_t homeStaFirstUntil = 0;
+uint32_t lastWebActivityAt = 0;
+
+bool startAccessPoint();
+void startPortalServer();
 
 const char kPage[] PROGMEM = R"HTML(
 <!doctype html>
@@ -243,6 +252,32 @@ String wifiStatusText() {
     }
 }
 
+bool timeReached(uint32_t timestamp) {
+    return static_cast<int32_t>(millis() - timestamp) >= 0;
+}
+
+bool savedHomeConfigured() {
+    return staEnabled && setupDone && !staSsid.isEmpty();
+}
+
+bool homeStaFirstWindowActive() {
+    return homeStaFirstActive && !timeReached(homeStaFirstUntil);
+}
+
+void noteWebActivity() {
+    lastWebActivityAt = millis();
+}
+
+bool webActivityRecent() {
+    if(!wifiActive) {
+        return false;
+    }
+    if(WiFi.softAPgetStationNum() > 0) {
+        return true;
+    }
+    return lastWebActivityAt != 0 && (millis() - lastWebActivityAt) < kWebActivityHoldMs;
+}
+
 String apIpString() {
     return WiFi.softAPIP().toString();
 }
@@ -273,11 +308,14 @@ void beginStaConnect(bool forceRetry = false) {
     if(!forceRetry && WiFi.status() == WL_CONNECTED) {
         return;
     }
-    if(!forceRetry && (lastStaAttemptAt + kStaRetryMs) > millis()) {
+    if(!forceRetry && lastStaAttemptAt != 0 && !timeReached(lastStaAttemptAt + kStaRetryMs)) {
         return;
     }
 
     lastStaAttemptAt = millis();
+    if(staAttemptCount < 255) {
+        ++staAttemptCount;
+    }
     WiFi.begin(staSsid.c_str(), staPassword.c_str());
 }
 
@@ -287,13 +325,17 @@ void stopSta() {
 
 String statusJson() {
     String out;
-    out.reserve(320);
+    out.reserve(384);
     out += '{';
     out += "\"apSsid\":\"";
     out += jsonEscape(apSsid);
     out += "\",\"apIp\":\"";
     out += jsonEscape(apIpString());
-    out += "\",\"staEnabled\":";
+    out += "\",\"apRunning\":";
+    out += apRunning ? "true" : "false";
+    out += ",\"apStations\":";
+    out += String(apRunning ? WiFi.softAPgetStationNum() : 0);
+    out += ",\"staEnabled\":";
     out += staEnabled ? "true" : "false";
     out += ",\"setupDone\":";
     out += setupDone ? "true" : "false";
@@ -305,7 +347,11 @@ String statusJson() {
     out += jsonEscape(staIpString());
     out += "\",\"staStatus\":\"";
     out += jsonEscape(wifiStatusText());
-    out += "\"}";
+    out += "\",\"homeStaFirst\":";
+    out += homeStaFirstWindowActive() ? "true" : "false";
+    out += ",\"serverRunning\":";
+    out += serverStarted ? "true" : "false";
+    out += '}';
     return out;
 }
 
@@ -375,6 +421,7 @@ String wifiScanJson(bool force) {
 }
 
 void sendJson(const String& body, int code = 200) {
+    noteWebActivity();
     server.sendHeader("Cache-Control", "no-store");
     server.send(code, "application/json", body);
 }
@@ -391,6 +438,7 @@ void sendAck(bool ok, const String& message) {
 }
 
 void serveAppleSuccess() {
+    noteWebActivity();
     static const char kAppleSuccessHtml[] PROGMEM =
         "<HTML><HEAD><TITLE>Success</TITLE></HEAD><BODY>Success</BODY></HTML>";
     server.sendHeader("Cache-Control", "no-store");
@@ -398,16 +446,19 @@ void serveAppleSuccess() {
 }
 
 void serveAndroidSuccess() {
+    noteWebActivity();
     server.sendHeader("Cache-Control", "no-store");
     server.send(204, "text/plain", "");
 }
 
 void serveNcsiSuccess() {
+    noteWebActivity();
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "text/plain", "Microsoft Connect Test");
 }
 
 void servePortalPage() {
+    noteWebActivity();
     server.sendHeader("Cache-Control", "no-store");
     server.send_P(200, "text/html; charset=utf-8", kPage);
 }
@@ -433,6 +484,8 @@ void handleWifi() {
         staEnabled = !staSsid.isEmpty();
         setupDone = staEnabled;
         saveStaConfig();
+        homeStaFirstActive = false;
+        lastStaAttemptAt = 0;
         if(staEnabled) {
             beginStaConnect(true);
             sendAck(true, "saved and connecting");
@@ -450,6 +503,12 @@ void handleWifi() {
         staPassword = "";
         saveStaConfig();
         stopSta();
+        homeStaFirstActive = false;
+        lastStaAttemptAt = 0;
+        if(wifiActive) {
+            startAccessPoint();
+            startWifiScan(true);
+        }
         sendAck(true, "forgotten");
         return;
     }
@@ -459,6 +518,12 @@ void handleWifi() {
         setupDone = true;
         saveStaConfig();
         stopSta();
+        homeStaFirstActive = false;
+        lastStaAttemptAt = 0;
+        if(wifiActive) {
+            startAccessPoint();
+            startWifiScan(true);
+        }
         sendAck(true, "ap only");
         return;
     }
@@ -506,6 +571,7 @@ bool startAccessPoint() {
     dnsServer.start(kDnsPort, "*", WiFi.softAPIP());
     dnsRunning = true;
     apRunning = true;
+    lastWebActivityAt = millis();
     Serial.printf("[remote_wifi] ap_on ssid=%s ip=%s\n", apSsid.c_str(), apIpString().c_str());
     return true;
 }
@@ -558,11 +624,22 @@ bool remote_wifi_start() {
     }
 
     configureRoutes();
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.setAutoReconnect(true);
+    WiFi.setAutoReconnect(false);
     WiFi.setSleep(staEnabled && !remote_config::kDisableWifiModemSleepForTesting);
-    startAccessPoint();
-    beginStaConnect(true);
+    homeStaFirstActive = savedHomeConfigured();
+    if(homeStaFirstActive) {
+        homeStaFirstUntil = millis() + kHomeStaFirstMs;
+        WiFi.mode(WIFI_STA);
+        Serial.printf("[remote_wifi] sta_first ssid=%s window_ms=%lu\n",
+                      staSsid.c_str(),
+                      static_cast<unsigned long>(kHomeStaFirstMs));
+    } else {
+        WiFi.mode(WIFI_AP_STA);
+        startAccessPoint();
+    }
+    if(staEnabled) {
+        beginStaConnect(true);
+    }
     if(!staEnabled || staSsid.isEmpty()) {
         startWifiScan(true);
     }
@@ -592,7 +669,10 @@ void remote_wifi_stop() {
     stopSta();
     WiFi.mode(WIFI_MODE_NULL);
     lastStaAttemptAt = 0;
+    homeStaFirstActive = false;
+    lastWebActivityAt = 0;
     wifiActive = false;
+    staAttemptCount = 0;
     Serial.println("[remote_wifi] stopped");
 }
 
@@ -602,23 +682,30 @@ void remote_wifi_poll() {
     }
 
     const bool staConnected = staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
-    if(staConnected) {
-        if(apRunning) {
-            stopAccessPoint();
-        }
-        if(serverStarted) {
-            stopPortalServer();
-        }
-    } else {
-        if(!apRunning) {
-            startAccessPoint();
-        }
-        if(!serverStarted) {
-            startPortalServer();
-        }
-        if(dnsRunning) {
-            dnsServer.processNextRequest();
-        }
+    if(homeStaFirstActive && !staConnected && !homeStaFirstWindowActive()) {
+        homeStaFirstActive = false;
+        Serial.println("[remote_wifi] sta_first_timeout ap_fallback=on");
+    }
+
+    const bool homeConfigured = savedHomeConfigured();
+    const bool setupApNeeded = !homeConfigured || (!staConnected && !homeStaFirstWindowActive());
+    if(setupApNeeded && !apRunning) {
+        startAccessPoint();
+    }
+    if(homeConfigured &&
+       staConnected &&
+       apRunning &&
+       WiFi.softAPgetStationNum() == 0 &&
+       !webActivityRecent()) {
+        stopAccessPoint();
+    }
+
+    if(!serverStarted) {
+        startPortalServer();
+    }
+
+    if(dnsRunning) {
+        dnsServer.processNextRequest();
     }
 
     if(serverStarted) {
@@ -640,8 +727,20 @@ bool remote_wifi_sta_connected() {
     return staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
 }
 
+bool remote_wifi_ap_running() {
+    return wifiActive && apRunning;
+}
+
+uint8_t remote_wifi_ap_station_count() {
+    return static_cast<uint8_t>(apRunning ? WiFi.softAPgetStationNum() : 0);
+}
+
 bool remote_wifi_has_saved_network() {
     return staEnabled && !staSsid.isEmpty();
+}
+
+uint8_t remote_wifi_sta_attempt_count() {
+    return staAttemptCount;
 }
 
 void remote_wifi_apply_network_settings(const String& ssid, const String& password, bool connectNow) {
@@ -655,6 +754,8 @@ void remote_wifi_apply_network_settings(const String& ssid, const String& passwo
     setupDone = true;
     saveStaConfig();
     lastStaAttemptAt = 0;
+    staAttemptCount = 0;
+    homeStaFirstActive = false;
 
     if(connectNow && wifiActive) {
         beginStaConnect(true);
@@ -684,7 +785,16 @@ String remote_wifi_status_text() {
     if(!wifiActive) {
         return "WiFi off";
     }
-    return remote_wifi_sta_connected() ? staIpString() : String("AP ") + apIpString();
+    if(remote_wifi_sta_connected()) {
+        return staIpString();
+    }
+    if(apRunning) {
+        return String("AP ") + apIpString();
+    }
+    if(homeStaFirstWindowActive()) {
+        return "Connecting WiFi";
+    }
+    return "WiFi starting";
 }
 
 void remote_wifi_reset_network_settings() {
@@ -695,7 +805,11 @@ void remote_wifi_reset_network_settings() {
     saveStaConfig();
     stopSta();
     lastStaAttemptAt = 0;
+    staAttemptCount = 0;
+    homeStaFirstActive = false;
     if(wifiActive) {
+        startAccessPoint();
+        startPortalServer();
         startWifiScan(true);
     }
 }

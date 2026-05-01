@@ -264,7 +264,7 @@ void startInternetSyncIfReady() {
         internetSyncPending = false;
         return;
     }
-    if(currentMode != RADIO_MODE_ESPNOW || !isMenuOrIdleState(state)) {
+    if(currentMode != RADIO_MODE_ESPNOW || !(state == IDLE || state == IDLE_GBW)) {
         return;
     }
     if(static_cast<int32_t>(millis() - nextInternetSyncAt) < 0) {
@@ -327,6 +327,8 @@ bool radio_mode_apply(bool force) {
     if(initialized && !force && desiredMode == currentMode) {
         if(desiredMode == RADIO_MODE_WEB || desiredMode == RADIO_MODE_DUAL) {
             webRecoveryActive = false;
+            internetSyncActive = false;
+            internetSyncStartedAt = 0;
         }
         return true;
     }

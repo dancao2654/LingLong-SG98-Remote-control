@@ -146,7 +146,7 @@ FATAL:
 3 = Error frame received / drive fault
 4 = Comm discrepancy over 100
 5 = Failed to create mutex
-6 = motor stalled
+6 = motor stalled / start failed
 7 = could not write all parameters
 8 = first boot
 

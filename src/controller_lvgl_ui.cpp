@@ -11,6 +11,7 @@
 
 #include <esp_ota_ops.h>
 
+#include "assets/linglong_sg98_cartoon.h"
 #include "comm.h"
 #include "controller_env.h"
 #include "gbw.h"
@@ -27,6 +28,7 @@ constexpr int kScreenWidth = 280;
 constexpr int kScreenHeight = 240;
 constexpr int kDrawBufferLines = 12;
 constexpr uint32_t kSplashVisibleMs = 1800;
+constexpr uint32_t kMotorProbeSplashMs = 5200;
 constexpr uint8_t kVisibleMenuRows = 3;
 constexpr uint8_t kVisibleMotorSelectRows = 3;
 
@@ -56,6 +58,19 @@ bool gEnabled = true;
 uint32_t gLastTickAt = 0;
 uint32_t gSplashUntil = 0;
 String gSplashLabel;
+String gSplashPhase;
+uint32_t gSplashStartedAt = 0;
+uint8_t gSplashStep = 0;
+uint8_t gSplashTotal = 0;
+bool gSplashComplete = false;
+
+enum class SplashKind : uint8_t {
+    None,
+    Flash,
+    MotorProbe,
+};
+
+SplashKind gSplashKind = SplashKind::None;
 
 lv_disp_draw_buf_t gDrawBuffer;
 lv_color_t gDrawPixels[kScreenWidth * kDrawBufferLines];
@@ -79,6 +94,9 @@ struct UiRefs {
     lv_obj_t* dashProgress = nullptr;
     lv_obj_t* dashProgressLabel = nullptr;
     lv_obj_t* dashHint = nullptr;
+    lv_obj_t* dashTorqueArc = nullptr;
+    lv_obj_t* dashTorqueValue = nullptr;
+    lv_obj_t* dashTorqueLabel = nullptr;
     lv_obj_t* dashFooter = nullptr;
     lv_obj_t* dashLeftCaption = nullptr;
     lv_obj_t* dashLeftStatus = nullptr;
@@ -108,6 +126,27 @@ struct UiRefs {
 
     lv_obj_t* splashView = nullptr;
     lv_obj_t* splashLabel = nullptr;
+    lv_obj_t* splashTitle = nullptr;
+    lv_obj_t* splashSubtitle = nullptr;
+    lv_obj_t* splashArt = nullptr;
+    lv_obj_t* splashScanArc = nullptr;
+    lv_obj_t* splashGrinderImage = nullptr;
+    lv_obj_t* splashHopper = nullptr;
+    lv_obj_t* splashHopperLip = nullptr;
+    lv_obj_t* splashNeck = nullptr;
+    lv_obj_t* splashBody = nullptr;
+    lv_obj_t* splashBurr = nullptr;
+    lv_obj_t* splashChute = nullptr;
+    lv_obj_t* splashCup = nullptr;
+    lv_obj_t* splashBase = nullptr;
+    lv_obj_t* splashBeans[3] = {};
+    lv_obj_t* splashStatus = nullptr;
+    lv_obj_t* splashMotor = nullptr;
+    lv_obj_t* splashProgress = nullptr;
+    lv_obj_t* splashStep = nullptr;
+    lv_obj_t* splashSteps[4] = {};
+    lv_obj_t* splashStepLabels[4] = {};
+    lv_obj_t* splashFooter = nullptr;
 } ui;
 
 enum class ActiveView : uint8_t {
@@ -226,12 +265,12 @@ String networkInfoText() {
     out += "\nIP    ";
     const String ip = wifi_ui_sta_ip();
     out += ip.length() > 0 ? ip : String("--");
-    out += "\nRSSI  ";
+    out += wifi_ui_sta_connected() ? "\nRSSI  " : "\nSTA   ";
     if(wifi_ui_sta_connected()) {
         out += String(wifi_ui_sta_rssi());
         out += " dBm";
     } else {
-        out += "--";
+        out += fitText(wifi_ui_sta_status(), 20);
     }
     out += "\nTime  ";
     out += dateTimeLabel();
@@ -269,7 +308,12 @@ String aboutInfoText() {
     out += SG98_BUILD_DATE;
     out += "\nOTA     ";
     out += esp_ota_get_next_update_partition(nullptr) != nullptr ? "App slot" : "Full flash";
-    out += "\nUpdate  None";
+    out += "\nUpdate  ";
+    out += fitText(controller_env_ota_update_line(), 18);
+    if(controller_env_ota_update_available()) {
+        out += "\nLatest  ";
+        out += fitText(controller_env_ota_update_detail(), 18);
+    }
     return out;
 }
 
@@ -398,11 +442,11 @@ String shortScaleState() {
     return scaleStatusTextShort();
 }
 
-lv_color_t torqueStatusColor() {
-    const int32_t torque = clampPct(motor_get_torque_percent());
+lv_color_t torqueStatusColor(int32_t torquePercent = motor_get_torque_percent()) {
+    const int32_t torque = clampPct(abs(torquePercent));
     if(torque >= 85) return lvColor(kColorDanger);
     if(torque >= 60) return lvColor(kColorWarn);
-    return lvColor(kColorAccent);
+    return lvColor(kColorGood);
 }
 
 lv_color_t rpmStatusColor() {
@@ -435,7 +479,7 @@ const char* getErrorChar(uint8_t errorCode) {
         case 3: return "Drive fault";
         case 4: return "Drive packet loss > 25";
         case 5: return "Failed to create mutex";
-        case 6: return "Motor stalled";
+        case 6: return "Motor stalled/start failed";
         case 7: return "Write error, reboot all";
         case 8: return "First use, reboot drive";
         case 100: return "Unexpected set RPM";
@@ -451,9 +495,14 @@ const char* getErrorChar(uint8_t errorCode) {
 }
 
 String headerLinkLabel() {
-    if(radio_mode_is_espnow()) return "REMOTE LINK";
-    if(!wifi_ui_is_active()) return "WI-FI OFF";
-    return wifi_ui_sta_connected() ? "WI-FI LAN" : "WI-FI AP";
+    if(radio_mode_is_espnow()) return "ESP-NOW";
+    if(!wifi_ui_is_active()) return "OFF";
+    if(wifi_ui_sta_connected()) return "LAN";
+    if(wifi_ui_ap_running()) {
+        const uint8_t stations = wifi_ui_ap_station_count();
+        return stations > 0 ? String("AP ") + String(static_cast<unsigned>(stations)) : String("AP");
+    }
+    return "JOIN";
 }
 
 String headerMotorLabel() {
@@ -468,6 +517,12 @@ lv_color_t headerLinkColor() {
     if(!radio_mode_status_ok()) {
         return lvColor(kColorWarn);
     }
+    if(!wifi_ui_is_active() && !radio_mode_is_espnow()) {
+        return lvColor(kColorMuted);
+    }
+    if(wifi_ui_ap_running() && !wifi_ui_sta_connected()) {
+        return lvColor(kColorWarn);
+    }
     return radio_mode_is_espnow() ? lvColor(kColorEspNow) : lvColor(kColorGood);
 }
 
@@ -475,9 +530,19 @@ uint32_t headerLinkFillColor() {
     if(!radio_mode_status_ok()) {
         return blendRgb(kColorPanelHi, kColorWarn, 0.50f);
     }
-    return radio_mode_is_espnow()
-               ? blendRgb(kColorPanelHi, kColorEspNow, 0.54f)
-               : blendRgb(kColorPanelHi, kColorGood, 0.56f);
+    if(radio_mode_is_espnow()) {
+        return blendRgb(kColorPanelHi, kColorEspNow, 0.54f);
+    }
+    if(!wifi_ui_is_active()) {
+        return blendRgb(kColorPanelHi, kColorMuted, 0.32f);
+    }
+    if(wifi_ui_sta_connected()) {
+        return blendRgb(kColorPanelHi, kColorGood, 0.56f);
+    }
+    if(wifi_ui_ap_running()) {
+        return blendRgb(kColorPanelHi, kColorWarn, 0.58f);
+    }
+    return blendRgb(kColorPanelHi, kColorWarn, 0.42f);
 }
 
 lv_color_t headerMotorColor() {
@@ -665,7 +730,7 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
            (selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO ||
             selectedIdx == Menu5Items::WIRELESS_RESET_NETWORK)) return "Open";
         if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return String(baudForJmcMenuItem(selectedIdx));
-        if(menuNum == 1 && selectedIdx == CALIBRATE) return "Hold";
+        if(menuNum == 1 && selectedIdx == CALIBRATE) return "Start";
         return "Select";
     }
 
@@ -698,7 +763,7 @@ String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
         if(!command->supported) return String(motor_get_type_label()) + " does not use this control";
         if(command->helpText != nullptr && command->helpText[0] != '\0') return command->helpText;
     }
-    if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Hold encoder to start";
+    if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Press encoder to start";
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO) return "Shows cached network and sync status";
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Writes drive baud for next boot";
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Wireless mode, status, and reset";
@@ -773,6 +838,15 @@ void styleBadge(lv_obj_t* obj, uint32_t fill, uint32_t textColor) {
     lv_obj_set_style_pad_bottom(obj, 3, 0);
 }
 
+void styleSolid(lv_obj_t* obj, uint32_t fill, uint32_t line = 0, lv_coord_t radius = 0, lv_opa_t opa = LV_OPA_COVER) {
+    lv_obj_set_style_bg_color(obj, lvColor(fill), 0);
+    lv_obj_set_style_bg_opa(obj, opa, 0);
+    lv_obj_set_style_border_width(obj, line == 0 ? 0 : 1, 0);
+    lv_obj_set_style_border_color(obj, lvColor(line), 0);
+    lv_obj_set_style_radius(obj, radius, 0);
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
+}
+
 uint32_t currentViewTint() {
     if(error != 0 || currentStatus == MOTOR_FAULT || currentStatus == MOTOR_NOT_CONNECTED) {
         return kColorDanger;
@@ -821,11 +895,17 @@ void applyViewPalette() {
     stylePanel(ui.dashboard, palette.panel, palette.line);
     stylePanel(ui.dashProgressWrap, palette.panelHi, palette.line);
     stylePanel(ui.dashFooter, blendRgb(palette.panelHi, palette.background, 0.18f), palette.line, LV_OPA_COVER);
+    lv_obj_set_style_arc_color(ui.dashTorqueArc, lvColor(blendRgb(palette.line, palette.panelHi, 0.30f)), LV_PART_MAIN);
 
     stylePanel(ui.menuView, palette.panel, palette.line);
     stylePanel(ui.detailView, palette.panel, palette.line);
     stylePanel(ui.selectView, palette.panel, palette.line);
     stylePanel(ui.splashView, blendRgb(palette.panelHi, palette.background, 0.14f), palette.line);
+    lv_obj_set_style_radius(ui.splashView, 0, 0);
+    lv_obj_set_style_border_width(ui.splashView, 0, 0);
+    if(ui.splashScanArc != nullptr) {
+        lv_obj_set_style_arc_color(ui.splashScanArc, lvColor(blendRgb(palette.line, kColorAccent, 0.20f)), LV_PART_MAIN);
+    }
 }
 
 void showView(ActiveView view) {
@@ -937,6 +1017,40 @@ void createDashboardUi() {
     lv_obj_set_style_text_color(ui.dashHint, lvColor(kColorSoft), 0);
     lv_label_set_long_mode(ui.dashHint, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.dashHint, LV_ALIGN_TOP_LEFT, 0, 120);
+
+    ui.dashTorqueArc = lv_arc_create(ui.dashboard);
+    lv_obj_set_size(ui.dashTorqueArc, 62, 62);
+    lv_obj_set_pos(ui.dashTorqueArc, 176, 22);
+    lv_arc_set_range(ui.dashTorqueArc, 0, 100);
+    lv_arc_set_bg_angles(ui.dashTorqueArc, 0, 270);
+    lv_arc_set_rotation(ui.dashTorqueArc, 135);
+    lv_arc_set_value(ui.dashTorqueArc, 0);
+    lv_obj_clear_flag(ui.dashTorqueArc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(ui.dashTorqueArc, 7, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(ui.dashTorqueArc, 7, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(ui.dashTorqueArc, lvColor(0x1B3652), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(ui.dashTorqueArc, lvColor(kColorGood), LV_PART_INDICATOR);
+    lv_obj_set_style_opa(ui.dashTorqueArc, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(ui.dashTorqueArc, 0, LV_PART_KNOB);
+
+    ui.dashTorqueValue = lv_label_create(ui.dashboard);
+    lv_obj_set_width(ui.dashTorqueValue, 56);
+    lv_obj_set_style_text_font(ui.dashTorqueValue, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_align(ui.dashTorqueValue, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(ui.dashTorqueValue, lvColor(kColorGood), 0);
+    lv_label_set_long_mode(ui.dashTorqueValue, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(ui.dashTorqueValue, 179, 41);
+
+    ui.dashTorqueLabel = lv_label_create(ui.dashboard);
+    lv_obj_set_width(ui.dashTorqueLabel, 56);
+    lv_obj_set_style_text_font(ui.dashTorqueLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(ui.dashTorqueLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(ui.dashTorqueLabel, lvColor(kColorMuted), 0);
+    lv_label_set_text(ui.dashTorqueLabel, "TQ");
+    lv_obj_set_pos(ui.dashTorqueLabel, 179, 64);
+    setHidden(ui.dashTorqueArc, true);
+    setHidden(ui.dashTorqueValue, true);
+    setHidden(ui.dashTorqueLabel, true);
 
     ui.dashFooter = lv_obj_create(ui.dashboard);
     stylePanel(ui.dashFooter, 0x0C1B2C, kColorLine, LV_OPA_COVER);
@@ -1135,17 +1249,115 @@ void createMotorSelectUi() {
 
 void createSplashUi() {
     ui.splashView = lv_obj_create(ui.root);
-    stylePanel(ui.splashView, 0x0B1E31, 0x244564);
-    lv_obj_set_size(ui.splashView, 264, 176);
-    lv_obj_set_pos(ui.splashView, 8, 56);
+    styleSolid(ui.splashView, 0x0B1E31);
+    lv_obj_set_size(ui.splashView, kScreenWidth, kScreenHeight);
+    lv_obj_set_pos(ui.splashView, 0, 0);
+    lv_obj_set_style_pad_all(ui.splashView, 0, 0);
 
     ui.splashLabel = lv_label_create(ui.splashView);
-    lv_obj_set_width(ui.splashLabel, 240);
+    lv_obj_set_width(ui.splashLabel, 236);
     lv_obj_set_style_text_font(ui.splashLabel, &lv_font_montserrat_32, 0);
     lv_obj_set_style_text_color(ui.splashLabel, lvColor(kColorWarn), 0);
     lv_obj_set_style_text_align(ui.splashLabel, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_long_mode(ui.splashLabel, LV_LABEL_LONG_WRAP);
     lv_obj_center(ui.splashLabel);
+
+    ui.splashTitle = lv_label_create(ui.splashView);
+    lv_obj_set_width(ui.splashTitle, 248);
+    lv_obj_set_style_text_font(ui.splashTitle, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_color(ui.splashTitle, lvColor(kColorInk), 0);
+    lv_obj_set_style_text_align(ui.splashTitle, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(ui.splashTitle, "LINGLONG SG-98");
+    lv_obj_align(ui.splashTitle, LV_ALIGN_TOP_MID, 0, 14);
+
+    ui.splashSubtitle = lv_label_create(ui.splashView);
+    lv_obj_set_width(ui.splashSubtitle, 248);
+    lv_obj_set_style_text_font(ui.splashSubtitle, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(ui.splashSubtitle, lvColor(kColorSoft), 0);
+    lv_obj_set_style_text_align(ui.splashSubtitle, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_text(ui.splashSubtitle, "Drive auto-detect");
+    lv_obj_align(ui.splashSubtitle, LV_ALIGN_TOP_MID, 0, 38);
+
+    ui.splashArt = lv_obj_create(ui.splashView);
+    styleClear(ui.splashArt);
+    lv_obj_set_size(ui.splashArt, 132, 132);
+    lv_obj_set_pos(ui.splashArt, 10, 62);
+
+    ui.splashScanArc = lv_arc_create(ui.splashArt);
+    lv_obj_set_size(ui.splashScanArc, 128, 128);
+    lv_obj_set_pos(ui.splashScanArc, 2, 2);
+    lv_arc_set_range(ui.splashScanArc, 0, 100);
+    lv_arc_set_bg_angles(ui.splashScanArc, 0, 360);
+    lv_arc_set_rotation(ui.splashScanArc, 0);
+    lv_arc_set_value(ui.splashScanArc, 64);
+    lv_obj_clear_flag(ui.splashScanArc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_style_arc_width(ui.splashScanArc, 4, LV_PART_MAIN);
+    lv_obj_set_style_arc_width(ui.splashScanArc, 5, LV_PART_INDICATOR);
+    lv_obj_set_style_arc_color(ui.splashScanArc, lvColor(0x244564), LV_PART_MAIN);
+    lv_obj_set_style_arc_color(ui.splashScanArc, lvColor(kColorAccent), LV_PART_INDICATOR);
+    lv_obj_set_style_opa(ui.splashScanArc, LV_OPA_TRANSP, LV_PART_KNOB);
+    lv_obj_set_style_pad_all(ui.splashScanArc, 0, LV_PART_KNOB);
+
+    ui.splashGrinderImage = lv_img_create(ui.splashArt);
+    lv_img_set_src(ui.splashGrinderImage, &linglong_sg98_cartoon_124);
+    lv_obj_set_pos(ui.splashGrinderImage, 4, 4);
+    lv_obj_clear_flag(ui.splashGrinderImage, LV_OBJ_FLAG_CLICKABLE);
+
+    ui.splashStatus = lv_label_create(ui.splashView);
+    lv_obj_set_width(ui.splashStatus, 122);
+    lv_obj_set_style_text_font(ui.splashStatus, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(ui.splashStatus, lvColor(kColorAccent), 0);
+    lv_label_set_long_mode(ui.splashStatus, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(ui.splashStatus, 144, 74);
+
+    ui.splashMotor = lv_label_create(ui.splashView);
+    lv_obj_set_width(ui.splashMotor, 122);
+    lv_obj_set_style_text_font(ui.splashMotor, &lv_font_montserrat_24, 0);
+    lv_obj_set_style_text_color(ui.splashMotor, lvColor(kColorInk), 0);
+    lv_obj_set_style_text_align(ui.splashMotor, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(ui.splashMotor, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(ui.splashMotor, 144, 92);
+
+    ui.splashProgress = lv_bar_create(ui.splashView);
+    lv_obj_set_size(ui.splashProgress, 118, 8);
+    lv_obj_set_pos(ui.splashProgress, 146, 132);
+    lv_obj_set_style_bg_color(ui.splashProgress, lvColor(0x10233A), LV_PART_MAIN);
+    lv_obj_set_style_bg_opa(ui.splashProgress, LV_OPA_COVER, LV_PART_MAIN);
+    lv_obj_set_style_radius(ui.splashProgress, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+    lv_obj_set_style_bg_color(ui.splashProgress, lvColor(kColorAccent), LV_PART_INDICATOR);
+    lv_obj_set_style_radius(ui.splashProgress, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+
+    ui.splashStep = lv_label_create(ui.splashView);
+    lv_obj_set_width(ui.splashStep, 118);
+    lv_obj_set_style_text_font(ui.splashStep, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(ui.splashStep, lvColor(kColorSoft), 0);
+    lv_label_set_long_mode(ui.splashStep, LV_LABEL_LONG_DOT);
+    lv_obj_set_pos(ui.splashStep, 146, 144);
+
+    const char* stepLabels[4] = {"BUS", "JMC", "RT", "KRS"};
+    for(uint8_t i = 0; i < 4; ++i) {
+        ui.splashSteps[i] = lv_obj_create(ui.splashView);
+        styleSolid(ui.splashSteps[i], 0x203A55, 0, LV_RADIUS_CIRCLE);
+        lv_obj_set_size(ui.splashSteps[i], 8, 8);
+        lv_obj_set_pos(ui.splashSteps[i], 146 + static_cast<int16_t>(i) * 30, 169);
+
+        ui.splashStepLabels[i] = lv_label_create(ui.splashView);
+        lv_obj_set_width(ui.splashStepLabels[i], 26);
+        lv_obj_set_style_text_font(ui.splashStepLabels[i], &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(ui.splashStepLabels[i], lvColor(kColorMuted), 0);
+        lv_obj_set_style_text_align(ui.splashStepLabels[i], LV_TEXT_ALIGN_CENTER, 0);
+        lv_label_set_text(ui.splashStepLabels[i], stepLabels[i]);
+        lv_obj_set_pos(ui.splashStepLabels[i], 137 + static_cast<int16_t>(i) * 30, 181);
+    }
+
+    ui.splashFooter = lv_label_create(ui.splashView);
+    lv_obj_set_width(ui.splashFooter, 248);
+    lv_obj_set_style_text_font(ui.splashFooter, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(ui.splashFooter, lvColor(kColorMuted), 0);
+    lv_obj_set_style_text_align(ui.splashFooter, LV_TEXT_ALIGN_CENTER, 0);
+    lv_label_set_long_mode(ui.splashFooter, LV_LABEL_LONG_DOT);
+    lv_label_set_text(ui.splashFooter, "RS-485 link scan");
+    lv_obj_align(ui.splashFooter, LV_ALIGN_BOTTOM_MID, 0, -12);
 }
 
 void createUi() {
@@ -1193,7 +1405,7 @@ void flushDisplay(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* colorMa
 }
 
 void syncHeader() {
-    const String wifiText = String(LV_SYMBOL_WIFI) + " " + fitText(headerLinkLabel(), 9);
+    const String wifiText = String(LV_SYMBOL_WIFI) + " " + fitText(headerLinkLabel(), 7);
     lv_label_set_text(ui.wifiLabel, wifiText.c_str());
     styleBadge(ui.wifiLabel, headerLinkFillColor(), kColorBadgeText);
 
@@ -1215,6 +1427,24 @@ void setProgress(lv_color_t color, int32_t pct, const String& label) {
     lv_bar_set_value(ui.dashProgress, clampPct(pct), LV_ANIM_OFF);
     lv_obj_set_style_bg_color(ui.dashProgress, color, LV_PART_INDICATOR);
     lv_label_set_text(ui.dashProgressLabel, fitText(label, 10).c_str());
+}
+
+void syncTorqueMonitor(bool visible, int32_t torquePercent = 0) {
+    lv_obj_set_width(ui.dashPrimary, visible ? 166 : 240);
+    lv_obj_set_width(ui.dashSecondary, visible ? 166 : 240);
+    setHidden(ui.dashTorqueArc, !visible);
+    setHidden(ui.dashTorqueValue, !visible);
+    setHidden(ui.dashTorqueLabel, !visible);
+    if(!visible) {
+        return;
+    }
+
+    const int32_t torque = clampPct(abs(torquePercent));
+    const lv_color_t color = torqueStatusColor(torquePercent);
+    lv_arc_set_value(ui.dashTorqueArc, torque);
+    lv_obj_set_style_arc_color(ui.dashTorqueArc, color, LV_PART_INDICATOR);
+    lv_obj_set_style_text_color(ui.dashTorqueValue, color, 0);
+    lv_label_set_text(ui.dashTorqueValue, formatPercent(torque).c_str());
 }
 
 void syncDashboardCommon(const String& mode,
@@ -1248,6 +1478,7 @@ void syncDashboardCommon(const String& mode,
 
 void syncDashboard() {
     const int32_t liveRpm = currentDisplayMotorRPM();
+    syncTorqueMonitor(false);
 
     switch(state) {
         case IDLE: {
@@ -1288,7 +1519,8 @@ void syncDashboard() {
             const int32_t target = abs(setRPM);
             const int32_t displayRpm = abs(liveRpm);
             const int32_t pct = target > 0 ? (displayRpm * 100) / target : 0;
-            const String torqueText = formatPercent(clampPct(motor_get_torque_percent()));
+            const int32_t torque = motor_get_torque_percent();
+            const String torqueText = formatPercent(clampPct(abs(torque)));
             syncDashboardCommon("Grinding",
                                 String(displayRpm) + " rpm",
                                 String("Target ") + setRPM + " rpm",
@@ -1301,7 +1533,8 @@ void syncDashboard() {
                                 driveStatusColor(),
                                 "Torque",
                                 torqueText.c_str(),
-                                torqueStatusColor());
+                                torqueStatusColor(torque));
+            syncTorqueMonitor(true, torque);
             lv_obj_set_style_text_color(ui.dashPrimary, grindingRpmColor(), 0);
             break;
         }
@@ -1309,7 +1542,8 @@ void syncDashboard() {
             const int32_t target = maxAbs(Menu2[SETPURGERPM].value, Menu2[SETPURGEREVERSE].value);
             const int32_t displayRpm = abs(liveRpm);
             const int32_t pct = target > 0 ? (displayRpm * 100) / target : 0;
-            const String torqueText = formatPercent(clampPct(motor_get_torque_percent()));
+            const int32_t torque = motor_get_torque_percent();
+            const String torqueText = formatPercent(clampPct(abs(torque)));
             syncDashboardCommon("Purging",
                                 String(displayRpm) + " rpm",
                                 "Clearing the chute",
@@ -1322,12 +1556,14 @@ void syncDashboard() {
                                 driveStatusColor(),
                                 "Torque",
                                 torqueText.c_str(),
-                                torqueStatusColor());
+                                torqueStatusColor(torque));
+            syncTorqueMonitor(true, torque);
             break;
         }
         case GRINDING_GBW: {
             const int32_t pct = setWeight > 0 ? (currentWeight * 100L) / static_cast<int32_t>(setWeight) : 0;
-            const String torqueText = formatPercent(clampPct(motor_get_torque_percent()));
+            const int32_t torque = motor_get_torque_percent();
+            const String torqueText = formatPercent(clampPct(abs(torque)));
             syncDashboardCommon("Dosing",
                                 formatMassMg(currentWeight),
                                 String("Target ") + formatMassMg(setWeight),
@@ -1340,7 +1576,8 @@ void syncDashboard() {
                                 driveStatusColor(),
                                 "Torque",
                                 torqueText.c_str(),
-                                torqueStatusColor());
+                                torqueStatusColor(torque));
+            syncTorqueMonitor(true, torque);
             break;
         }
         case CALIBRATING: {
@@ -1533,11 +1770,143 @@ void syncMotorSelect() {
     }
 }
 
+void setMotorProbeSplashHidden(bool hidden) {
+    lv_obj_t* objects[] = {
+        ui.splashTitle,
+        ui.splashSubtitle,
+        ui.splashArt,
+        ui.splashScanArc,
+        ui.splashGrinderImage,
+        ui.splashHopper,
+        ui.splashHopperLip,
+        ui.splashNeck,
+        ui.splashBody,
+        ui.splashBurr,
+        ui.splashChute,
+        ui.splashCup,
+        ui.splashBase,
+        ui.splashStatus,
+        ui.splashMotor,
+        ui.splashProgress,
+        ui.splashStep,
+        ui.splashFooter,
+    };
+    for(lv_obj_t* obj : objects) {
+        setHidden(obj, hidden);
+    }
+    for(lv_obj_t* obj : ui.splashBeans) {
+        setHidden(obj, hidden);
+    }
+    for(lv_obj_t* obj : ui.splashSteps) {
+        setHidden(obj, hidden);
+    }
+    for(lv_obj_t* obj : ui.splashStepLabels) {
+        setHidden(obj, hidden);
+    }
+}
+
+bool probeSplashFailed() {
+    return gSplashComplete &&
+           (gSplashLabel == "No drive" ||
+            gSplashLabel == "UNKNOWN" ||
+            gSplashLabel == "AUTO");
+}
+
+int32_t probeSplashProgress(uint32_t elapsedMs) {
+    if(gSplashComplete) {
+        return 100;
+    }
+    if(gSplashTotal == 0) {
+        return 18 + static_cast<int32_t>((elapsedMs / 18UL) % 64UL);
+    }
+
+    const uint8_t step = static_cast<uint8_t>(constrain(static_cast<int>(gSplashStep), 1, static_cast<int>(gSplashTotal)));
+    const int32_t base = ((static_cast<int32_t>(step) - 1) * 100L) / static_cast<int32_t>(gSplashTotal);
+    const int32_t rawSpan = 100L / static_cast<int32_t>(gSplashTotal);
+    const int32_t span = rawSpan > 0 ? rawSpan : 1;
+    const int32_t sweep = (static_cast<int32_t>(elapsedMs % 900UL) * span) / 900L;
+    const int32_t value = base + sweep;
+    return value < 95 ? value : 95;
+}
+
+void syncSplash() {
+    const bool motorProbe = gSplashKind == SplashKind::MotorProbe;
+    setHidden(ui.splashLabel, motorProbe);
+    setMotorProbeSplashHidden(!motorProbe);
+
+    if(!motorProbe) {
+        lv_label_set_text(ui.splashLabel, fitText(gSplashLabel, 24).c_str());
+        return;
+    }
+
+    const uint32_t elapsed = millis() - gSplashStartedAt;
+    const bool failed = probeSplashFailed();
+    const uint32_t accent = failed ? kColorDanger : (gSplashComplete ? kColorGood : kColorAccent);
+    const int32_t progress = probeSplashProgress(elapsed);
+
+    if(ui.splashScanArc != nullptr) {
+        lv_arc_set_rotation(ui.splashScanArc, static_cast<uint16_t>((elapsed / 8UL) % 360UL));
+        lv_obj_set_style_arc_color(ui.splashScanArc, lvColor(accent), LV_PART_INDICATOR);
+    }
+    lv_obj_set_style_bg_color(ui.splashProgress, lvColor(accent), LV_PART_INDICATOR);
+    lv_bar_set_value(ui.splashProgress, progress, LV_ANIM_OFF);
+
+    const uint8_t pulse = static_cast<uint8_t>((elapsed / 220UL) % 3UL);
+    for(uint8_t i = 0; i < 3; ++i) {
+        if(ui.splashBeans[i] == nullptr) continue;
+        const bool lit = (i == pulse) || gSplashComplete;
+        lv_obj_set_style_bg_color(ui.splashBeans[i], lvColor(lit ? kColorWarn : 0x6D7E8F), 0);
+        lv_obj_set_style_bg_opa(ui.splashBeans[i], lit ? LV_OPA_COVER : LV_OPA_50, 0);
+    }
+
+    if(ui.splashBurr != nullptr) {
+        lv_obj_set_style_border_color(ui.splashBurr, lvColor(accent), 0);
+    }
+    lv_obj_set_style_text_color(ui.splashStatus, lvColor(accent), 0);
+
+    const char* status = "Checking drive";
+    if(gSplashComplete) {
+        status = failed ? "No drive found" : "Drive detected";
+    }
+    lv_label_set_text(ui.splashStatus, status);
+    lv_label_set_text(ui.splashMotor, fitText(gSplashLabel, 12).c_str());
+
+    String stepText;
+    if(gSplashComplete) {
+        stepText = failed ? "Manual drive select available" : "Backend profile loaded";
+    } else if(gSplashTotal > 0) {
+        stepText = String("Step ") + String(gSplashStep) + "/" + String(gSplashTotal);
+    } else {
+        stepText = "Opening RS-485 bus";
+    }
+    lv_label_set_text(ui.splashStep, stepText.c_str());
+
+    int activeDot = gSplashComplete ? 3 : static_cast<int>(gSplashStep);
+    if(activeDot > 3) activeDot = 3;
+    for(uint8_t i = 0; i < 4; ++i) {
+        const bool active = static_cast<int>(i) <= activeDot;
+        lv_obj_set_style_bg_color(ui.splashSteps[i], lvColor(active ? accent : 0x203A55), 0);
+        lv_obj_set_style_bg_opa(ui.splashSteps[i], active ? LV_OPA_COVER : LV_OPA_60, 0);
+        lv_obj_set_style_text_color(ui.splashStepLabels[i],
+                                    lvColor(active ? kColorSoft : kColorMuted),
+                                    0);
+    }
+
+    lv_label_set_text(ui.splashFooter,
+                      failed ? "No RS-485 reply matched a supported drive"
+                             : (gSplashComplete ? "Ready for motor telemetry" : "RS-485 link scan"));
+}
+
 bool splashActive() {
     if(gSplashUntil == 0 || gSplashLabel.length() == 0) return false;
     if(millis() >= gSplashUntil) {
         gSplashUntil = 0;
         gSplashLabel = "";
+        gSplashPhase = "";
+        gSplashStep = 0;
+        gSplashTotal = 0;
+        gSplashComplete = false;
+        gSplashKind = SplashKind::None;
         return false;
     }
     return true;
@@ -1548,7 +1917,7 @@ void syncViewForState() {
 
     if(splashActive()) {
         showView(ActiveView::Splash);
-        lv_label_set_text(ui.splashLabel, fitText(gSplashLabel, 24).c_str());
+        syncSplash();
         return;
     }
 
@@ -1657,12 +2026,37 @@ bool controller_lvgl_ready() {
     return gReady;
 }
 
+bool controller_lvgl_needs_refresh() {
+    return gReady && gEnabled && gSplashUntil != 0;
+}
+
 void controller_lvgl_show_motor_probe_splash(const char* motorLabel) {
-    controller_lvgl_show_flash(motorLabel, kSplashVisibleMs);
+    controller_lvgl_show_motor_probe_progress(motorLabel, 1, 1, true);
+}
+
+void controller_lvgl_show_motor_probe_progress(const char* phaseLabel,
+                                               uint8_t step,
+                                               uint8_t total,
+                                               bool complete) {
+    if(phaseLabel == nullptr || phaseLabel[0] == '\0') return;
+    gSplashKind = SplashKind::MotorProbe;
+    gSplashLabel = phaseLabel;
+    gSplashPhase = phaseLabel;
+    gSplashStartedAt = millis();
+    gSplashStep = step;
+    gSplashTotal = total;
+    gSplashComplete = complete;
+    gSplashUntil = millis() + (complete ? kMotorProbeSplashMs : 10000UL);
 }
 
 void controller_lvgl_show_flash(const char* label, uint32_t durationMs) {
     if(label == nullptr || label[0] == '\0') return;
+    gSplashKind = SplashKind::Flash;
     gSplashLabel = label;
+    gSplashPhase = "";
+    gSplashStartedAt = millis();
+    gSplashStep = 0;
+    gSplashTotal = 0;
+    gSplashComplete = false;
     gSplashUntil = millis() + (durationMs > 0 ? durationMs : kSplashVisibleMs);
 }

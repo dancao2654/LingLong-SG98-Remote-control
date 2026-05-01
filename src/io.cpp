@@ -44,12 +44,27 @@ bool encButtonLongPressEvent = false;
 unsigned long encButtonDebounceStartedAt = 0;
 unsigned long encButtonLastStableChangeAt = 0;
 
+bool showStartBlockedIfNeeded();
+
 void showMenuEntryFeedback(const menuEntry& entry, const char* suffix = " applied", unsigned long durationMs = 900) {
     const char* name = entry.name != nullptr && entry.name[0] != '\0' ? entry.name : "Setting";
     const char* tail = suffix != nullptr ? suffix : "";
     char label[64];
     snprintf(label, sizeof(label), "%s%s", name, tail);
     display_show_action_feedback(label, durationMs);
+}
+
+void startCalibrationFromMenu(bool& notReleasedYet) {
+    if(showStartBlockedIfNeeded()) {
+        return;
+    }
+
+    error = 0;
+    state = CALIBRATING;
+    enterMenu = false;
+    display_show_action_feedback("Calibration started");
+    disp_updateRequired = true;
+    notReleasedYet = true;
 }
 
 void pollEncoderButton() {
@@ -155,6 +170,40 @@ void startButtonServiceTask() {
 
 bool shouldOpenDriveSelector() {
     return motor_get_drive_type() == DRIVE_TYPE_UNKNOWN || error == 1;
+}
+
+bool controllerStartAllowed(const char** message) {
+    if(error > 2 && error < 100) {
+        *message = "Clear motor error";
+        return false;
+    }
+    if(commStatus != COMM_CONNECTED || currentStatus == MOTOR_NOT_CONNECTED) {
+        *message = "Motor offline";
+        return false;
+    }
+    if(currentStatus == MOTOR_FAULT) {
+        *message = "Motor fault";
+        return false;
+    }
+    if(currentStatus == MOTOR_INVALID) {
+        *message = "Motor status invalid";
+        return false;
+    }
+
+    *message = nullptr;
+    return true;
+}
+
+bool showStartBlockedIfNeeded() {
+    const char* message = nullptr;
+    if(controllerStartAllowed(&message)) {
+        return false;
+    }
+
+    motor_setRPM = 0;
+    display_show_action_feedback(message != nullptr ? message : "Start blocked", 1000);
+    disp_updateRequired = true;
+    return true;
 }
 
 uint8_t menuItemCount(uint8_t menuNum) {
@@ -402,7 +451,7 @@ void do_io() {
         //START BUTTON
         if(START_BUTTON() == true && dimmed == false) {
             if(shouldOpenDriveSelector()) openDriveSelector(IDLE);
-            else {
+            else if(!showStartBlockedIfNeeded()) {
                 purge_prepare_for_grinding();
                 state = GRINDING;
             }
@@ -442,7 +491,7 @@ void do_io() {
         
         if(START_BUTTON() == true) {
             if(shouldOpenDriveSelector()) openDriveSelector(IDLE_GBW);
-            else state = GRINDING_GBW;
+            else if(!showStartBlockedIfNeeded()) state = GRINDING_GBW;
         }
 
         if(pressedLong() == true && dimmed == false) {
@@ -588,6 +637,8 @@ void do_io() {
                    menu1Selected != Menu1Items::ABOUT &&
                    menu1Selected != Menu1Items::EXITMENU) enterMenu = true; //entering settings adjustment
                 OriginalValue = Menu1[menu1Selected].value;
+            } else if(menu1Selected == Menu1Items::CALIBRATE) {
+                startCalibrationFromMenu(notReleasedYet);
             } else { 
                 enterMenu = false;
                 if(menu1Selected == Menu1Items::RADIOMODE) {
@@ -624,12 +675,7 @@ void do_io() {
                 }
             }
         } else if(pressedLong() == true && menu1Selected == Menu1Items::CALIBRATE) {
-            error = 0;
-            state = CALIBRATING;  
-            enterMenu = false;
-            display_show_action_feedback("Calibration started");
-            disp_updateRequired = true;
-            notReleasedYet = true;
+            startCalibrationFromMenu(notReleasedYet);
         }
         
     }

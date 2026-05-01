@@ -38,6 +38,15 @@ unsigned long lastWebActivityAt = 0;
 bool pendingStaConnect = false;
 bool pendingStaConfigBroadcast = false;
 unsigned long pendingStaConnectAt = 0;
+bool staConnectActive = false;
+unsigned long staConnectStartedAt = 0;
+uint32_t staConnectAttempts = 0;
+uint8_t staDisconnectReason = 0;
+char lastStaEvent[20] = "";
+bool staDisconnectCleanupPending = false;
+unsigned long staDisconnectCleanupAt = 0;
+bool homeStaFirstActive = false;
+unsigned long homeStaFirstUntil = 0;
 bool pendingHttpServiceRefresh = false;
 unsigned long pendingHttpServiceRefreshAt = 0;
 bool captiveSetupComplete = false;
@@ -49,6 +58,7 @@ uint32_t rootHits = 0;
 uint32_t controlHits = 0;
 uint32_t wifiApiHits = 0;
 uint32_t wifiScanDeferredHits = 0;
+unsigned long wifiScanStartedAt = 0;
 uint32_t apConnectEvents = 0;
 uint32_t apDisconnectEvents = 0;
 uint32_t apIpAssignEvents = 0;
@@ -63,13 +73,17 @@ char lastApLeaseIp[16] = "";
 char lastApEvent[16] = "";
 bool apClientLeaseSeen = false;
 
-constexpr uint32_t STA_RETRY_MS = 15000;
+constexpr uint32_t STA_RETRY_MS = 30000;
+constexpr uint32_t STA_CONNECT_IN_FLIGHT_MS = 30000;
+constexpr uint32_t STA_DISCONNECT_CLEANUP_DELAY_MS = 100;
+constexpr uint32_t HOME_STA_FIRST_MS = 20000;
 constexpr uint32_t WEB_ACTIVITY_HOLD_MS = 120000;
 constexpr uint32_t STA_CONNECT_AFTER_HTTP_ACK_MS = 1200;
 constexpr uint32_t AP_DHCP_LEASE_WATCHDOG_MS = 8000;
 constexpr uint32_t AP_RESTART_COOLDOWN_MS = 15000;
 constexpr uint32_t REMOTE_WS_MIN_FREE_HEAP = 30000;
 constexpr uint16_t WIFI_SCAN_MAX_MS_PER_CHANNEL = 160;
+constexpr uint32_t WIFI_SCAN_TIMEOUT_MS = 10000;
 constexpr uint16_t DNS_PORT = 53;
 constexpr int WIFI_SCAN_DEFERRED = -4;
 constexpr bool kDisableWifiModemSleepForTesting = true;
@@ -1037,25 +1051,86 @@ void saveStaConfig() {
     wifiPrefs.putString("password", staPassword);
 }
 
+void disconnectSta(bool eraseSdkConfig);
+const char* staDisconnectReasonText(uint8_t reason);
+bool timeReached(unsigned long dueAt);
+
+void setLastStaEvent(const char* event) {
+    strncpy(lastStaEvent, event != nullptr ? event : "", sizeof(lastStaEvent) - 1);
+    lastStaEvent[sizeof(lastStaEvent) - 1] = '\0';
+}
+
+void scheduleStaDisconnectCleanup() {
+    staDisconnectCleanupPending = true;
+    staDisconnectCleanupAt = millis() + STA_DISCONNECT_CLEANUP_DELAY_MS;
+}
+
+bool staConnectInFlight() {
+    return staConnectActive &&
+           WiFi.status() != WL_CONNECTED &&
+           (millis() - staConnectStartedAt) < STA_CONNECT_IN_FLIGHT_MS;
+}
+
+bool staConnectRetryCoolingDown() {
+    return lastStaAttemptAt != 0 &&
+           (millis() - lastStaAttemptAt) < STA_RETRY_MS;
+}
+
+bool savedHomeConfigured() {
+    return staEnabled && setupDone && !staSsid.isEmpty();
+}
+
+bool homeStaFirstWindowActive() {
+    return homeStaFirstActive && !timeReached(homeStaFirstUntil);
+}
+
 void beginStaConnect(bool forceRetry = false) {
     if(!staEnabled || staSsid.isEmpty()) {
         return;
     }
-    if(!forceRetry && WiFi.status() == WL_CONNECTED) {
+    const wl_status_t status = WiFi.status();
+    if(!forceRetry && status == WL_CONNECTED) {
+        staConnectActive = false;
         return;
     }
-    if(!forceRetry && lastStaAttemptAt + STA_RETRY_MS > millis()) {
+    if(!forceRetry && staConnectInFlight()) {
         return;
+    }
+    if(!forceRetry && staConnectRetryCoolingDown()) {
+        return;
+    }
+    if((forceRetry && staConnectActive && status != WL_CONNECTED) ||
+       (!forceRetry && lastStaAttemptAt != 0 && status != WL_CONNECTED)) {
+        staDisconnectCleanupPending = false;
+        WiFi.disconnect(false, false);
+        delay(20);
     }
 
     lastStaAttemptAt = millis();
+    staConnectActive = true;
+    staDisconnectCleanupPending = false;
+    staConnectStartedAt = lastStaAttemptAt;
+    ++staConnectAttempts;
+    staDisconnectReason = 0;
+    setLastStaEvent("begin");
     WiFi.mode(apRunning ? WIFI_AP_STA : WIFI_STA);
+    WiFi.setAutoReconnect(false);
+    WiFi.setMinSecurity(WIFI_AUTH_WPA_PSK);
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.setSleep(!kDisableWifiModemSleepForTesting);
+    Serial.printf("[wifi] sta_begin ssid=%s pass_len=%u force=%s status=%s\n",
+                  staSsid.c_str(),
+                  static_cast<unsigned>(staPassword.length()),
+                  forceRetry ? "true" : "false",
+                  wifiStatusText().c_str());
     WiFi.begin(staSsid.c_str(), staPassword.c_str());
 }
 
 void disconnectSta(bool eraseSdkConfig) {
     WiFi.setAutoReconnect(false);
+    staConnectActive = false;
+    staDisconnectCleanupPending = false;
     const wifi_mode_t mode = WiFi.getMode();
     if(mode == WIFI_MODE_NULL || mode == WIFI_AP) {
         return;
@@ -1136,7 +1211,22 @@ String wifiJson() {
     out += (setupDone ? "true" : "false");
     out += ",\"captiveComplete\":";
     out += (captiveSetupComplete ? "true" : "false");
-    out += ",\"staSsid\":\"";
+    out += ",\"homeStaFirst\":";
+    out += (homeStaFirstWindowActive() ? "true" : "false");
+    out += ",\"staConnecting\":";
+    out += (staConnectInFlight() ? "true" : "false");
+    out += ",\"staConnectAttempts\":";
+    out += String(static_cast<unsigned long>(staConnectAttempts));
+    out += ",\"staPasswordLen\":";
+    out += String(static_cast<unsigned>(staPassword.length()));
+    out += ",\"staDisconnectReason\":";
+    out += String(static_cast<unsigned>(staDisconnectReason));
+    out += ",\"staDisconnectReasonText\":\"";
+    out += jsonEscape(String(staDisconnectReasonText(staDisconnectReason)));
+    out += "\"";
+    out += ",\"lastStaEvent\":\"";
+    out += jsonEscape(String(lastStaEvent));
+    out += "\",\"staSsid\":\"";
     out += jsonEscape(staSsid);
     out += "\",\"staConnected\":";
     out += (WiFi.status() == WL_CONNECTED ? "true" : "false");
@@ -1202,23 +1292,41 @@ const char* authModeText(uint8_t authMode) {
 int startWifiScan(bool force) {
     int scanState = WiFi.scanComplete();
     const bool apClientActive = apRunning && WiFi.softAPgetStationNum() > 0;
-    if(force && scanState >= 0) {
+    if(scanState == WIFI_SCAN_RUNNING &&
+       wifiScanStartedAt != 0 &&
+       (millis() - wifiScanStartedAt) > WIFI_SCAN_TIMEOUT_MS) {
         WiFi.scanDelete();
+        wifiScanStartedAt = 0;
+        scanState = WIFI_SCAN_FAILED;
+        Serial.println("[wifi] scan_timeout_reset");
+    }
+    if(force) {
+        WiFi.scanDelete();
+        wifiScanStartedAt = 0;
         scanState = WiFi.scanComplete();
     }
     if(scanState == WIFI_SCAN_RUNNING) {
         return scanState;
     }
+    if(scanState >= 0) {
+        wifiScanStartedAt = 0;
+    }
     if(apClientActive && !force) {
         return scanState >= 0 ? scanState : WIFI_SCAN_DEFERRED;
     }
     if(force || scanState < 0) {
+        if(force && WiFi.status() != WL_CONNECTED) {
+            staDisconnectCleanupPending = false;
+            WiFi.disconnect(false, false);
+            delay(20);
+        }
         if(apClientActive) {
             ++wifiScanDeferredHits;
             Serial.println("[wifi] scan_async ap_client_active");
         }
         WiFi.mode(WIFI_AP_STA);
         scanState = WiFi.scanNetworks(true, true, false, apClientActive ? 80 : WIFI_SCAN_MAX_MS_PER_CHANNEL, 0);
+        wifiScanStartedAt = (scanState == WIFI_SCAN_RUNNING) ? millis() : 0;
     }
     return scanState;
 }
@@ -1285,6 +1393,47 @@ void ensureApEventLogging() {
                           event.mac[5]);
         },
         WiFiEvent_t::ARDUINO_EVENT_WIFI_AP_STAIPASSIGNED);
+    WiFi.onEvent(
+        [](WiFiEvent_t, WiFiEventInfo_t info) {
+            staConnectActive = true;
+            staDisconnectReason = 0;
+            setLastStaEvent("connected");
+            Serial.printf("[wifi] sta_connected channel=%u bssid=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                          static_cast<unsigned>(info.wifi_sta_connected.channel),
+                          info.wifi_sta_connected.bssid[0],
+                          info.wifi_sta_connected.bssid[1],
+                          info.wifi_sta_connected.bssid[2],
+                          info.wifi_sta_connected.bssid[3],
+                          info.wifi_sta_connected.bssid[4],
+                          info.wifi_sta_connected.bssid[5]);
+        },
+        WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_CONNECTED);
+    WiFi.onEvent(
+        [](WiFiEvent_t, WiFiEventInfo_t) {
+            staConnectActive = false;
+            homeStaFirstActive = false;
+            staDisconnectReason = 0;
+            setLastStaEvent("got_ip");
+            Serial.printf("[wifi] sta_got_ip ip=%s rssi=%ld\n",
+                          WiFi.localIP().toString().c_str(),
+                          static_cast<long>(WiFi.RSSI()));
+        },
+        WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_GOT_IP);
+    WiFi.onEvent(
+        [](WiFiEvent_t, WiFiEventInfo_t info) {
+            const uint8_t reason = info.wifi_sta_disconnected.reason;
+            staConnectActive = false;
+            if(reason != 8 || staDisconnectReason == 0) {
+                staDisconnectReason = reason;
+            }
+            setLastStaEvent("disconnect");
+            scheduleStaDisconnectCleanup();
+            Serial.printf("[wifi] sta_disconnect reason=%u preserved=%u status=%s\n",
+                          static_cast<unsigned>(reason),
+                          static_cast<unsigned>(staDisconnectReason),
+                          wifiStatusText().c_str());
+        },
+        WiFiEvent_t::ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     apEventsRegistered = true;
 }
 
@@ -1429,6 +1578,23 @@ void noteWebActivity() {
     if(apRunning && WiFi.softAPgetStationNum() > 0) {
         lastApClientIpAt = lastWebActivityAt;
         apClientLeaseSeen = true;
+    }
+}
+
+const char* staDisconnectReasonText(uint8_t reason) {
+    switch(reason) {
+        case 0: return "";
+        case 2: return "auth_expire";
+        case 4: return "assoc_expire";
+        case 8: return "assoc_leave";
+        case 15: return "4way_timeout";
+        case 23: return "8021x_auth_failed";
+        case 201: return "no_ap";
+        case 202: return "auth_fail";
+        case 203: return "assoc_fail";
+        case 204: return "handshake_timeout";
+        case 205: return "connection_fail";
+        default: return "unknown";
     }
 }
 
@@ -1679,6 +1845,7 @@ void handleWifi() {
 
     if(action == "save") {
         staSsid = server.arg("ssid");
+        staSsid.trim();
         staPassword = server.arg("password");
         staEnabled = !staSsid.isEmpty();
         setupDone = staEnabled;
@@ -1920,10 +2087,20 @@ bool wifi_ui_start() {
     gbw_set_ble_paused_for_wifi(true);
     configureRoutes();
     captiveSetupComplete = false;
-    WiFi.setAutoReconnect(true);
-    WiFi.mode(WIFI_AP_STA);
+    WiFi.setAutoReconnect(false);
     WiFi.setSleep(!kDisableWifiModemSleepForTesting);
-    startAccessPoint();
+    ensureApEventLogging();
+    homeStaFirstActive = savedHomeConfigured();
+    if(homeStaFirstActive) {
+        homeStaFirstUntil = millis() + HOME_STA_FIRST_MS;
+        WiFi.mode(WIFI_STA);
+        Serial.printf("[wifi] sta_first ssid=%s window_ms=%lu\n",
+                      staSsid.c_str(),
+                      static_cast<unsigned long>(HOME_STA_FIRST_MS));
+    } else {
+        WiFi.mode(WIFI_AP_STA);
+        startAccessPoint();
+    }
     if(staEnabled) {
         beginStaConnect(true);
     }
@@ -1950,9 +2127,13 @@ void wifi_ui_stop() {
     stopHttpServices();
     stopAccessPoint();
     WiFi.scanDelete();
+    wifiScanStartedAt = 0;
     stopSta();
     WiFi.mode(WIFI_MODE_NULL);
     lastStaAttemptAt = 0;
+    staConnectActive = false;
+    staDisconnectCleanupPending = false;
+    homeStaFirstActive = false;
     pendingStaConnect = false;
     pendingStaConfigBroadcast = false;
     pendingHttpServiceRefresh = false;
@@ -1970,9 +2151,21 @@ void wifi_ui_poll() {
     if(!staConnected) {
         captiveSetupComplete = false;
     }
-    const bool setupApNeeded = !staEnabled || staSsid.isEmpty() || !setupDone || !staConnected || !captiveSetupComplete;
+    if(homeStaFirstActive && !staConnected && !homeStaFirstWindowActive()) {
+        homeStaFirstActive = false;
+        Serial.println("[wifi] sta_first_timeout ap_fallback=on");
+    }
+    const bool homeConfigured = savedHomeConfigured();
+    const bool setupApNeeded = !homeConfigured || (!staConnected && !homeStaFirstWindowActive());
     if(setupApNeeded && !apRunning) {
         startAccessPoint();
+    }
+    if(homeConfigured &&
+       staConnected &&
+       apRunning &&
+       WiFi.softAPgetStationNum() == 0 &&
+       !wifi_ui_web_activity_recent()) {
+        stopAccessPoint();
     }
 
     const uint8_t apStations = apRunning ? WiFi.softAPgetStationNum() : 0;
@@ -1993,6 +2186,13 @@ void wifi_ui_poll() {
 
     if(serverStarted) {
         server.handleClient();
+    }
+    if(staDisconnectCleanupPending && timeReached(staDisconnectCleanupAt)) {
+        staDisconnectCleanupPending = false;
+        if(staEnabled && WiFi.status() != WL_CONNECTED) {
+            WiFi.disconnect(false, false);
+            Serial.println("[wifi] sta_cleanup_after_disconnect");
+        }
     }
     serviceRemoteWs(staConnected);
     if(pendingHttpServiceRefresh && apStations == 0 && timeReached(pendingHttpServiceRefreshAt)) {
@@ -2016,7 +2216,12 @@ void wifi_ui_poll() {
         return;
     }
     if(staEnabled && !staConnected) {
-        if(apRunning && WiFi.softAPgetStationNum() > 0 && lastStaAttemptAt != 0) {
+        if(WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
+            return;
+        }
+        const bool apClientActive = apRunning && WiFi.softAPgetStationNum() > 0;
+        const bool holdSetupClient = apClientActive && lastStaAttemptAt != 0 && !setupDone;
+        if(holdSetupClient) {
             return;
         }
         beginStaConnect(false);
@@ -2032,6 +2237,10 @@ bool wifi_ui_sta_connected() {
         return false;
     }
     return staEnabled && WiFi.status() == WL_CONNECTED && WiFi.localIP()[0] != 0;
+}
+
+bool wifi_ui_ap_running() {
+    return wifiUiActive && apRunning;
 }
 
 bool wifi_ui_setup_complete() {
@@ -2073,6 +2282,7 @@ bool wifi_ui_web_idle_for(unsigned long quietMs) {
 
 bool wifi_ui_save_network_settings(const String& ssid, const String& password) {
     staSsid = ssid;
+    staSsid.trim();
     staPassword = password;
     staEnabled = !staSsid.isEmpty();
     setupDone = staEnabled;
@@ -2107,11 +2317,33 @@ int32_t wifi_ui_sta_rssi() {
     return wifi_ui_sta_connected() ? WiFi.RSSI() : 0;
 }
 
+String wifi_ui_sta_status() {
+    if(!wifiUiActive) {
+        return "inactive";
+    }
+    if(!staEnabled || staSsid.isEmpty()) {
+        return "not configured";
+    }
+    if(staConnectInFlight()) {
+        return "connecting";
+    }
+    if(staDisconnectReason != 0) {
+        return wifiStatusText() + String(" r") + String(static_cast<unsigned>(staDisconnectReason));
+    }
+    return wifiStatusText();
+}
+
 String wifi_ui_lcd_status() {
     if(!wifiUiActive) {
         return "Web off";
     }
-    return wifi_ui_sta_connected() ? staIpString() : "AP only";
+    if(wifi_ui_sta_connected()) {
+        return String("LAN ") + staIpString();
+    }
+    if(apRunning) {
+        return String("AP ") + apIpString();
+    }
+    return "Joining Wi-Fi";
 }
 
 String wifi_ui_status_json() {

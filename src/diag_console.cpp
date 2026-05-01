@@ -1191,6 +1191,16 @@ bool apiActionCalibrate(const char** message) {
         return false;
     }
 
+    if(commStatus != COMM_CONNECTED || currentStatus == MOTOR_NOT_CONNECTED) {
+        *message = "motor not connected";
+        return false;
+    }
+
+    if(currentStatus == MOTOR_FAULT) {
+        *message = "motor fault";
+        return false;
+    }
+
     state = CALIBRATING;
     enterMenu = false;
     controller_note_activity();

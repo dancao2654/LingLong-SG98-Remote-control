@@ -118,6 +118,8 @@ namespace {
 constexpr bool kDisableIdleSleepForTesting = false;
 constexpr unsigned long MENU_TRAFFIC_POLL_INTERVAL_MS = 300;
 constexpr unsigned long RADIO_OFF_DEEP_SLEEP_DELAY_MS = 15000;
+constexpr unsigned long MOTOR_START_WATCHDOG_MS = 5000;
+constexpr int16_t MOTOR_START_MIN_OBSERVED_RPM = rpm_scalar / 2;
 
 uint8_t purgeFrameCounter = 0;
 int16_t purgeLastSetRPM = 0;
@@ -132,6 +134,9 @@ uint8_t purgeLastPhase = 0xFF;
 bool purgeSequenceNeedsInit = true;
 bool idleSleepActive = false;
 unsigned long lastMenuTrafficPollAt = 0;
+unsigned long motorStartWatchdogStartedAt = 0;
+int16_t motorStartWatchdogTargetRpm = 0;
+States motorStartWatchdogState = IDLE;
 
 bool controllerCanIdleSleep() {
     return state == IDLE || state == IDLE_GBW;
@@ -205,6 +210,88 @@ void smartPurgeLearnFromMotor(int16_t targetRpm) {
                                      motor_currentTorque,
                                      baselineTorque,
                                      manualThreshold);
+}
+
+bool motorStartWatchdogApplies(States currentState) {
+    return currentState == GRINDING ||
+           currentState == PURGING ||
+           currentState == GRINDING_GBW;
+}
+
+uint8_t motorStartWatchdogRpmSource() {
+    switch(motor_get_drive_type()) {
+        case DRIVE_TYPE_JMC:
+            return ERROR_HISTORY_MOTOR_RPM_SRC_JMC_606C;
+        case DRIVE_TYPE_RT:
+            return ERROR_HISTORY_MOTOR_RPM_SRC_RT_1301;
+        case DRIVE_TYPE_KRS_130ST_M07725:
+        case DRIVE_TYPE_UNKNOWN:
+        default:
+            return 0;
+    }
+}
+
+uint32_t packMotorStartWatchdogValue(int16_t targetRpm) {
+    return (static_cast<uint32_t>(ERROR_HISTORY_MOTOR_RPM_ZERO) << 24) |
+           (static_cast<uint32_t>(motorStartWatchdogRpmSource()) << 16) |
+           static_cast<uint16_t>(targetRpm);
+}
+
+void resetMotorStartWatchdog() {
+    motorStartWatchdogStartedAt = 0;
+    motorStartWatchdogTargetRpm = 0;
+    motorStartWatchdogState = IDLE;
+}
+
+void tripMotorStartWatchdog() {
+    const States failedState = state;
+    const int16_t failedTarget = motorStartWatchdogTargetRpm;
+    error_history_log(ERROR_HISTORY_SOURCE_MOTOR,
+                      ERROR_HISTORY_LEVEL_ERROR,
+                      ERROR_HISTORY_CODE_MOTOR_RPM_TEST,
+                      packMotorStartWatchdogValue(failedTarget),
+                      failedState);
+
+    motor_setRPM = 0;
+    if(failedState == GRINDING_GBW) {
+        state = IDLE_GBW;
+    } else {
+        purge_cancel_pending();
+        state = IDLE;
+    }
+    error = 6;
+    disp_updateRequired = true;
+    resetMotorStartWatchdog();
+}
+
+void pollMotorStartWatchdog() {
+    const int16_t targetRpm = abs(motor_get_effective_set_rpm());
+    if(!motorStartWatchdogApplies(state) ||
+       targetRpm == 0 ||
+       commStatus != COMM_CONNECTED ||
+       currentStatus == MOTOR_FAULT) {
+        resetMotorStartWatchdog();
+        return;
+    }
+
+    if(abs(motor_currentRPM) >= MOTOR_START_MIN_OBSERVED_RPM) {
+        resetMotorStartWatchdog();
+        return;
+    }
+
+    const unsigned long now = millis();
+    if(motorStartWatchdogStartedAt == 0 ||
+       motorStartWatchdogTargetRpm != targetRpm ||
+       motorStartWatchdogState != state) {
+        motorStartWatchdogStartedAt = now;
+        motorStartWatchdogTargetRpm = targetRpm;
+        motorStartWatchdogState = state;
+        return;
+    }
+
+    if(now - motorStartWatchdogStartedAt >= MOTOR_START_WATCHDOG_MS) {
+        tripMotorStartWatchdog();
+    }
 }
 
 void printWakeSummary() {
@@ -440,6 +527,7 @@ void loop() {
         motor_setRPM = 0;
     }
 
+    pollMotorStartWatchdog();
     smart_purge_learning_service_persist(controllerCanIdleSleep(), lastActivity);
 
    // newData = false;

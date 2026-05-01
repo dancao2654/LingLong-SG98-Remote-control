@@ -27,6 +27,7 @@
 #include "sg98_remote_defs.h"
 #include "sg98_ota_download.h"
 #include "sg98_ota_source.h"
+#include "sg98_ota_update.h"
 #include "sg98_version.h"
 #include <sg98_remote_protocol.h>
 
@@ -41,6 +42,7 @@ constexpr uint16_t kColorAccent2 = 0xFD20;
 constexpr uint16_t kColorWarn = 0xFD20;
 constexpr uint16_t kColorDanger = 0xF9C6;
 constexpr uint16_t kColorGood = 0x3D8A;
+constexpr uint16_t kColorPowerHold = 0x5677;
 constexpr uint16_t kColorEspNow = 0x55FF;
 constexpr uint16_t kColorMuted = 0x7BEF;
 constexpr uint16_t kColorText = 0xFFFF;
@@ -78,8 +80,15 @@ constexpr uint32_t kHomeStatusPollActiveMs = 2400;
 constexpr uint32_t kPersistentStateDebounceMs = 1200;
 constexpr uint32_t kValidUnixTime = 1700000000UL;
 constexpr uint32_t kDockWeatherHttpTimeoutMs = 4500;
+constexpr uint32_t kDockWeatherRetryMs = 60000;
+constexpr uint32_t kDockWeatherQuickRetryMs = 8000;
+constexpr uint32_t kNetworkFetchMinFreeHeap = 30000;
+constexpr uint32_t kFirmwareCheckUserQuietMs = 5000;
 constexpr uint32_t kControllerEnvironmentRetryMs = 60000;
 constexpr uint32_t kEnvironmentShareRetryMs = 30000;
+constexpr uint32_t kAutoEspNowReturnFlashMs = 5200;
+constexpr uint32_t kWifiReturnCurveHoldMs = 9000;
+constexpr uint8_t kWifiFallbackMinStaAttempts = 3;
 constexpr bool kMotionHomeEnabled = false;
 constexpr uint32_t kMotionHomeConfirmWindowMs = 1500;
 constexpr uint32_t kMotionHomeMinGapMs = 200;
@@ -115,6 +124,14 @@ enum class LinkTransport : uint8_t {
     WebSocket = 2,
 };
 
+enum class NetworkBadgeMode : uint8_t {
+    Off,
+    EspNow,
+    WifiJoin,
+    WifiAp,
+    WifiLan,
+};
+
 constexpr uint8_t kScreenCount = 10;
 constexpr uint8_t kControllerMenuMax = 5;
 constexpr uint8_t kControllerMenuSlots = kControllerMenuMax + 1;
@@ -126,7 +143,7 @@ constexpr uint16_t kPressureProfileSampleCount =
     1;
 constexpr uint32_t kEspNowDiscoveryIntervalMs = 1200;
 constexpr uint32_t kEspNowDiscoveryExpireMs = 5000;
-constexpr uint32_t kWifiRecoveryWindowMs = 18000;
+constexpr uint32_t kWifiRecoveryWindowMs = 32000;
 constexpr uint32_t kAutoRadioRequestMs = 2500;
 constexpr uint32_t kEspNowSendConfirmTimeoutMs = 450;
 constexpr uint32_t kEspNowSendRetryBackoffMs = 80;
@@ -369,6 +386,7 @@ struct AppState {
     uint32_t pendingTransportAt = 0;
     uint32_t lastTransportSwitchAt = 0;
     uint32_t toastUntil = 0;
+    uint32_t flashUntil = 0;
     uint32_t lastLinkActivityAt = 0;
     uint32_t lastAckAt = 0;
     uint32_t lastStatusAt = 0;
@@ -389,6 +407,7 @@ struct AppState {
     uint8_t espNowChannel = remote_config::kEspNowChannel;
     bool transportYieldedToUi = false;
     bool transportOverrideActive = false;
+    bool autoEspNowReturnNotified = false;
     uint32_t dangerArmUntil = 0;
     Screen dangerScreen = Screen::Home;
     uint8_t dangerSelection = 0;
@@ -402,6 +421,8 @@ struct AppState {
     uint32_t dockClockLastRedrawAt = 0;
     uint32_t dockClockLastNtpSyncAt = 0;
     uint32_t dockClockLastWeatherFetchAt = 0;
+    uint32_t dockClockLastWeatherOkAt = 0;
+    int16_t dockClockLastWeatherHttpCode = 0;
     uint32_t lastControllerEnvironmentRequestAt = 0;
     uint32_t lastEnvironmentShareAt = 0;
     uint32_t homeWheelAnimatedAt = 0;
@@ -411,6 +432,7 @@ struct AppState {
     int16_t lastTouchTapY = 0;
     RemoteBatteryStatus battery;
     DockWeatherState dockWeather;
+    sg98_ota_update::State otaUpdate;
     PendingTargetWrite pendingTarget;
     PendingAction pendingAction;
     PendingMenuWrite pendingMenuWrites[kPendingMenuWriteSlots];
@@ -424,6 +446,11 @@ struct AppState {
     String mdnsHostName;
     uint16_t wsPort = remote_config::kWebSocketPort;
     String toast = "Booting";
+    String networkCurveHoldLabel;
+    uint32_t networkCurveHoldUntil = 0;
+    String flashTitle;
+    String flashSubtitle;
+    uint16_t flashAccent = kColorAccent;
 };
 
 struct PersistedStatusFrame {
@@ -634,9 +661,13 @@ void leavePressureProfiler();
 void serviceDockClock(uint32_t now);
 void shortenWaitForDockClock(uint32_t now, uint32_t* waitMs);
 void exitDockClock();
+uint8_t dockClockBacklightLevel();
+void applyBacklightLevel(uint8_t level, bool force);
+void applyCurrentBacklightLevel(bool force);
 void requestControllerEnvironment(bool force);
 bool sendRaw(const String& command);
 void markUserActivity(uint32_t now = millis());
+void showFlashScreen(const String& title, const String& subtitle, uint32_t durationMs, uint16_t accent);
 
 uint32_t currentWebSocketLoopIntervalMs() {
     return app.wsConnected ? remote_config::kWebSocketServiceMs
@@ -733,6 +764,9 @@ uint32_t computeLoopWaitMs(uint32_t now, bool yieldTransport) {
 
     if(app.toastUntil > now) {
         shortenWaitForDeadline(now, app.toastUntil, &waitMs);
+    }
+    if(app.flashUntil > now) {
+        shortenWaitForDeadline(now, app.flashUntil, &waitMs);
     }
 
     shortenWaitForPressureProfiler(now, &waitMs);
@@ -1164,35 +1198,85 @@ String roundHomeTopLabel() {
     return "SG98";
 }
 
-String roundHomeBottomLabel() {
-    if(app.toastUntil > millis()) {
-        return upperText(app.toast);
-    }
-    if(!isLinkOnline()) {
-        if(app.currentTransport == LinkTransport::EspNow) {
-            return hasActiveEspNowPeer() ? "CONTROLLER OFFLINE" : "ESP-NOW SCAN";
-        }
-        if(remote_wifi_is_active()) {
-            if(remote_wifi_sta_connected()) {
-                return "CONTROLLER OFFLINE";
-            }
-            return "CONNECTING WI-FI";
-        }
-        return "CONTROLLER OFFLINE";
-    }
-    if(remote_wifi_is_active()) {
+bool isNetworkStatusToast(const String& text) {
+    return text == "CONNECTING WI-FI" ||
+           text == "WIFI MODE" ||
+           text == "WEBSOCKET MODE" ||
+           text == "ESP-NOW MODE" ||
+           text == "SEARCHING CONTROLLER";
+}
+
+String networkCurveStatusText() {
+    const bool wifiRequested = app.currentTransport == LinkTransport::WebSocket ||
+                               app.pendingTransport == LinkTransport::WebSocket ||
+                               (app.radioModeKnown &&
+                                transportFromRadioMode(app.menuValues[1][RADIOMODE]) == LinkTransport::WebSocket);
+    if(remote_wifi_is_active() || wifiRequested) {
         if(remote_wifi_sta_connected()) {
-            return String("WI-FI ") + remote_wifi_sta_ip();
+            const String ip = remote_wifi_sta_ip();
+            return ip.length() > 0 ? String("WIFI LAN ") + ip : String("WIFI LAN");
         }
-        return String("WI-FI AP ") + remote_wifi_ap_ip();
+        if(remote_wifi_ap_running()) {
+            const String ip = remote_wifi_ap_ip();
+            return ip.length() > 0 ? String("WIFI AP ") + ip : String("WIFI AP");
+        }
+        if(remote_wifi_has_saved_network()) {
+            const uint8_t attempts = min<uint8_t>(remote_wifi_sta_attempt_count(), kWifiFallbackMinStaAttempts);
+            if(attempts > 0) {
+                return String("WIFI JOIN ") + String(static_cast<unsigned>(attempts)) + "/" +
+                       String(static_cast<unsigned>(kWifiFallbackMinStaAttempts));
+            }
+            return remote_wifi_is_active() ? String("WIFI JOIN") : String("WIFI START");
+        }
+        return "WIFI SETUP";
     }
+
     if(app.currentTransport == LinkTransport::EspNow) {
-        if(!hasActiveEspNowPeer()) {
-            return "ESP-NOW SCAN";
+        if(isLinkOnline()) {
+            return "ESP-NOW LINK";
         }
-        return (app.hasStatus && (millis() - app.lastStatusAt) < remote_config::kLinkTimeoutMs) ? "ESP-NOW LINK" : "ESP-NOW";
+        return hasActiveEspNowPeer() ? "ESP-NOW OFFLINE" : "ESP-NOW SEARCH";
     }
-    return "";
+
+    return "NETWORK OFF";
+}
+
+String roundHomeBottomLabel() {
+    const uint32_t now = millis();
+    if(app.networkCurveHoldUntil > now && app.networkCurveHoldLabel.length() > 0) {
+        return upperText(app.networkCurveHoldLabel);
+    }
+    if(app.networkCurveHoldUntil != 0 && now >= app.networkCurveHoldUntil) {
+        app.networkCurveHoldUntil = 0;
+        app.networkCurveHoldLabel = "";
+    }
+
+    if(app.toastUntil > now) {
+        const String toast = upperText(app.toast);
+        if(!isNetworkStatusToast(toast)) {
+            return toast;
+        }
+    }
+    return networkCurveStatusText();
+}
+
+void serviceHomeNetworkCurveRedraw() {
+    if(!useRoundNavigation() || app.screen != Screen::Home) {
+        return;
+    }
+
+    static String previousLabel;
+    const String label = roundHomeBottomLabel();
+    if(label != previousLabel) {
+        previousLabel = label;
+        app.redraw = true;
+    }
+}
+
+void holdNetworkCurveStatus(const String& label, uint32_t durationMs) {
+    app.networkCurveHoldLabel = label;
+    app.networkCurveHoldUntil = millis() + durationMs;
+    app.redraw = true;
 }
 
 String displayLabelForItem(const SettingItem& item) {
@@ -1803,7 +1887,7 @@ bool updateDockWeatherFromJson(const String& payload) {
 }
 
 String dockWeatherUrl() {
-    String url = "https://api.open-meteo.com/v1/forecast?latitude=";
+    String url = "http://api.open-meteo.com/v1/forecast?latitude=";
     url += String(remote_config::kDockClockWeatherLatitude, 4);
     url += "&longitude=";
     url += String(remote_config::kDockClockWeatherLongitude, 4);
@@ -1830,32 +1914,79 @@ void serviceDockClockTime(uint32_t now) {
     app.dockClockLastNtpSyncAt = now;
 }
 
-void serviceDockClockWeather(uint32_t now) {
+bool remoteCanUseBackgroundNetwork() {
+    return !app.editing && !app.targetDirty && !isRunningState() && app.screen != Screen::Profiler &&
+           !remote_pressure_ble_connected() &&
+           static_cast<uint32_t>(millis() - app.lastControlActivityAt) >= kFirmwareCheckUserQuietMs;
+}
+
+void serviceFirmwareUpdateCheck(uint32_t now) {
+    if(!remote_wifi_sta_connected() || !remoteCanUseBackgroundNetwork()) {
+        return;
+    }
+    if(ESP.getFreeHeap() < kNetworkFetchMinFreeHeap) {
+        return;
+    }
+
+    struct tm timeInfo = {};
+    const bool internetSynced = localClockTime(&timeInfo) || app.dockWeather.valid;
+    if(!internetSynced) {
+        return;
+    }
+    if(!sg98_ota_update::shouldCheck(app.otaUpdate, now)) {
+        return;
+    }
+
+    (void)sg98_ota_update::checkLatestManifest(&app.otaUpdate, now);
+    if(app.screen == Screen::About) {
+        app.redraw = true;
+    }
+}
+
+void serviceDockClockWeather(uint32_t now, bool quickRetry = false) {
     if(!remote_wifi_sta_connected()) {
         return;
     }
+    if(ESP.getFreeHeap() < kNetworkFetchMinFreeHeap) {
+        return;
+    }
+    const uint32_t retryMs = app.dockWeather.valid
+                                 ? remote_config::kDockClockWeatherFetchMs
+                                 : (quickRetry ? kDockWeatherQuickRetryMs : kDockWeatherRetryMs);
     if(app.dockClockLastWeatherFetchAt != 0 &&
-       (now - app.dockClockLastWeatherFetchAt) < remote_config::kDockClockWeatherFetchMs) {
+       (now - app.dockClockLastWeatherFetchAt) < retryMs) {
         return;
     }
     app.dockClockLastWeatherFetchAt = now;
+    app.dockClockLastWeatherHttpCode = 0;
 
-    WiFiClientSecure client;
-    client.setInsecure();
-    HTTPClient https;
-    https.setTimeout(kDockWeatherHttpTimeoutMs);
-    if(!https.begin(client, dockWeatherUrl())) {
+    WiFiClient client;
+    HTTPClient http;
+    http.setTimeout(kDockWeatherHttpTimeoutMs);
+    if(!http.begin(client, dockWeatherUrl())) {
+        app.dockClockLastWeatherHttpCode = -1;
         return;
     }
 
-    const int code = https.GET();
+    const int code = http.GET();
+    app.dockClockLastWeatherHttpCode = static_cast<int16_t>(code);
     if(code == HTTP_CODE_OK) {
-        const String payload = https.getString();
+        const String payload = http.getString();
         if(updateDockWeatherFromJson(payload)) {
+            app.dockClockLastWeatherOkAt = now;
             app.redraw = true;
+        } else {
+            app.dockClockLastWeatherHttpCode = -2;
         }
     }
-    https.end();
+    http.end();
+}
+
+void serviceBackgroundDockClockWeather(uint32_t now) {
+    if(app.dockClockActive || !remoteCanUseBackgroundNetwork()) {
+        return;
+    }
+    serviceDockClockWeather(now, true);
 }
 
 bool buildLocalEnvironmentFrame(sg98_protocol::EnvironmentFrame* out) {
@@ -1932,7 +2063,7 @@ void serviceControllerEnvironmentSync(uint32_t now) {
 }
 
 bool dockClockAllowed() {
-    return app.battery.usbPresent && app.screen == Screen::Home && !app.editing && !app.targetDirty &&
+    return app.screen != Screen::Profiler && !app.editing && !app.targetDirty &&
            !isRunningState() && !remote_pressure_ble_connected();
 }
 
@@ -1942,6 +2073,7 @@ void exitDockClock() {
     }
     app.dockClockActive = false;
     app.dockClockLastRedrawAt = 0;
+    applyCurrentBacklightLevel(true);
     app.redraw = true;
 }
 
@@ -1958,6 +2090,7 @@ void serviceDockClock(uint32_t now) {
         }
         app.dockClockActive = true;
         app.dockClockLastRedrawAt = 0;
+        applyBacklightLevel(dockClockBacklightLevel(), true);
         app.redraw = true;
     }
 
@@ -2115,6 +2248,36 @@ float homeWheelTurnsPerSecond() {
     return kWheelVisualTurnsPerSecond;
 }
 
+bool batteryUsbPowerHold(const RemoteBatteryStatus& battery) {
+    return battery.usbPresent && !battery.charging &&
+           (battery.standby || (battery.batteryPresent && battery.percent >= 95));
+}
+
+uint16_t batteryStateAccent(const RemoteBatteryStatus& battery, uint16_t fallbackFill = kColorMuted) {
+    if(!battery.supported) {
+        return fallbackFill;
+    }
+    if(battery.charging) {
+        return kColorGood;
+    }
+    if(batteryUsbPowerHold(battery)) {
+        return kColorPowerHold;
+    }
+    if(battery.usbPresent) {
+        return kColorAccent;
+    }
+    if(battery.percent >= 50) {
+        return kColorGood;
+    }
+    if(battery.percent >= 20) {
+        return kColorWarn;
+    }
+    if(battery.percent >= 0) {
+        return kColorDanger;
+    }
+    return fallbackFill;
+}
+
 String batteryPillLabel(const String& fallback) {
     const RemoteBatteryStatus& battery = app.battery;
     if(!battery.supported) {
@@ -2152,25 +2315,7 @@ String batteryPillLabel(const String& fallback) {
 
 uint16_t batteryPillFill(uint16_t fallbackFill) {
     const RemoteBatteryStatus& battery = app.battery;
-    if(!battery.supported) {
-        return fallbackFill;
-    }
-    if(battery.charging) {
-        return kColorGood;
-    }
-    if(battery.usbPresent) {
-        return kColorAccent;
-    }
-    if(battery.percent >= 50) {
-        return kColorGood;
-    }
-    if(battery.percent >= 20) {
-        return kColorWarn;
-    }
-    if(battery.percent >= 0) {
-        return kColorDanger;
-    }
-    return fallbackFill;
+    return batteryStateAccent(battery, fallbackFill);
 }
 
 uint16_t batteryPillTextColor(uint16_t fallbackTextColor) {
@@ -2183,6 +2328,13 @@ uint8_t currentBacklightLevel() {
         return static_cast<uint8_t>(clampValue(configured, 1, 255));
     }
     return static_cast<uint8_t>(default_brightness);
+}
+
+uint8_t dockClockBacklightLevel() {
+    const uint8_t normalLevel = currentBacklightLevel();
+    const uint8_t dockLevel = static_cast<uint8_t>(
+        clampValue(static_cast<int32_t>(remote_config::kDockClockBacklightLevel), 1, 255));
+    return dockLevel < normalLevel ? dockLevel : normalLevel;
 }
 
 bool isDisplayBrightnessItem(const SettingItem& item) {
@@ -3143,6 +3295,24 @@ void setToast(const String& text, uint32_t durationMs = remote_config::kToastHol
     app.redraw = true;
 }
 
+void showFlashScreen(const String& title, const String& subtitle, uint32_t durationMs, uint16_t accent) {
+    app.flashTitle = title;
+    app.flashSubtitle = subtitle;
+    app.flashAccent = accent;
+    app.flashUntil = millis() + durationMs;
+    app.redraw = true;
+}
+
+void serviceFlashScreen(uint32_t now) {
+    if(app.flashUntil == 0 || now < app.flashUntil) {
+        return;
+    }
+    app.flashUntil = 0;
+    app.flashTitle = "";
+    app.flashSubtitle = "";
+    app.redraw = true;
+}
+
 void refreshBatteryStatus(bool force) {
     if(kDisableTransportPerfTest) {
         return;
@@ -3812,6 +3982,177 @@ void drawPill(RemoteCanvas& canvas,
                             fill);
 }
 
+NetworkBadgeMode currentNetworkBadgeMode() {
+    if(remote_wifi_is_active()) {
+        if(remote_wifi_sta_connected()) {
+            return NetworkBadgeMode::WifiLan;
+        }
+        if(remote_wifi_ap_running()) {
+            return NetworkBadgeMode::WifiAp;
+        }
+        return NetworkBadgeMode::WifiJoin;
+    }
+    if(app.currentTransport == LinkTransport::EspNow) {
+        return NetworkBadgeMode::EspNow;
+    }
+    return NetworkBadgeMode::Off;
+}
+
+String networkBadgeLabel(NetworkBadgeMode mode) {
+    switch(mode) {
+        case NetworkBadgeMode::WifiLan:
+            return "WIFI LAN";
+        case NetworkBadgeMode::WifiAp:
+            return remote_wifi_ap_station_count() > 0
+                       ? String("WIFI AP ") + String(static_cast<unsigned>(remote_wifi_ap_station_count()))
+                       : String("WIFI AP");
+        case NetworkBadgeMode::WifiJoin:
+            return "WIFI JOIN";
+        case NetworkBadgeMode::EspNow:
+            return "ESP-NOW";
+        case NetworkBadgeMode::Off:
+        default:
+            return "NET OFF";
+    }
+}
+
+uint16_t networkBadgeFill(NetworkBadgeMode mode) {
+    switch(mode) {
+        case NetworkBadgeMode::WifiLan:
+            return kColorGood;
+        case NetworkBadgeMode::WifiAp:
+            return kColorWarn;
+        case NetworkBadgeMode::WifiJoin:
+            return kColorAccent2;
+        case NetworkBadgeMode::EspNow:
+            return kColorEspNow;
+        case NetworkBadgeMode::Off:
+        default:
+            return blendColor565(kColorPanelHi, kColorMuted, 0.28f);
+    }
+}
+
+void drawNetworkGlyph(RemoteCanvas& canvas,
+                      int16_t cx,
+                      int16_t cy,
+                      int16_t size,
+                      NetworkBadgeMode mode,
+                      uint16_t color) {
+    if(mode == NetworkBadgeMode::EspNow) {
+        const int16_t r = clampI16(static_cast<int16_t>(size / 5), 2, 4);
+        const int16_t gap = clampI16(static_cast<int16_t>(size / 3), 4, 7);
+        canvas.drawLine(static_cast<int16_t>(cx - gap),
+                        cy,
+                        static_cast<int16_t>(cx + gap),
+                        cy,
+                        color);
+        canvas.fillCircle(static_cast<int16_t>(cx - gap), cy, r, color);
+        canvas.fillCircle(static_cast<int16_t>(cx + gap), cy, r, color);
+        return;
+    }
+
+    const int16_t half = static_cast<int16_t>(size / 2);
+    const int16_t baseY = static_cast<int16_t>(cy + half / 3);
+    canvas.fillCircle(cx, baseY, clampI16(static_cast<int16_t>(size / 10), 1, 3), color);
+    canvas.drawLine(static_cast<int16_t>(cx - half / 2),
+                    static_cast<int16_t>(baseY - half / 3),
+                    cx,
+                    static_cast<int16_t>(baseY - half / 2),
+                    color);
+    canvas.drawLine(cx,
+                    static_cast<int16_t>(baseY - half / 2),
+                    static_cast<int16_t>(cx + half / 2),
+                    static_cast<int16_t>(baseY - half / 3),
+                    color);
+    canvas.drawLine(static_cast<int16_t>(cx - half),
+                    static_cast<int16_t>(baseY - half),
+                    cx,
+                    static_cast<int16_t>(baseY - half - half / 4),
+                    color);
+    canvas.drawLine(cx,
+                    static_cast<int16_t>(baseY - half - half / 4),
+                    static_cast<int16_t>(cx + half),
+                    static_cast<int16_t>(baseY - half),
+                    color);
+
+    if(mode == NetworkBadgeMode::WifiAp) {
+        canvas.drawLine(static_cast<int16_t>(cx - half / 2),
+                        static_cast<int16_t>(baseY + half / 2),
+                        static_cast<int16_t>(cx + half / 2),
+                        static_cast<int16_t>(baseY + half / 2),
+                        color);
+    } else if(mode == NetworkBadgeMode::Off) {
+        canvas.drawLine(static_cast<int16_t>(cx - half),
+                        static_cast<int16_t>(cy + half),
+                        static_cast<int16_t>(cx + half),
+                        static_cast<int16_t>(cy - half),
+                        color);
+    }
+}
+
+Rect networkIndicatorRect(const Layout& layout) {
+    if(useRoundNavigation()) {
+        return {
+            layout.topLeft.x,
+            layout.topLeft.y,
+            static_cast<int16_t>(layout.topRight.x + layout.topRight.w - layout.topLeft.x),
+            layout.topLeft.h
+        };
+    }
+    return layout.topLeft;
+}
+
+void drawNetworkPill(RemoteCanvas& canvas, const Rect& rect, uint16_t bgColor) {
+    const NetworkBadgeMode mode = currentNetworkBadgeMode();
+    const String label = networkBadgeLabel(mode);
+    const uint16_t fill = networkBadgeFill(mode);
+    const uint16_t textColor = mode == NetworkBadgeMode::Off ? kColorText : kColorBlack;
+    const int16_t radius = rect.h / 2;
+    const bool round = useRoundNavigation();
+    const uint16_t face = round ? blendColor565(kColorPanel, fill, 0.34f) : fill;
+    const uint16_t border = round ? blendColor565(face, bgColor, 0.08f) : kColorPanelHi;
+
+    if(round) {
+        drawNestCard(canvas, rect, face, border, true);
+    } else {
+        canvas.fillRoundRect(rect.x, rect.y, rect.w, rect.h, radius, face);
+        canvas.drawRoundRect(rect.x, rect.y, rect.w, rect.h, radius, border);
+    }
+
+    const bool textOnly = round || rect.w < 124;
+    if(textOnly) {
+        const RemoteTextStyle style = chooseLabelTextStyle(label, static_cast<int16_t>(rect.w - 12));
+        canvas.drawCenteredText(fitTextToWidth(label, static_cast<int16_t>(rect.w - 12), style),
+                                static_cast<int16_t>(rect.x + rect.w / 2),
+                                static_cast<int16_t>(rect.y + rect.h / 2),
+                                style,
+                                textColor,
+                                face);
+        return;
+    }
+
+    const int16_t iconSize = clampI16(static_cast<int16_t>(rect.h - 10), 12, 18);
+    const int16_t iconX = static_cast<int16_t>(rect.x + clampI16(static_cast<int16_t>(rect.h / 2), 10, 15));
+    const int16_t centerY = static_cast<int16_t>(rect.y + rect.h / 2);
+    const int16_t labelLeft = static_cast<int16_t>(iconX + iconSize / 2 + 5);
+    const int16_t labelW = max<int16_t>(20, static_cast<int16_t>(rect.x + rect.w - labelLeft - 6));
+    const RemoteTextStyle style =
+        round ? chooseLabelTextStyle(label, labelW) : pillTextStyle();
+
+    drawNetworkGlyph(canvas,
+                     iconX,
+                     centerY,
+                     iconSize,
+                     mode,
+                     mode == NetworkBadgeMode::Off ? kColorMuted : kColorBlack);
+    canvas.drawCenteredText(fitTextToWidth(label, labelW, style),
+                            static_cast<int16_t>(labelLeft + labelW / 2),
+                            centerY,
+                            style,
+                            textColor,
+                            face);
+}
+
 void drawNestCard(RemoteCanvas& canvas,
                   const Rect& rect,
                   uint16_t faceColor,
@@ -4014,24 +4355,7 @@ String batteryIndicatorNumber(const RemoteBatteryStatus& battery) {
 }
 
 uint16_t batteryIndicatorAccent(const RemoteBatteryStatus& battery) {
-    if(!battery.supported) {
-        return kColorMuted;
-    }
-    if(battery.charging) {
-        return kColorGood;
-    }
-    if(battery.usbPresent) {
-        return kColorGood;
-    }
-
-    const int16_t level = batteryLevelPercent(battery);
-    if(level < 20) {
-        return kColorDanger;
-    }
-    if(level < 50) {
-        return kColorWarn;
-    }
-    return kColorGood;
+    return batteryStateAccent(battery, kColorMuted);
 }
 
 Rect batteryIndicatorRect(const Layout& layout) {
@@ -4164,7 +4488,11 @@ void drawBatteryIndicator(RemoteCanvas& canvas, const Layout& layout, uint16_t b
     const uint16_t badgeFace = blendColor565(kColorPanel, backgroundColor, 0.44f);
     const uint16_t border = battery.supported ? blendColor565(rawAccent, kColorText, 0.18f)
                                               : blendColor565(kColorPanelHi, kColorText, 0.18f);
-    const uint16_t markColor = battery.supported ? accent : kColorText;
+    const uint16_t statusAccent = battery.supported ? batteryStateAccent(battery, kColorMuted) : kColorMuted;
+    const uint16_t statusFace = battery.supported ? blendColor565(badgeFace, statusAccent, 0.18f) : badgeFace;
+    const uint16_t statusBorder = battery.supported ? blendColor565(statusAccent, kColorText, 0.22f) : border;
+    const uint16_t markColor = battery.supported ? blendColor565(statusAccent, kColorText, 0.18f) : kColorText;
+    const uint16_t glyphMarkColor = battery.supported ? accent : kColorText;
     const uint16_t numberText = battery.supported ? blendColor565(rawAccent, kColorText, 0.18f) : kColorText;
     const String number = batteryIndicatorNumber(battery);
     const int16_t centerX = static_cast<int16_t>(rect.x + rect.w / 2);
@@ -4174,8 +4502,8 @@ void drawBatteryIndicator(RemoteCanvas& canvas, const Layout& layout, uint16_t b
         16,
         16
     };
-    canvas.fillRoundRect(statusBadge.x, statusBadge.y, statusBadge.w, statusBadge.h, 8, badgeFace);
-    canvas.drawRoundRect(statusBadge.x, statusBadge.y, statusBadge.w, statusBadge.h, 8, border);
+    canvas.fillRoundRect(statusBadge.x, statusBadge.y, statusBadge.w, statusBadge.h, 8, statusFace);
+    canvas.drawRoundRect(statusBadge.x, statusBadge.y, statusBadge.w, statusBadge.h, 8, statusBorder);
     const int16_t statusY = static_cast<int16_t>(statusBadge.y + statusBadge.h / 2);
     if(battery.charging) {
         drawBoltIcon(canvas, centerX, statusY, 12, markColor);
@@ -4186,7 +4514,11 @@ void drawBatteryIndicator(RemoteCanvas& canvas, const Layout& layout, uint16_t b
             12,
             12
         };
-        drawUsbPowerIcon(canvas, powerIcon, accent, badgeFace, markColor);
+        if(batteryUsbPowerHold(battery)) {
+            drawUsbPowerIcon(canvas, powerIcon, statusAccent, statusFace, markColor);
+        } else {
+            drawUsbCIcon(canvas, powerIcon, kColorAccent, statusFace, markColor);
+        }
     } else if(battery.supported) {
         canvas.fillCircle(centerX, statusY, 2, markColor);
     }
@@ -4385,6 +4717,116 @@ void drawArcText(RemoteCanvas& canvas,
     }
 }
 
+enum class NetworkCurveKind : uint8_t {
+    Toast,
+    WifiLan,
+    WifiAp,
+    WifiJoin,
+    WifiSetup,
+    WifiSynced,
+    WifiFallback,
+    EspNowLink,
+    EspNowSearch,
+    EspNowOffline,
+    Off,
+};
+
+struct NetworkCurveStyle {
+    uint16_t accent = kColorMuted;
+    uint16_t text = kColorMuted;
+    bool subtle = true;
+};
+
+NetworkCurveKind networkCurveKindForLabel(const String& label) {
+    const String text = upperText(label);
+    if(text.startsWith("WIFI LAN")) {
+        return NetworkCurveKind::WifiLan;
+    }
+    if(text.startsWith("WIFI AP")) {
+        return NetworkCurveKind::WifiAp;
+    }
+    if(text.startsWith("WIFI JOIN") || text.startsWith("WIFI START")) {
+        return NetworkCurveKind::WifiJoin;
+    }
+    if(text.startsWith("WIFI SETUP")) {
+        return NetworkCurveKind::WifiSetup;
+    }
+    if(text.startsWith("WIFI SYNCED")) {
+        return NetworkCurveKind::WifiSynced;
+    }
+    if(text.startsWith("WIFI FALLBACK")) {
+        return NetworkCurveKind::WifiFallback;
+    }
+    if(text.startsWith("ESP-NOW LINK")) {
+        return NetworkCurveKind::EspNowLink;
+    }
+    if(text.startsWith("ESP-NOW SEARCH")) {
+        return NetworkCurveKind::EspNowSearch;
+    }
+    if(text.startsWith("ESP-NOW OFFLINE")) {
+        return NetworkCurveKind::EspNowOffline;
+    }
+    if(text.startsWith("NETWORK OFF")) {
+        return NetworkCurveKind::Off;
+    }
+    return NetworkCurveKind::Toast;
+}
+
+NetworkCurveStyle networkCurveStyleForLabel(const String& label, const HomePalette& palette) {
+    const NetworkCurveKind kind = networkCurveKindForLabel(label);
+    NetworkCurveStyle style;
+    switch(kind) {
+        case NetworkCurveKind::WifiLan:
+            style.accent = blendColor565(kColorGood, palette.accent, 0.26f);
+            style.subtle = false;
+            break;
+        case NetworkCurveKind::WifiAp:
+            style.accent = blendColor565(kColorAccent, palette.accent, 0.20f);
+            style.subtle = false;
+            break;
+        case NetworkCurveKind::WifiJoin:
+            style.accent = blendColor565(kColorAccent, palette.accent, 0.36f);
+            style.subtle = false;
+            break;
+        case NetworkCurveKind::WifiSetup:
+            style.accent = blendColor565(kColorAccent, kColorMuted, 0.18f);
+            style.subtle = false;
+            break;
+        case NetworkCurveKind::WifiSynced:
+            style.accent = blendColor565(kColorGood, palette.accent, 0.18f);
+            style.subtle = false;
+            break;
+        case NetworkCurveKind::WifiFallback:
+            style.accent = blendColor565(kColorWarn, palette.accent, 0.34f);
+            style.subtle = false;
+            break;
+        case NetworkCurveKind::EspNowLink:
+            style.accent = blendColor565(kColorEspNow, palette.accent, 0.12f);
+            style.subtle = false;
+            break;
+        case NetworkCurveKind::EspNowSearch:
+            style.accent = blendColor565(kColorEspNow, palette.muted, 0.42f);
+            style.subtle = true;
+            break;
+        case NetworkCurveKind::EspNowOffline:
+            style.accent = blendColor565(kColorDanger, kColorEspNow, 0.36f);
+            style.subtle = true;
+            break;
+        case NetworkCurveKind::Off:
+            style.accent = blendColor565(kColorMuted, palette.background, 0.18f);
+            style.subtle = true;
+            break;
+        case NetworkCurveKind::Toast:
+        default:
+            style.accent = blendColor565(palette.muted, palette.accent, 0.30f);
+            style.subtle = false;
+            break;
+    }
+
+    style.text = blendColor565(style.accent, kColorText, style.subtle ? 0.08f : 0.12f);
+    return style;
+}
+
 void drawRoundHomeArcLabels(RemoteCanvas& canvas, const Layout& layout, const HomePalette& palette) {
     const bool running = isRunningState() && homeWheelDisplayRpm() != 0;
     const String topLabel = fitTextToArc(roundHomeTopLabel(),
@@ -4424,19 +4866,23 @@ void drawRoundHomeArcLabels(RemoteCanvas& canvas, const Layout& layout, const Ho
         return;
     }
 
-    drawArcTextSimple(canvas,
-                      bottomLabel,
-                      layout.homeDialCx,
-                      layout.homeDialCy,
-                      bottomRadius,
-                      90.0f,
-                      bottomSpan,
-                      true,
-                      bottomStyle,
-                      isEspNowLinkOnline()
-                          ? blendColor565(kColorEspNow, palette.background, running ? 0.10f : 0.02f)
-                          : blendColor565(palette.muted, palette.background, running ? 0.18f : 0.26f),
-                      palette.background);
+    NetworkCurveStyle curveStyle = networkCurveStyleForLabel(bottomSource, palette);
+    if(running && curveStyle.subtle) {
+        curveStyle.text = blendColor565(curveStyle.text, palette.background, 0.08f);
+    }
+    drawArcText(canvas,
+                bottomLabel,
+                layout.homeDialCx,
+                layout.homeDialCy,
+                bottomRadius,
+                90.0f,
+                bottomSpan,
+                true,
+                bottomStyle,
+                curveStyle.text,
+                palette.background,
+                curveStyle.accent,
+                curveStyle.subtle);
 }
 
 void drawButton(RemoteCanvas& canvas,
@@ -5367,11 +5813,6 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
     }
 
     drawPill(canvas,
-             layout.topLeft,
-             isLinkOnline() ? "LINK" : "OFFLINE",
-             linkStatusColor(),
-             kColorBlack);
-    drawPill(canvas,
              layout.topCenter,
              app.hasStatus ? app.status.drive : "?",
              palette.panel,
@@ -5834,13 +6275,12 @@ uint16_t dockWeatherAccent() {
     return blendColor565(kColorGood, kColorText, 0.24f);
 }
 
-String dockWeatherLine() {
+String dockWeatherMetricLine() {
     if(app.dockWeather.valid) {
         String out;
-        out.reserve(28);
+        out.reserve(20);
         out += String(static_cast<int>(app.dockWeather.temperatureF));
-        out += "F ";
-        out += weatherCodeLabel(app.dockWeather.weatherCode);
+        out += "F";
         if(app.dockWeather.precipitationPercent >= 0) {
             out += " ";
             out += String(static_cast<int>(app.dockWeather.precipitationPercent));
@@ -5851,11 +6291,23 @@ String dockWeatherLine() {
     return "";
 }
 
-String dockLocationLine() {
-    if(!app.dockWeather.valid) {
-        return "";
+String dockWeatherLine() {
+    if(app.dockWeather.valid) {
+        String out = dockWeatherMetricLine();
+        if(out.length() > 0) {
+            out += " ";
+        }
+        out += weatherCodeLabel(app.dockWeather.weatherCode);
+        return out;
     }
-    return app.dockWeather.location.length() > 0 ? app.dockWeather.location : String(remote_config::kDockClockLocationName);
+    return "";
+}
+
+String dockLocationLine() {
+    if(app.dockWeather.valid && app.dockWeather.location.length() > 0) {
+        return app.dockWeather.location;
+    }
+    return remote_config::kDockClockLocationName;
 }
 
 void drawDockWeatherBackdrop(RemoteCanvas& canvas, const Layout& layout, uint16_t bg, uint16_t accent) {
@@ -5870,6 +6322,10 @@ void drawDockWeatherBackdrop(RemoteCanvas& canvas, const Layout& layout, uint16_
     const uint16_t hazeLow = blendColor565(bg, kColorBlack, 0.10f);
 
     if(app.dockWeather.valid && app.dockWeather.weatherCode == 0) {
+        if(useRoundNavigation()) {
+            // On the round clock this reads as a stray yellow arc on the bezel.
+            return;
+        }
         canvas.fillCircle(static_cast<int16_t>(cx - layout.width / 4),
                           static_cast<int16_t>(cy - layout.height / 4),
                           clampI16(static_cast<int16_t>(layout.width / 9), 28, 52),
@@ -6054,6 +6510,152 @@ void drawDockClockInfoSection(RemoteCanvas& canvas,
                             face);
 }
 
+void drawDockWeatherIcon(RemoteCanvas& canvas,
+                         uint16_t code,
+                         int16_t cx,
+                         int16_t cy,
+                         int16_t size,
+                         uint16_t accent,
+                         uint16_t face) {
+    const int16_t half = static_cast<int16_t>(size / 2);
+    const uint16_t soft = blendColor565(face, accent, 0.22f);
+    const uint16_t mark = blendColor565(accent, kColorText, 0.10f);
+
+    auto drawCloud = [&]() {
+        canvas.fillCircle(static_cast<int16_t>(cx - size / 5), cy, static_cast<int16_t>(size / 4), soft);
+        canvas.fillCircle(cx, static_cast<int16_t>(cy - size / 6), static_cast<int16_t>(size / 3), soft);
+        canvas.fillCircle(static_cast<int16_t>(cx + size / 4),
+                          static_cast<int16_t>(cy + 1),
+                          static_cast<int16_t>(size / 5),
+                          soft);
+        canvas.fillRoundRect(static_cast<int16_t>(cx - half),
+                             static_cast<int16_t>(cy - 1),
+                             size,
+                             static_cast<int16_t>(size / 3),
+                             static_cast<int16_t>(size / 6),
+                             soft);
+        canvas.drawLine(static_cast<int16_t>(cx - half),
+                        static_cast<int16_t>(cy + size / 4),
+                        static_cast<int16_t>(cx + half),
+                        static_cast<int16_t>(cy + size / 4),
+                        blendColor565(mark, face, 0.28f));
+    };
+
+    if(code == 0) {
+        const int16_t radius = max<int16_t>(3, static_cast<int16_t>(size / 4));
+        canvas.fillCircle(cx, cy, radius, soft);
+        canvas.drawCircle(cx, cy, radius, mark);
+        for(uint8_t i = 0; i < 8; ++i) {
+            const float angle = static_cast<float>(i) * static_cast<float>(PI / 4.0f);
+            const int16_t x0 = static_cast<int16_t>(cx + lroundf(cosf(angle) * (radius + 3)));
+            const int16_t y0 = static_cast<int16_t>(cy + lroundf(sinf(angle) * (radius + 3)));
+            const int16_t x1 = static_cast<int16_t>(cx + lroundf(cosf(angle) * half));
+            const int16_t y1 = static_cast<int16_t>(cy + lroundf(sinf(angle) * half));
+            canvas.drawLine(x0, y0, x1, y1, blendColor565(mark, face, 0.18f));
+        }
+        return;
+    }
+
+    if(code == 45 || code == 48) {
+        for(uint8_t i = 0; i < 3; ++i) {
+            const int16_t y = static_cast<int16_t>(cy - size / 4 + i * size / 4);
+            canvas.drawLine(static_cast<int16_t>(cx - half), y, static_cast<int16_t>(cx + half), y, mark);
+        }
+        return;
+    }
+
+    drawCloud();
+
+    if(code >= 95) {
+        drawBoltIcon(canvas,
+                     static_cast<int16_t>(cx + size / 8),
+                     static_cast<int16_t>(cy + size / 3),
+                     static_cast<int16_t>(size / 2),
+                     mark);
+        return;
+    }
+
+    if((code >= 51 && code <= 67) || (code >= 80 && code <= 82)) {
+        for(int8_t i = -1; i <= 1; ++i) {
+            const int16_t x = static_cast<int16_t>(cx + i * size / 4);
+            canvas.drawLine(x,
+                            static_cast<int16_t>(cy + size / 3),
+                            static_cast<int16_t>(x - size / 8),
+                            static_cast<int16_t>(cy + half),
+                            mark);
+        }
+        return;
+    }
+
+    if((code >= 71 && code <= 77) || code == 85 || code == 86) {
+        const int16_t sy = static_cast<int16_t>(cy + size / 3);
+        canvas.drawLine(static_cast<int16_t>(cx - size / 5), sy, static_cast<int16_t>(cx + size / 5), sy, mark);
+        canvas.drawLine(cx, static_cast<int16_t>(sy - size / 5), cx, static_cast<int16_t>(sy + size / 5), mark);
+        canvas.drawLine(static_cast<int16_t>(cx - size / 6),
+                        static_cast<int16_t>(sy - size / 6),
+                        static_cast<int16_t>(cx + size / 6),
+                        static_cast<int16_t>(sy + size / 6),
+                        mark);
+        canvas.drawLine(static_cast<int16_t>(cx - size / 6),
+                        static_cast<int16_t>(sy + size / 6),
+                        static_cast<int16_t>(cx + size / 6),
+                        static_cast<int16_t>(sy - size / 6),
+                        mark);
+    }
+}
+
+void drawDockClockWeatherSection(RemoteCanvas& canvas,
+                                 int16_t centerX,
+                                 int16_t centerY,
+                                 int16_t width,
+                                 int16_t height,
+                                 const String& value,
+                                 RemoteTextStyle style,
+                                 uint16_t accent,
+                                 uint16_t faceBase,
+                                 uint16_t bg) {
+    const int16_t iconSize = clampI16(static_cast<int16_t>(height - 12), 16, 22);
+    const int16_t gap = 7;
+    const int16_t padding = 10;
+    const String fitted = fitTextToWidthNoTilde(value,
+                                                static_cast<int16_t>(width - iconSize - gap - padding * 2),
+                                                style,
+                                                0);
+    const int16_t textW = estimatedTextWidth(fitted, style);
+    const int16_t tightW = clampI16(static_cast<int16_t>(textW + iconSize + gap + padding * 2),
+                                    static_cast<int16_t>(height + 42),
+                                    width);
+    const int16_t tightH = max<int16_t>(static_cast<int16_t>(height - 4), 28);
+    const int16_t x = static_cast<int16_t>(centerX - tightW / 2);
+    const int16_t y = static_cast<int16_t>(centerY - tightH / 2);
+    const int16_t radius = static_cast<int16_t>(tightH / 2);
+    const uint16_t face = blendColor565(faceBase, accent, 0.045f);
+    const uint16_t border = blendColor565(face, accent, 0.16f);
+    const uint16_t shadow = blendColor565(bg, kColorBlack, 0.10f);
+    const uint16_t valueColor = blendColor565(accent, kColorText, 0.06f);
+
+    canvas.fillRoundRect(x,
+                         static_cast<int16_t>(y + 1),
+                         tightW,
+                         tightH,
+                         radius,
+                         shadow);
+    canvas.fillRoundRect(x, y, tightW, tightH, radius, face);
+    canvas.drawRoundRect(x, y, tightW, tightH, radius, border);
+
+    const int16_t iconCx = static_cast<int16_t>(x + padding + iconSize / 2);
+    drawDockWeatherIcon(canvas, app.dockWeather.weatherCode, iconCx, centerY, iconSize, accent, face);
+
+    const int16_t textX = static_cast<int16_t>(x + padding + iconSize + gap);
+    const int16_t textWAvailable = static_cast<int16_t>(tightW - padding - iconSize - gap - padding);
+    canvas.drawCenteredText(fitted,
+                            static_cast<int16_t>(textX + textWAvailable / 2),
+                            static_cast<int16_t>(centerY + 1),
+                            style,
+                            valueColor,
+                            face);
+}
+
 void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
     const bool roundClock = useRoundNavigation();
     const uint16_t bg = roundClock ? blendColor565(kColorBlack, packColor565(0, 20, 44), 0.58f)
@@ -6203,8 +6805,8 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
                                 muted,
                                 bg);
     }
-    const String weather = dockWeatherLine();
-    if(useRoundNavigation()) {
+    const String weather = roundClock ? dockWeatherMetricLine() : dockWeatherLine();
+    if(roundClock) {
         const uint16_t timeAccent = blendColor565(packColor565(255, 196, 82), accent, 0.18f);
         const uint16_t dateAccent = blendColor565(packColor565(96, 236, 174), accent, 0.14f);
         const uint16_t weatherAccent = blendColor565(packColor565(88, 190, 255), accent, 0.20f);
@@ -6220,16 +6822,16 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
         const int16_t infoW = clampI16(static_cast<int16_t>(radius - 24), 112, 146);
 
         if(weather.length() > 0) {
-            drawDockClockInfoSection(canvas,
-                                     cx,
-                                     topY,
-                                     weatherW,
-                                     34,
-                                     weather,
-                                     tinyTextStyle(),
-                                     weatherAccent,
-                                     sectionFace,
-                                     bg);
+            drawDockClockWeatherSection(canvas,
+                                        cx,
+                                        topY,
+                                        weatherW,
+                                        34,
+                                        weather,
+                                        tinyTextStyle(),
+                                        weatherAccent,
+                                        sectionFace,
+                                        bg);
         }
         if(location.length() > 0) {
             drawDockClockInfoSection(canvas,
@@ -6593,7 +7195,7 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
         sg98_version::gitLabel(),
         aboutBuildTimeLine(),
         aboutOtaLine(),
-        String("NONE")
+        sg98_ota_update::statusLine(app.otaUpdate)
     };
     const uint8_t rowCount = static_cast<uint8_t>(sizeof(labels) / sizeof(labels[0]));
     const int16_t rowH = useRoundNavigation() ? 30 : 22;
@@ -6607,7 +7209,9 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
                      values[i],
                      face,
                      labelColor,
-                     i == 2 ? blendColor565(kColorGood, kColorText, 0.10f) : kColorText);
+                     i == 2 || (i == 3 && app.otaUpdate.updateAvailable)
+                         ? blendColor565(kColorGood, kColorText, 0.10f)
+                         : kColorText);
         rowY = static_cast<int16_t>(rowY + rowH);
     }
 
@@ -7012,11 +7616,82 @@ void drawEditor(RemoteCanvas& canvas, const Layout& layout, const char* title) {
     }
 }
 
+void drawFlashScreen(RemoteCanvas& canvas, const Layout& layout) {
+    const uint16_t bg = kColorBg;
+    const uint16_t accent = app.flashAccent;
+    const uint16_t face = blendColor565(kColorPanel, accent, 0.18f);
+    const uint16_t border = blendColor565(accent, kColorText, 0.18f);
+    canvas.fillScreen(bg);
+
+    const int16_t cardW = clampI16(static_cast<int16_t>(layout.width - layout.pad * 4), 176, 320);
+    const int16_t cardH = clampI16(static_cast<int16_t>(layout.height / 3), 112, 170);
+    const Rect card = {
+        static_cast<int16_t>((layout.width - cardW) / 2),
+        static_cast<int16_t>((layout.height - cardH) / 2),
+        cardW,
+        cardH
+    };
+
+    drawNestCard(canvas, card, face, border, false);
+
+    const int16_t iconY = static_cast<int16_t>(card.y + clampI16(static_cast<int16_t>(card.h / 4), 28, 42));
+    const int16_t iconGap = clampI16(static_cast<int16_t>(card.w / 8), 22, 36);
+    const int16_t centerX = static_cast<int16_t>(card.x + card.w / 2);
+    const int16_t iconSize = clampI16(static_cast<int16_t>(card.h / 6), 16, 24);
+    drawNetworkGlyph(canvas,
+                     static_cast<int16_t>(centerX - iconGap),
+                     iconY,
+                     iconSize,
+                     NetworkBadgeMode::WifiLan,
+                     kColorGood);
+    canvas.drawLine(static_cast<int16_t>(centerX - iconGap / 2),
+                    iconY,
+                    static_cast<int16_t>(centerX + iconGap / 2),
+                    iconY,
+                    blendColor565(kColorText, accent, 0.36f));
+    canvas.drawLine(static_cast<int16_t>(centerX + iconGap / 2 - 4),
+                    static_cast<int16_t>(iconY - 4),
+                    static_cast<int16_t>(centerX + iconGap / 2),
+                    iconY,
+                    blendColor565(kColorText, accent, 0.36f));
+    canvas.drawLine(static_cast<int16_t>(centerX + iconGap / 2 - 4),
+                    static_cast<int16_t>(iconY + 4),
+                    static_cast<int16_t>(centerX + iconGap / 2),
+                    iconY,
+                    blendColor565(kColorText, accent, 0.36f));
+    drawNetworkGlyph(canvas,
+                     static_cast<int16_t>(centerX + iconGap),
+                     iconY,
+                     iconSize,
+                     NetworkBadgeMode::EspNow,
+                     kColorEspNow);
+
+    const String title = upperText(app.flashTitle.length() > 0 ? app.flashTitle : String("WI-FI SYNCED"));
+    const String subtitle = app.flashSubtitle.length() > 0 ? app.flashSubtitle : String("Returning to ESP-NOW");
+    const int16_t textW = static_cast<int16_t>(card.w - 24);
+    const RemoteTextStyle titleStyle = chooseLabelTextStyle(title, textW);
+    const RemoteTextStyle subtitleStyle = chooseLabelTextStyle(subtitle, textW);
+    canvas.drawCenteredText(fitTextToWidth(title, textW, titleStyle),
+                            centerX,
+                            static_cast<int16_t>(card.y + card.h / 2 + 12),
+                            titleStyle,
+                            kColorText,
+                            face);
+    canvas.drawCenteredText(fitTextToWidth(subtitle, textW, subtitleStyle),
+                            centerX,
+                            static_cast<int16_t>(card.y + card.h / 2 + 38),
+                            subtitleStyle,
+                            blendColor565(kColorText, accent, 0.28f),
+                            face);
+}
+
 void redrawUi() {
     RemoteCanvas& canvas = remote_board_canvas();
     const Layout layout = buildLayout();
 
-    if(app.dockClockActive) {
+    if(app.flashUntil > millis()) {
+        drawFlashScreen(canvas, layout);
+    } else if(app.dockClockActive) {
         drawDockClock(canvas, layout);
     } else if(app.screen == Screen::Home) {
         drawHome(canvas, layout);
@@ -7114,6 +7789,7 @@ void stopAllTransportStacks() {
 void scheduleTransportSwitch(LinkTransport transport, uint32_t delayMs = 0) {
     app.pendingTransport = transport;
     app.pendingTransportAt = millis() + delayMs;
+    app.redraw = true;
 }
 
 void ensureMdnsClientReady() {
@@ -7871,6 +8547,23 @@ void servicePendingControllerSync() {
     }
 }
 
+bool wifiRecoveryCanFallBackToEspNow() {
+    if(!remote_wifi_has_saved_network()) {
+        return false;
+    }
+    if(remote_wifi_sta_connected()) {
+        return true;
+    }
+    return remote_wifi_sta_attempt_count() >= kWifiFallbackMinStaAttempts;
+}
+
+String wifiRecoveryFallbackDetail() {
+    if(remote_wifi_sta_connected()) {
+        return "Controller not found on Wi-Fi";
+    }
+    return String("Tried home Wi-Fi ") + String(static_cast<unsigned>(kWifiFallbackMinStaAttempts)) + "x";
+}
+
 bool pendingRadioModeWriteActive(int32_t* targetOut = nullptr) {
     for(const PendingMenuWrite& pending : app.pendingMenuWrites) {
         if(pending.active && pending.menuNum == 1 && pending.itemIdx == RADIOMODE) {
@@ -7883,15 +8576,15 @@ bool pendingRadioModeWriteActive(int32_t* targetOut = nullptr) {
     return false;
 }
 
-bool requestControllerRadioMode(int32_t mode) {
+bool requestControllerRadioMode(int32_t mode, bool replacePending = false) {
     mode = sanitizeControllerRadioMode(mode);
     int32_t pendingTarget = 0;
-    if(pendingRadioModeWriteActive(&pendingTarget)) {
+    if(!replacePending && pendingRadioModeWriteActive(&pendingTarget)) {
         return pendingTarget == mode;
     }
 
     const uint32_t now = millis();
-    if(now - app.lastAutoRadioRequestAt < kAutoRadioRequestMs) {
+    if(!replacePending && now - app.lastAutoRadioRequestAt < kAutoRadioRequestMs) {
         return false;
     }
 
@@ -7909,6 +8602,23 @@ bool requestControllerRadioMode(int32_t mode) {
     return true;
 }
 
+void notifyAutoEspNowReturn(bool synced, const String& fallbackDetail = String()) {
+    if(app.autoEspNowReturnNotified) {
+        return;
+    }
+    app.autoEspNowReturnNotified = true;
+    const String title = synced ? String("Wi-Fi synced") : String("Wi-Fi fallback");
+    const String subtitle = synced ? String("Config restored to ESP-NOW")
+                                   : (fallbackDetail.length() > 0 ? fallbackDetail
+                                                                  : String("Returning to ESP-NOW"));
+    holdNetworkCurveStatus(synced ? String("WIFI SYNCED") : String("WIFI FALLBACK"),
+                           kWifiReturnCurveHoldMs);
+    showFlashScreen(title,
+                    subtitle,
+                    kAutoEspNowReturnFlashMs,
+                    kColorEspNow);
+}
+
 void serviceEspNowFirstPolicy() {
     if(app.transportOverrideActive && app.currentTransport == LinkTransport::WebSocket) {
         return;
@@ -7916,8 +8626,12 @@ void serviceEspNowFirstPolicy() {
 
     if(app.currentTransport == LinkTransport::WebSocket) {
         if(app.wsConnected && app.radioModeKnown) {
-            const int32_t mode = sanitizeControllerRadioMode(app.menuValues[1][RADIOMODE]);
+            const int32_t mode = app.controllerMenuSynced[1]
+                                     ? sanitizeControllerRadioMode(app.controllerMenuValues[1][RADIOMODE])
+                                     : sanitizeControllerRadioMode(app.menuValues[1][RADIOMODE]);
             if(mode == kControllerRadioEspNow) {
+                (void)requestControllerRadioMode(kControllerRadioEspNow, true);
+                notifyAutoEspNowReturn(true);
                 scheduleTransportSwitch(LinkTransport::EspNow, remote_config::kTransportSwitchDelayMs);
                 return;
             }
@@ -7926,6 +8640,12 @@ void serviceEspNowFirstPolicy() {
         if(!app.wsConnected &&
            app.webRecoveryStartedAt != 0 &&
            millis() - app.webRecoveryStartedAt >= kWifiRecoveryWindowMs) {
+            if(!wifiRecoveryCanFallBackToEspNow()) {
+                app.redraw = true;
+                return;
+            }
+            (void)requestControllerRadioMode(kControllerRadioEspNow, true);
+            notifyAutoEspNowReturn(false, wifiRecoveryFallbackDetail());
             switchTransportNow(LinkTransport::EspNow);
         }
         return;
@@ -7960,6 +8680,7 @@ void switchTransportNow(LinkTransport transport) {
     app.pendingTransport = LinkTransport::None;
     app.pendingTransportAt = 0;
     if(app.currentTransport == transport) {
+        app.redraw = true;
         return;
     }
 
@@ -7973,9 +8694,7 @@ void switchTransportNow(LinkTransport transport) {
         app.webRecoveryStartedAt = millis();
         app.wsStaConnected = remote_wifi_sta_connected();
         app.wsDiscoveryPending = remote_wifi_has_saved_network();
-        if(remote_wifi_has_saved_network()) {
-            setToast(remote_wifi_sta_connected() ? "WebSocket mode" : "Connecting Wi-Fi", 1200);
-        } else {
+        if(!remote_wifi_has_saved_network()) {
             app.toastUntil = 0;
         }
     } else if(transport == LinkTransport::EspNow) {
@@ -8002,6 +8721,7 @@ void switchTransportNow(LinkTransport transport) {
     app.lastTransportSwitchAt = millis();
     clearPollSchedule();
     markPersistentStateDirty();
+    app.redraw = true;
 }
 
 void applyPendingTransportSwitch() {
@@ -8023,9 +8743,6 @@ LinkTransport alternateTransport() {
             if(app.currentTransport == LinkTransport::WebSocket && app.wsConnected) {
                 return LinkTransport::WebSocket;
             }
-            if(webSocketCandidateAvailable()) {
-                return LinkTransport::WebSocket;
-            }
             return hasActiveEspNowPeer() ? LinkTransport::EspNow : app.currentTransport;
         }
         if(expected == LinkTransport::WebSocket) {
@@ -8043,9 +8760,6 @@ LinkTransport alternateTransport() {
     if(app.currentTransport == LinkTransport::EspNow) {
         if(app.screen == Screen::EspNowPeers) {
             return app.currentTransport;
-        }
-        if((!hasActiveEspNowPeer() || !isLinkOnline()) && webSocketCandidateAvailable()) {
-            return LinkTransport::WebSocket;
         }
         return app.currentTransport;
     }
@@ -8449,6 +9163,7 @@ void manageTransport() {
         const bool staConnected = remote_wifi_sta_connected();
         if(staConnected != app.wsStaConnected) {
             app.wsStaConnected = staConnected;
+            app.redraw = true;
             if(staConnected) {
                 app.wsDiscoveryPending = true;
             }
@@ -8490,6 +9205,15 @@ void manageTransport() {
     if(!isLinkOnline() && (millis() - app.lastTransportSwitchAt) >= remote_config::kTransportSearchWindowMs) {
         const LinkTransport fallback = alternateTransport();
         if(fallback != app.currentTransport) {
+            if(app.currentTransport == LinkTransport::WebSocket &&
+               fallback == LinkTransport::EspNow) {
+                if(!wifiRecoveryCanFallBackToEspNow()) {
+                    app.lastTransportSwitchAt = millis();
+                    app.redraw = true;
+                    return;
+                }
+                notifyAutoEspNowReturn(false, wifiRecoveryFallbackDetail());
+            }
             switchTransportNow(fallback);
         } else {
             app.lastTransportSwitchAt = millis();
@@ -8544,6 +9268,9 @@ bool applyMenuValue(const SettingItem& item, int32_t value) {
     applyLocalMenuPreview(item, normalizedValue);
     if(item.menuNum == 1 && item.itemIdx == RADIOMODE) {
         app.radioModeKnown = true;
+        if(transportFromRadioMode(normalizedValue) == LinkTransport::WebSocket) {
+            app.autoEspNowReturnNotified = false;
+        }
         scheduleTransportSwitch(transportFromRadioMode(normalizedValue), remote_config::kTransportSwitchDelayMs);
     }
     PendingMenuWrite* pending = stagePendingMenuWrite(item.menuNum, item.itemIdx, normalizedValue);
@@ -9104,6 +9831,9 @@ void clearWakePin(int8_t gpioNum) {
 
 bool idleSleepAllowed() {
     if(remote_config::kDisableIdleSleepForTesting) {
+        return false;
+    }
+    if(remote_config::kUseDockClockForIdle) {
         return false;
     }
     if(kDisableTransportPerfTest) {
@@ -10021,6 +10751,49 @@ void appendBatteryJson(String& out, const RemoteBatteryStatus& battery) {
     out += '}';
 }
 
+int32_t ageMsOrMinusOne(uint32_t timestamp, uint32_t now) {
+    if(timestamp == 0) {
+        return -1;
+    }
+    return static_cast<int32_t>(now - timestamp);
+}
+
+void appendDockClockJson(String& out) {
+    const uint32_t nowMs = millis();
+    const time_t unixNow = time(nullptr);
+    struct tm timeInfo = {};
+    const bool timeValid = localClockTime(&timeInfo);
+
+    out += '{';
+    out += "\"active\":";
+    out += app.dockClockActive ? "true" : "false";
+    out += ",\"timeConfigured\":";
+    out += app.dockClockTimeConfigured ? "true" : "false";
+    out += ",\"timeValid\":";
+    out += timeValid ? "true" : "false";
+    out += ",\"unixTime\":";
+    out += String(static_cast<long>(unixNow));
+    out += ",\"lastNtpSyncAgeMs\":";
+    out += String(ageMsOrMinusOne(app.dockClockLastNtpSyncAt, nowMs));
+    out += ",\"weatherValid\":";
+    out += app.dockWeather.valid ? "true" : "false";
+    out += ",\"weatherLastFetchAgeMs\":";
+    out += String(ageMsOrMinusOne(app.dockClockLastWeatherFetchAt, nowMs));
+    out += ",\"weatherLastOkAgeMs\":";
+    out += String(ageMsOrMinusOne(app.dockClockLastWeatherOkAt, nowMs));
+    out += ",\"weatherHttpCode\":";
+    out += String(app.dockClockLastWeatherHttpCode);
+    out += ",\"location\":";
+    appendJsonQuoted(out, dockLocationLine());
+    out += ",\"temperatureF\":";
+    out += String(static_cast<int>(app.dockWeather.temperatureF));
+    out += ",\"weatherCode\":";
+    out += String(static_cast<unsigned>(app.dockWeather.weatherCode));
+    out += ",\"precipitationPercent\":";
+    out += String(static_cast<int>(app.dockWeather.precipitationPercent));
+    out += '}';
+}
+
 void appendRemoteStatusJson(String& out) {
     out += '{';
     out += "\"board\":";
@@ -10063,6 +10836,8 @@ void appendRemoteStatusJson(String& out) {
     appendJsonQuoted(out, localDriveSelectionLabel(currentLocalDriveSelection()));
     out += ",\"battery\":";
     appendBatteryJson(out, app.battery);
+    out += ",\"dockClock\":";
+    appendDockClockJson(out);
     out += ",\"manualRPM\":";
     out += String(app.manualRpm);
     out += ",\"weightMg\":";
@@ -10086,6 +10861,8 @@ void appendRemoteStatusJson(String& out) {
     out += remote_wifi_sta_connected() ? "true" : "false";
     out += ",\"staSaved\":";
     out += remote_wifi_has_saved_network() ? "true" : "false";
+    out += ",\"staAttempts\":";
+    out += String(static_cast<unsigned>(remote_wifi_sta_attempt_count()));
     out += ",\"staSSID\":";
     appendJsonQuoted(out, remote_wifi_sta_ssid());
     out += ",\"staIP\":";
@@ -10094,6 +10871,10 @@ void appendRemoteStatusJson(String& out) {
     appendJsonQuoted(out, remote_wifi_ap_ssid());
     out += ",\"apIP\":";
     appendJsonQuoted(out, remote_wifi_ap_ip());
+    out += ",\"apRunning\":";
+    out += remote_wifi_ap_running() ? "true" : "false";
+    out += ",\"apStations\":";
+    out += String(static_cast<unsigned>(remote_wifi_ap_station_count()));
     out += '}';
     out += ",\"controller\":";
     appendRemoteControllerStatusJson(out);
@@ -11385,6 +12166,7 @@ void handleRemoteConsoleLine(const char* rawLine) {
         String message = "ok";
         if(tail == "ws" || tail == "websocket") {
             app.transportOverrideActive = true;
+            app.autoEspNowReturnNotified = false;
             switchTransportNow(LinkTransport::WebSocket);
         } else if(tail == "espnow" || tail == "esp-now") {
             app.transportOverrideActive = true;
@@ -11774,6 +12556,10 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("env_sync", sectionStartUs, loopStartUs, input);
     serviceDockClockTime(now);
     sectionStartUs = traceLoopStep("clock_sync", sectionStartUs, loopStartUs, input);
+    serviceBackgroundDockClockWeather(now);
+    sectionStartUs = traceLoopStep("weather_sync", sectionStartUs, loopStartUs, input);
+    serviceFirmwareUpdateCheck(now);
+    sectionStartUs = traceLoopStep("ota_check", sectionStartUs, loopStartUs, input);
     serviceDockClock(now);
     sectionStartUs = traceLoopStep("dock_clock", sectionStartUs, loopStartUs, input);
     const bool yieldTransport = shouldYieldTransportToUi();
@@ -11820,6 +12606,10 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("menu_anim", sectionStartUs, loopStartUs, input);
     serviceDeferredHomeStatusRedraw();
     sectionStartUs = traceLoopStep("deferred_status", sectionStartUs, loopStartUs, input);
+    serviceHomeNetworkCurveRedraw();
+    sectionStartUs = traceLoopStep("network_curve", sectionStartUs, loopStartUs, input);
+    serviceFlashScreen(now);
+    sectionStartUs = traceLoopStep("flash_screen", sectionStartUs, loopStartUs, input);
     remoteConsoleMaybeStream();
     sectionStartUs = traceLoopStep("console_stream", sectionStartUs, loopStartUs, input);
     enterIdleSleepIfNeeded();

@@ -6,6 +6,7 @@
 #include <time.h>
 
 #include "main.h"
+#include "sg98_ota_update.h"
 #include "wifi_ui.h"
 
 namespace {
@@ -15,6 +16,7 @@ constexpr uint32_t kWeatherFetchMs = 15UL * 60UL * 1000UL;
 constexpr uint32_t kWeatherRetryMs = 60UL * 1000UL;
 constexpr uint16_t kWeatherHttpTimeoutMs = 1200;
 constexpr uint32_t kNetworkFetchMinFreeHeap = 30000;
+constexpr uint32_t kFirmwareCheckUserQuietMs = 5000;
 constexpr const char* kTimezone = "PST8PDT,M3.2.0,M11.1.0";
 constexpr const char* kNtpServer1 = "pool.ntp.org";
 constexpr const char* kNtpServer2 = "time.nist.gov";
@@ -27,9 +29,15 @@ uint32_t g_lastNtpSyncAt = 0;
 uint32_t g_lastWeatherAttemptAt = 0;
 uint32_t g_lastWeatherFetchAt = 0;
 sg98_protocol::EnvironmentFrame g_environment;
+sg98_ota_update::State g_otaUpdate;
 
-bool controllerCanFetchWeather() {
+bool controllerCanUseBackgroundNetwork() {
     return state == IDLE || state == IDLE_GBW || controller_is_menu_state(state);
+}
+
+bool controllerCanCheckFirmware() {
+    return (state == IDLE || state == IDLE_GBW) &&
+           static_cast<uint32_t>(millis() - lastActivity) >= kFirmwareCheckUserQuietMs;
 }
 
 bool jsonNumberBetween(const String& json, const char* key, int start, int end, float* out) {
@@ -115,7 +123,7 @@ void serviceTime(uint32_t now) {
 }
 
 void serviceWeather(uint32_t now) {
-    if(!controllerCanFetchWeather()) {
+    if(!controllerCanUseBackgroundNetwork()) {
         return;
     }
     if(wifi_ui_web_activity_recent() || ESP.getFreeHeap() < kNetworkFetchMinFreeHeap) {
@@ -142,6 +150,23 @@ void serviceWeather(uint32_t now) {
     http.end();
 }
 
+void serviceFirmwareUpdateCheck(uint32_t now) {
+    if(!controllerCanCheckFirmware()) {
+        return;
+    }
+    if(wifi_ui_web_activity_recent() || ESP.getFreeHeap() < kNetworkFetchMinFreeHeap) {
+        return;
+    }
+    if(!g_environment.timeValid && !(g_environment.weatherValid && g_lastWeatherFetchAt != 0)) {
+        return;
+    }
+    if(!sg98_ota_update::shouldCheck(g_otaUpdate, now)) {
+        return;
+    }
+
+    (void)sg98_ota_update::checkLatestManifest(&g_otaUpdate, now);
+}
+
 void refreshTimeSnapshot() {
     const time_t unixNow = time(nullptr);
     g_environment.timeValid = unixNow >= static_cast<time_t>(kValidUnixTime);
@@ -161,6 +186,7 @@ void controller_env_poll() {
         return;
     }
     serviceWeather(now);
+    serviceFirmwareUpdateCheck(now);
 }
 
 String controller_env_build_frame() {
@@ -225,4 +251,20 @@ int16_t controller_env_temperature_f() {
 
 int8_t controller_env_precipitation_percent() {
     return g_environment.precipitationPercent;
+}
+
+String controller_env_ota_update_line() {
+    return sg98_ota_update::statusLine(g_otaUpdate);
+}
+
+String controller_env_ota_update_detail() {
+    return sg98_ota_update::detailLine(g_otaUpdate);
+}
+
+bool controller_env_ota_update_available() {
+    return g_otaUpdate.checked && g_otaUpdate.updateAvailable;
+}
+
+uint32_t controller_env_last_ota_check_ms() {
+    return g_otaUpdate.lastAttemptAt;
 }

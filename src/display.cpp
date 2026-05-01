@@ -611,6 +611,7 @@ void update_display() {
 
   static unsigned long lastUpdate;
   if(newData == true) disp_updateRequired = true;
+  if(controller_lvgl_needs_refresh()) disp_updateRequired = true;
   if(displayDisabled) return;
 
   if(disp_updateRequired != true) return; //This is mostly functional for testing.
@@ -674,8 +675,16 @@ void display_show_motor_probe_splash(const char* motorLabel) {
   if (motorLabel == nullptr || motorLabel[0] == '\0') {
     return;
   }
-  controller_lvgl_show_motor_probe_splash(motorLabel);
+  display_show_motor_probe_progress(motorLabel, 1, 1, true);
+}
+
+void display_show_motor_probe_progress(const char* phaseLabel, uint8_t step, uint8_t total, bool complete) {
+  if (phaseLabel == nullptr || phaseLabel[0] == '\0') {
+    return;
+  }
+  controller_lvgl_show_motor_probe_progress(phaseLabel, step, total, complete);
   disp_updateRequired = true;
+  controller_lvgl_sync();
 }
 
 void display_show_action_feedback(const char* label, unsigned long durationMs) {
@@ -736,7 +745,7 @@ const char* getErrorChar(uint8_t error) {
     case 3: return "Drive fault:";
     case 4: return "drive packet loss > 25";
     case 5: return "Failed to create mutex";
-    case 6: return "Motor stalled..";
+    case 6: return "Motor stalled/start failed";
     case 7: return "Write error, please reboot all";
     case 8: return "First use, reboot drive";
     case 100: return "Unexpected set RPM";
@@ -1596,9 +1605,9 @@ void drawNetworkInfoScreen() {
 
         const String ssid = wifi_ui_sta_ssid();
         const String ip = wifi_ui_sta_ip();
-        String rssi = "--";
+        String linkStatus = wifi_ui_sta_status();
         if(wifi_ui_sta_connected()) {
-            rssi = String(wifi_ui_sta_rssi()) + " dBm";
+            linkStatus = String(wifi_ui_sta_rssi()) + " dBm";
         }
 
         String weather = "--";
@@ -1621,7 +1630,7 @@ void drawNetworkInfoScreen() {
         drawInfoRow(86, "Set", radio_mode_value_label(Menu1[Menu1Items::RADIOMODE].value));
         drawInfoRow(106, "SSID", ssid.length() > 0 ? clippedInfoValue(ssid, 18) : String("--"));
         drawInfoRow(126, "IP", ip.length() > 0 ? ip : String("--"));
-        drawInfoRow(146, "RSSI", rssi);
+        drawInfoRow(146, wifi_ui_sta_connected() ? "RSSI" : "STA", clippedInfoValue(linkStatus, 18));
         drawInfoRow(166, "Time", formatControllerTime());
         drawInfoRow(186, "NTP", formatSyncAge(controller_env_last_ntp_sync_ms()));
         drawInfoRow(206, "Wx", weather);
@@ -1838,7 +1847,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
         
         // Instruction below
         tft->setFont(&FreeSans9pt7b);
-        const char* msg1 = "Long press the encoder button to";
+        const char* msg1 = "Press the encoder button to";
         const char* msg2 = "start the calibration process";
         const char* msg3 = "Press Start to exit";
         tft->getTextBounds(msg1, 0, 0, &x1, &y1, &w, &h);
