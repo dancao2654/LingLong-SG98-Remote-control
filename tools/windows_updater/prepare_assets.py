@@ -159,6 +159,13 @@ def app_only_since_version() -> str:
     return os.environ.get("SG98_APP_ONLY_SINCE", APP_ONLY_UPDATE_SINCE).strip() or APP_ONLY_UPDATE_SINCE
 
 
+def ota_application_url(file_name: str, build_info: dict) -> str:
+    git_sha = str(build_info.get("gitSha", "")).strip()
+    if not git_sha:
+        return file_name
+    return f"{file_name}?v={git_sha}"
+
+
 def write_manifest(assets: Path, build_info: dict, env_name: str, board_name: str, segments: list[dict]) -> Path:
     application = next((segment for segment in segments if segment["kind"] == "application"), None)
     default_mode = update_default_mode()
@@ -222,6 +229,7 @@ def write_ota_manifest(assets: Path, build_info: dict, env_name: str, board_name
         "application": {
             "offset": application["offset"],
             "fileName": application["file_name"],
+            "url": ota_application_url(application["file_name"], build_info),
             "sha256": sha256_file(app_path),
             "size": app_path.stat().st_size,
         },
