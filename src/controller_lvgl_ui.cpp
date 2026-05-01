@@ -12,6 +12,7 @@
 #include <esp_ota_ops.h>
 
 #include "assets/linglong_sg98_cartoon.h"
+#include "burr_gap.h"
 #include "comm.h"
 #include "controller_env.h"
 #include "gbw.h"
@@ -94,6 +95,9 @@ struct UiRefs {
     lv_obj_t* dashProgress = nullptr;
     lv_obj_t* dashProgressLabel = nullptr;
     lv_obj_t* dashHint = nullptr;
+    lv_obj_t* dashGapPanel = nullptr;
+    lv_obj_t* dashGapValue = nullptr;
+    lv_obj_t* dashGapLabel = nullptr;
     lv_obj_t* dashTorqueArc = nullptr;
     lv_obj_t* dashTorqueValue = nullptr;
     lv_obj_t* dashTorqueLabel = nullptr;
@@ -221,6 +225,29 @@ String formatMassMg(int32_t mg) {
     if(fabsf(grams) >= 10.0f) snprintf(text, sizeof(text), "%.1fg", grams);
     else snprintf(text, sizeof(text), "%.2fg", grams);
     return text;
+}
+
+String formatGapUm(int32_t um) {
+    const bool negative = um < 0;
+    const int32_t magnitude = negative ? -um : um;
+    int32_t hundredths = (magnitude + 5) / 10;
+    const int32_t whole = hundredths / 100;
+    const int32_t decimal = hundredths % 100;
+    char text[18];
+    snprintf(text,
+             sizeof(text),
+             "%s%ld.%02ld",
+             negative ? "-" : "",
+             static_cast<long>(whole),
+             static_cast<long>(decimal));
+    return text;
+}
+
+int32_t gaugeSetMenuDisplayUm(const menuEntry& item) {
+    if(state == MENU1 && enterMenu && menu1Selected == Menu1Items::GAUGESET) {
+        return static_cast<int32_t>(item.value) * 10;
+    }
+    return burr_gap_display_um();
 }
 
 String ageLabel(uint32_t timestampMs) {
@@ -705,6 +732,9 @@ String menuItemLabel(const menuEntry& item, int menuNum, int selectedIdx) {
 String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
     const MotorCommandDescriptor* command = motorCommandForMenuItem(menuNum, selectedIdx);
     if(command != nullptr && !command->supported) return "N/A";
+    if(menuNum == 1 && selectedIdx == Menu1Items::GAUGESET) {
+        return formatGapUm(gaugeSetMenuDisplayUm(item)) + "mm";
+    }
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
         return "Open";
     }
@@ -750,6 +780,9 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
 String menuDetailValue(const menuEntry& item, int menuNum, int selectedIdx) {
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return String(baudForJmcMenuItem(selectedIdx));
     if(menuNum == 1 && selectedIdx == Menu1Items::ABOUT) return sg98_version::aboutVersionLine();
+    if(menuNum == 1 && selectedIdx == Menu1Items::GAUGESET) {
+        return formatGapUm(gaugeSetMenuDisplayUm(item)) + "mm";
+    }
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) {
         if(menuNum == 1 && selectedIdx == CALIBRATE) return "Ready";
         return "Select";
@@ -764,6 +797,7 @@ String menuDetailMeta(const menuEntry& item, int menuNum, int selectedIdx) {
         if(command->helpText != nullptr && command->helpText[0] != '\0') return command->helpText;
     }
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Press encoder to start";
+    if(menuNum == 1 && selectedIdx == Menu1Items::GAUGESET) return "Rotate in 10 micron steps";
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO) return "Shows cached network and sync status";
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return "Writes drive baud for next boot";
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) return "Wireless mode, status, and reset";
@@ -788,6 +822,7 @@ String menuDetailHint(const menuEntry& item, int menuNum, int selectedIdx) {
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_RADIO_MODE) return "Radio Off is local-only standby.";
     if(menuNum == 5 && selectedIdx == Menu5Items::WIRELESS_NETWORK_INFO) return "Start or encoder goes back.";
     if(menuNum == 1 && selectedIdx == Menu1Items::CALIBRATE) return "Start cancels and goes back.";
+    if(menuNum == 1 && selectedIdx == Menu1Items::GAUGESET) return "Encoder saves. Start cancels.";
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) return "Start goes back.";
     return "Encoder saves. Start cancels.";
 }
@@ -894,6 +929,8 @@ void applyViewPalette() {
 
     stylePanel(ui.dashboard, palette.panel, palette.line);
     stylePanel(ui.dashProgressWrap, palette.panelHi, palette.line);
+    stylePanel(ui.dashGapPanel, blendRgb(kColorMenuItem, palette.panelHi, 0.22f), palette.line, LV_OPA_90);
+    lv_obj_set_style_radius(ui.dashGapPanel, 12, 0);
     stylePanel(ui.dashFooter, blendRgb(palette.panelHi, palette.background, 0.18f), palette.line, LV_OPA_COVER);
     lv_obj_set_style_arc_color(ui.dashTorqueArc, lvColor(blendRgb(palette.line, palette.panelHi, 0.30f)), LV_PART_MAIN);
 
@@ -1017,6 +1054,31 @@ void createDashboardUi() {
     lv_obj_set_style_text_color(ui.dashHint, lvColor(kColorSoft), 0);
     lv_label_set_long_mode(ui.dashHint, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.dashHint, LV_ALIGN_TOP_LEFT, 0, 120);
+
+    ui.dashGapPanel = lv_obj_create(ui.dashboard);
+    stylePanel(ui.dashGapPanel, kColorMenuItem, kColorLine, LV_OPA_90);
+    lv_obj_set_size(ui.dashGapPanel, 72, 50);
+    lv_obj_set_pos(ui.dashGapPanel, 168, 14);
+    lv_obj_set_style_pad_all(ui.dashGapPanel, 6, 0);
+    lv_obj_set_style_radius(ui.dashGapPanel, 12, 0);
+    setHidden(ui.dashGapPanel, true);
+
+    ui.dashGapValue = lv_label_create(ui.dashGapPanel);
+    lv_obj_set_width(ui.dashGapValue, 60);
+    lv_obj_set_style_text_font(ui.dashGapValue, &lv_font_montserrat_18, 0);
+    lv_obj_set_style_text_align(ui.dashGapValue, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(ui.dashGapValue, lvColor(kColorAccent), 0);
+    lv_label_set_long_mode(ui.dashGapValue, LV_LABEL_LONG_DOT);
+    lv_obj_align(ui.dashGapValue, LV_ALIGN_TOP_MID, 0, 2);
+
+    ui.dashGapLabel = lv_label_create(ui.dashGapPanel);
+    lv_obj_set_width(ui.dashGapLabel, 60);
+    lv_obj_set_style_text_font(ui.dashGapLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_align(ui.dashGapLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(ui.dashGapLabel, lvColor(kColorMuted), 0);
+    lv_label_set_text(ui.dashGapLabel, "GAP mm");
+    lv_label_set_long_mode(ui.dashGapLabel, LV_LABEL_LONG_DOT);
+    lv_obj_align(ui.dashGapLabel, LV_ALIGN_BOTTOM_MID, 0, -1);
 
     ui.dashTorqueArc = lv_arc_create(ui.dashboard);
     lv_obj_set_size(ui.dashTorqueArc, 62, 62);
@@ -1429,13 +1491,33 @@ void setProgress(lv_color_t color, int32_t pct, const String& label) {
     lv_label_set_text(ui.dashProgressLabel, fitText(label, 10).c_str());
 }
 
-void syncTorqueMonitor(bool visible, int32_t torquePercent = 0) {
-    lv_obj_set_width(ui.dashPrimary, visible ? 166 : 240);
-    lv_obj_set_width(ui.dashSecondary, visible ? 166 : 240);
-    setHidden(ui.dashTorqueArc, !visible);
-    setHidden(ui.dashTorqueValue, !visible);
-    setHidden(ui.dashTorqueLabel, !visible);
+void syncBurrGapPanel(bool visible) {
+    setHidden(ui.dashGapPanel, !visible);
     if(!visible) {
+        return;
+    }
+
+    const bool live = burr_gap_live();
+    const bool tared = burr_gap_recently_tared();
+    const uint32_t valueColor = tared ? kColorGood : (live ? kColorAccent : kColorMuted);
+    const char* label = tared ? "ZERO" : (live ? "GAP mm" : "SAVED");
+
+    lv_label_set_text(ui.dashGapValue, fitText(formatGapUm(burr_gap_display_um()), 7).c_str());
+    lv_obj_set_style_text_color(ui.dashGapValue, lvColor(valueColor), 0);
+    lv_label_set_text(ui.dashGapLabel, label);
+    lv_obj_set_style_text_color(ui.dashGapLabel, lvColor(live || tared ? kColorSoft : kColorMuted), 0);
+}
+
+void syncTorqueMonitor(bool visible, int32_t torquePercent = 0) {
+    const bool showGap = burr_gap_has_value();
+    const bool showTorqueArc = visible && !showGap;
+    lv_obj_set_width(ui.dashPrimary, (visible || showGap) ? 166 : 240);
+    lv_obj_set_width(ui.dashSecondary, (visible || showGap) ? 166 : 240);
+    syncBurrGapPanel(showGap);
+    setHidden(ui.dashTorqueArc, !showTorqueArc);
+    setHidden(ui.dashTorqueValue, !showTorqueArc);
+    setHidden(ui.dashTorqueLabel, !showTorqueArc);
+    if(!showTorqueArc) {
         return;
     }
 

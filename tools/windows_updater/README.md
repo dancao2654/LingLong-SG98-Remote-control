@@ -46,7 +46,34 @@ SG98-Updater --full
 SG98-Updater --app-only
 SG98-Updater --mode full
 SG98-Updater --mode application
+SG98-Updater --force
+SG98-Updater --list
 ```
+
+`--force` is the recovery path for older or misreporting firmware. It skips the
+USB-C `api device` probe entirely and flashes the full image set embedded in that
+bundle. Use the controller updater only for the controller and the remote updater
+only for the remote; force mode trusts the bundle you launched.
+
+`--list` prints the connected serial ports, marks likely USB flashing ports, tries
+to read SG98 identity when possible, and falls back to an esptool chip probe so a
+misreporting board can still show up as `ESP32-S3`. It also prints a ready-to-run
+command such as `SG98-Updater --force --port COM7`. Running
+`SG98-Updater --force` without `--port` still shows the interactive port picker
+when more than one candidate is connected.
+
+If an upgrade fails on the original SG98 controller board:
+
+1. Keep +24 V disconnected and leave only USB-C connected.
+2. Run `SG98-Updater --list`.
+3. Find the port that reports SG98 identity or `ESP32-S3` hardware.
+4. Retry with the printed command, for example
+   `SG98-Updater --force --port COM7`.
+5. If no `ESP32-S3` appears, hold `BOOT` / `BOOT0`, tap `EN` / `RESET`, then run
+   `--list` again.
+
+Use `SG98-Updater` for the controller and `SG98-Remote-Updater` for the remote.
+Do not force-flash the remote bundle onto the controller.
 
 Public release folders also get `sg98-release-manifest.json` next to the zip
 files. That manifest is intended for later online update discovery from GitHub.

@@ -48,6 +48,9 @@ int16_t sanitize_drive_type(int16_t drive_type) {
 
 constexpr const char* SMART_PURGE_LOAD_KEY = "SPLOAD";
 constexpr const char* SMART_PURGE_CONF_KEY = "SPCONF";
+constexpr const char* BURR_GAP_SEEN_KEY = "BGAPSEEN";
+constexpr const char* BURR_GAP_LAST_KEY = "BGAPLAST";
+constexpr const char* BURR_GAP_OFFSET_KEY = "BGAPOFF";
 }
 
 void pdata_init() { 
@@ -204,6 +207,9 @@ void pdata_write(uint8_t what) { // 0 = ALL SETTIGNS , 1 = Calibration array, 2 
         preferences.putString("SCALE_MAC", "");
         preferences.remove(SMART_PURGE_LOAD_KEY);
         preferences.remove(SMART_PURGE_CONF_KEY);
+        preferences.putBool(BURR_GAP_SEEN_KEY, false);
+        preferences.putLong(BURR_GAP_LAST_KEY, 0);
+        preferences.putLong(BURR_GAP_OFFSET_KEY, 0);
 
         String currentBuildID = BUILD_ID;
         preferences.putString("build_id", currentBuildID);
@@ -328,4 +334,28 @@ void pdata_write_smart_purge_learning(const uint16_t* learnedLoad, const uint16_
     const size_t bytes = count * sizeof(uint16_t);
     preferences.putBytes(SMART_PURGE_LOAD_KEY, learnedLoad, bytes);
     preferences.putBytes(SMART_PURGE_CONF_KEY, confidence, bytes);
+}
+
+bool pdata_read_burr_gap_seen() {
+    return preferences.getBool(BURR_GAP_SEEN_KEY, false);
+}
+
+void pdata_write_burr_gap_seen(bool seen) {
+    preferences.putBool(BURR_GAP_SEEN_KEY, seen);
+}
+
+int32_t pdata_read_burr_gap_last_um() {
+    return preferences.getLong(BURR_GAP_LAST_KEY, 0);
+}
+
+void pdata_write_burr_gap_last_um(int32_t gapUm) {
+    preferences.putLong(BURR_GAP_LAST_KEY, gapUm);
+}
+
+int32_t pdata_read_burr_gap_offset_um() {
+    return preferences.getLong(BURR_GAP_OFFSET_KEY, 0);
+}
+
+void pdata_write_burr_gap_offset_um(int32_t offsetUm) {
+    preferences.putLong(BURR_GAP_OFFSET_KEY, offsetUm);
 }

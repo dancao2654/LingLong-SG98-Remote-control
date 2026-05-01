@@ -87,3 +87,12 @@
 #define default_reverseRotation 0
 #define default_purgeStabilTime 500
 #define default_purge_off_time 1000
+
+// Full-size controller EX_I2C expansion header.
+// Header silk/order: 3V3, GND, GPIO9/SCL, GPIO8/SDA.
+#define EXSDA 8
+#define EXSCL 9
+
+// Burr gap digital indicator input through a level shifter.
+#define BURR_GAP_DATA_PIN EXSDA
+#define BURR_GAP_CLK_PIN EXSCL

@@ -80,6 +80,17 @@ bundle, and the new app fits the current app partition. Older firmware,
 unreadable devices, incompatible layout, or recovery cases fall back to full
 flash. A release can force full flash by building the bundle with
 `SG98_UPDATE_DEFAULT_MODE=full` or by raising `SG98_APP_ONLY_SINCE`.
+For recovery cases where the running firmware reports incorrect USB-C identity
+metadata, run the matching updater with `--force`; that skips the identity probe
+and full-flashes the embedded controller or remote image. Use `--list` first to
+see connected USB serial ports, identify likely `ESP32-S3` hardware, and copy the
+matching `--force --port ...` command.
+
+If an upgrade fails on the original SG98 controller board: keep +24 V
+disconnected, run `SG98-Updater --list`, choose the port that reports SG98
+identity or `ESP32-S3`, then retry with the printed `--force --port ...` command.
+If no `ESP32-S3` appears, hold `BOOT` / `BOOT0`, tap `EN` / `RESET`, and run
+`--list` again.
 
 The generic controller build uses `partitions/controller_8mb_ota.csv`, which
 keeps two 3.5 MB app slots on 8 MB controller hardware. Moving an existing

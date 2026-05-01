@@ -1,4 +1,5 @@
 #include "definitions.h"
+#include "burr_gap.h"
 #include "controller_board.h"
 #include "io.h"
 #include "main.h"
@@ -351,6 +352,21 @@ void openAboutInfo(States returnState) {
     state = ABOUT_INFO;
     disp_updateRequired = true;
 }
+
+int16_t gaugeMenuValueFromUm(int32_t gapUm) {
+    int32_t steps = gapUm >= 0 ? (gapUm + 5) / 10 : (gapUm - 5) / 10;
+    if(steps > Menu1[Menu1Items::GAUGESET].maxValue) steps = Menu1[Menu1Items::GAUGESET].maxValue;
+    if(steps < Menu1[Menu1Items::GAUGESET].minValue) steps = Menu1[Menu1Items::GAUGESET].minValue;
+    return static_cast<int16_t>(steps);
+}
+
+int32_t gaugeMenuValueToUm(int16_t value) {
+    return static_cast<int32_t>(value) * 10;
+}
+
+void syncGaugeSetMenuValue() {
+    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_display_um());
+}
 }
 
 bool isJmcBaudMenuItem(int selectedIdx) {
@@ -628,6 +644,9 @@ void do_io() {
                     openAboutInfo(MENU1);
                 }
                 if(menu1Selected == Menu1Items::EXITMENU) lastIdle? state = IDLE : state = IDLE_GBW; 
+                if(menu1Selected == Menu1Items::GAUGESET) {
+                    syncGaugeSetMenuValue();
+                }
                 if(menu1Selected != Menu1Items::PURGESETTINGS &&
                    menu1Selected != Menu1Items::GBWSETTINGS &&
                    menu1Selected != Menu1Items::JMCBAUDMENU &&
@@ -639,6 +658,10 @@ void do_io() {
                 OriginalValue = Menu1[menu1Selected].value;
             } else if(menu1Selected == Menu1Items::CALIBRATE) {
                 startCalibrationFromMenu(notReleasedYet);
+            } else if(menu1Selected == Menu1Items::GAUGESET) {
+                enterMenu = false;
+                burr_gap_set_current_gap_um(gaugeMenuValueToUm(Menu1[Menu1Items::GAUGESET].value));
+                display_show_action_feedback("Gap set");
             } else { 
                 enterMenu = false;
                 if(menu1Selected == Menu1Items::RADIOMODE) {

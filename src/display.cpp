@@ -1570,6 +1570,21 @@ static String formatControllerTime() {
     return String(text);
 }
 
+static String formatGaugeSetMenuValue(int16_t value) {
+    const bool negative = value < 0;
+    const int32_t magnitude = negative ? -static_cast<int32_t>(value) : value;
+    const int32_t whole = magnitude / 100;
+    const int32_t decimal = magnitude % 100;
+    char text[18];
+    snprintf(text,
+             sizeof(text),
+             "%s%ld.%02ld",
+             negative ? "-" : "",
+             static_cast<long>(whole),
+             static_cast<long>(decimal));
+    return String(text);
+}
+
 static String clippedInfoValue(const String& value, uint8_t maxLen) {
     if(value.length() <= maxLen) return value;
     if(maxLen <= 3) return value.substring(0, maxLen);
@@ -2157,10 +2172,15 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                 }
             }
 
-        } else {
-          // DRAW VALUE + UNIT
-          char valStr[16];
-          snprintf(valStr, sizeof(valStr), "%d", item.value);
+	        } else {
+	          // DRAW VALUE + UNIT
+	          char valStr[16];
+	          const bool gaugeSetValue = menuNum == 1 && selectedIdx == Menu1Items::GAUGESET;
+	          if(gaugeSetValue) {
+	            snprintf(valStr, sizeof(valStr), "%s", formatGaugeSetMenuValue(item.value).c_str());
+	          } else {
+	            snprintf(valStr, sizeof(valStr), "%d", item.value);
+	          }
 
           const GFXfont* fontVal  = &FreeSans24pt7b;
           const GFXfont* fontUnit = &FreeSans12pt7b;  // pick your unit font
@@ -2177,7 +2197,8 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
 
           // Measure unit
           int16_t x1u, y1u; uint16_t wu, hu;
-          tft->getTextBounds(item.unit ? item.unit : "", 0, 0, &x1u, &y1u, &wu, &hu);
+	          const char* unitText = gaugeSetValue ? "mm" : (item.unit ? item.unit : "");
+	          tft->getTextBounds(unitText, 0, 0, &x1u, &y1u, &wu, &hu);
 
           // Total width to center
           uint16_t totalW = wv + ws + wu;
@@ -2196,9 +2217,9 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
           tft->setTextColor(ST77XX_WHITE);
 
           // Draw unit
-          tft->setFont(fontUnit);
-          tft->setCursor(left + wv + ws - x1u, yBase);  // after value + space, compensate x1u
-          tft->print(item.unit ? item.unit : "");
+	          tft->setFont(fontUnit);
+	          tft->setCursor(left + wv + ws - x1u, yBase);  // after value + space, compensate x1u
+	          tft->print(unitText);
 
         }
       }

@@ -500,6 +500,7 @@ constexpr size_t arrayCount(const SettingItem (&)[N]) {
 
 bool isInvertScrollItem(const SettingItem& item);
 bool isRadioModeItem(const SettingItem& item);
+bool isGaugeSetItem(const SettingItem& item);
 bool isConfirmActionItem(const SettingItem& item);
 bool usesChoiceEditor(const SettingItem& item);
 bool hasActiveEspNowPeer();
@@ -556,6 +557,7 @@ constexpr SettingItem kGbwItems[] = {
     {"Motor direction", ItemKind::Toggle, 1, SETMOTORDIRECTION, 0, 1, 1, "", nullptr, nullptr},
     {"Drive", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "drive"},
     {"Calibrate", ItemKind::Action, 0, 0, 0, 0, 0, "", "calibrate", nullptr},
+    {"Gauge Set", ItemKind::Value, 1, GAUGESET, -1200, 1200, 1, "mm", nullptr, nullptr},
     {"GbW RPM", ItemKind::Value, 3, GBW_RPM_SET, 200, 1500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow RPM", ItemKind::Value, 3, GBW_SLOW_RPM, rpm_scalar, 500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow mg", ItemKind::Value, 3, GBW_SLOW_MG, 0, 6000, 100, "mg", nullptr, nullptr},
@@ -638,7 +640,7 @@ char g_consoleLineBuffer[384] = {};
 size_t g_consoleLineLen = 0;
 
 constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
-constexpr uint16_t kSleepSnapshotVersion = 9;
+constexpr uint16_t kSleepSnapshotVersion = 10;
 constexpr uint16_t kSleepSnapshotVersionLegacyUiSoundsOff = 6;
 constexpr uint32_t kInteractiveLoopWaitMs = 4;
 constexpr uint32_t kAnimatingLoopWaitMs = 16;
@@ -1316,6 +1318,9 @@ String displayHintForItem(const SettingItem& item) {
     }
     if(isRadioModeItem(item)) {
         return "CONTROLLER WI-FI ACCESS";
+    }
+    if(isGaugeSetItem(item)) {
+        return "10 MICRON STEPS";
     }
     if(isConfirmActionItem(item)) {
         return "CHOOSE NO OR YES";
@@ -2381,6 +2386,10 @@ bool isRadioModeItem(const SettingItem& item) {
     return item.menuNum == 1 && item.itemIdx == RADIOMODE;
 }
 
+bool isGaugeSetItem(const SettingItem& item) {
+    return item.menuNum == 1 && item.itemIdx == GAUGESET;
+}
+
 bool isMotorDirectionItem(const SettingItem& item) {
     return item.menuNum == 1 && item.itemIdx == SETMOTORDIRECTION;
 }
@@ -3436,9 +3445,27 @@ int32_t displayValueForItem(const SettingItem& item, int32_t value) {
     return itemUsesRpmDisplay(item) ? rpmMagnitude(value) : value;
 }
 
+String gaugeGapLabelFromMenuValue(int32_t value) {
+    const bool negative = value < 0;
+    const int32_t magnitude = negative ? -value : value;
+    const int32_t whole = magnitude / 100;
+    const int32_t decimal = magnitude % 100;
+    char text[18];
+    snprintf(text,
+             sizeof(text),
+             "%s%ld.%02ld mm",
+             negative ? "-" : "",
+             static_cast<long>(whole),
+             static_cast<long>(decimal));
+    return text;
+}
+
 String formatValueLabel(const SettingItem& item, int32_t value) {
     if(isRadioModeItem(item)) {
         return radioModeValueLabel(value);
+    }
+    if(isGaugeSetItem(item)) {
+        return gaugeGapLabelFromMenuValue(value);
     }
     if(usesChoiceEditor(item)) {
         return value != 0 ? toggleOnLabel(item) : toggleOffLabel(item);
@@ -9318,6 +9345,9 @@ void lockEspNowPeer(const DiscoveredEspNowPeer& peer) {
 
 String actionFeedbackLabel(const SettingItem& item) {
     if(item.action == nullptr) {
+        if(isGaugeSetItem(item)) {
+            return "Gap set";
+        }
         return String(item.label) + " applied";
     }
     if(strcmp(item.action, "reset_network") == 0) return "Network reset";

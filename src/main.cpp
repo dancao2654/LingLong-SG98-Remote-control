@@ -1,5 +1,6 @@
 #include <driver/rtc_io.h>
 #include "esp_task_wdt.h"
+#include "burr_gap.h"
 #include "controller_board.h"
 #include "controller_env.h"
 #include "display.h"
@@ -41,15 +42,16 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Drive", 0, 0, 0, 0, "DRIVESEL", ""},                // 8
     {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 9
     {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 10
-    {"Wireless", default_radio_mode, 0, 2, 1, "RADIOMODE", ""}, // 11
-    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 12
-    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 13
-    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 14
-    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 15
-    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 16
-    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 17
-    {"Network info", 0, 0, 0, 0, "NETINFO", ""},          // 18
-    {"About", 0, 0, 0, 0, "ABOUT", ""},                  // 19
+    {"Gauge Set", 0, -1200, 1200, 1, "GAUGESET", ""},     // 11, value is 10um/count
+    {"Wireless", default_radio_mode, 0, 2, 1, "RADIOMODE", ""}, // 12
+    {"Reset Network", 0, 0, 1, 1, "RSTNET", ""},          // 13
+    {"Sleep time", default_sleepTime, 0, 300, 5, "SLEEPT", "min"},// 14
+    {"Brightness", default_brightness, 1, 255, 1, "BRIGHTNESS", ""}, // 15
+    {"LED max Brightness", default_led_brightness, 0, 100, 1, "LEDPRCT", "%"}, // 16
+    {"Invert scrolling", 0, 0, 1, 1, "SCROLL", ""},            // 17
+    {"Reset default", 0, 0, 1, 1, "RSTALL", ""},          // 18
+    {"Network info", 0, 0, 0, 0, "NETINFO", ""},          // 19
+    {"About", 0, 0, 0, 0, "ABOUT", ""},                  // 20
 };
 
 menuEntry Menu2[NUM_MENU2_ITEMS] = {
@@ -407,6 +409,7 @@ void setup() {
         Serial.println("pdata read");
     }
     pdata_normalize();
+    burr_gap_init();
     
     xTaskCreatePinnedToCore(
     scaleTask,         // Task function
@@ -439,6 +442,7 @@ void setup() {
 
 void loop() { 
     doVitals();
+    burr_gap_poll();
     do_io();
     const bool menuMode = controller_is_menu_state(state);
     if(menuMode) {

@@ -25,14 +25,37 @@ internal static class Program
 
         try
         {
+            if (HelpRequested(args))
+            {
+                PrintUsage();
+                return 0;
+            }
+
+            if (ListPortsRequested(args))
+            {
+                string listWorkDir = Path.Combine(Path.GetTempPath(), "SG98Updater");
+                Directory.CreateDirectory(listWorkDir);
+                PrintPortList(listWorkDir);
+                return 0;
+            }
+
             string port = ResolvePort(args);
             UpdateMode requestedMode = ResolveUpdateMode(args);
+            bool forceMode = ForceModeRequested(args);
+            if (forceMode && requestedMode == UpdateMode.Application)
+            {
+                throw new InvalidOperationException("--force cannot be combined with --app-only.");
+            }
+            if (forceMode)
+            {
+                requestedMode = UpdateMode.Full;
+            }
             selectedPort = port;
             string workDir = Path.Combine(Path.GetTempPath(), "SG98Updater");
             Directory.CreateDirectory(workDir);
             FlashManifest manifest = LoadFlashManifest();
             IReadOnlyList<ExtractedFlashSegment> flashSegments = ExtractFlashSegments(manifest, workDir);
-            DeviceIdentity? device = TryReadDeviceIdentity(port);
+            DeviceIdentity? device = forceMode ? null : TryReadDeviceIdentity(port);
             IReadOnlyList<ExtractedFlashSegment> selectedSegments =
                 SelectFlashSegments(manifest, flashSegments, device, requestedMode);
 
@@ -45,6 +68,14 @@ internal static class Program
             if (device is not null)
             {
                 Console.WriteLine($"Detected: {device.Role} v{device.FirmwareVersion} {device.BuildEnv}".TrimEnd());
+            }
+            else if (forceMode)
+            {
+                Console.WriteLine("Force mode: USB-C identity probe skipped.");
+            }
+            else
+            {
+                Console.WriteLine("Detected: unavailable; using full-flash fallback.");
             }
             Console.WriteLine($"Update mode: {UpdateModeDescription(selectedSegments, flashSegments)}");
             Console.WriteLine(selectedSegments.Count == flashSegments.Count ? "Flashing full image set..." : "Flashing application firmware...");
@@ -122,6 +153,123 @@ internal static class Program
         }
 
         return extracted;
+    }
+
+    private static bool HelpRequested(string[] args)
+    {
+        return args.Any(arg =>
+            string.Equals(arg, "-h", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(arg, "--help", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(arg, "/?", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool ForceModeRequested(string[] args)
+    {
+        if (args.Any(arg =>
+                string.Equals(arg, "--force", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--force-full", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(arg, "--recovery", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        string? envForce = Environment.GetEnvironmentVariable("SG98_UPDATER_FORCE");
+        return string.Equals(envForce, "1", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(envForce, "true", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(envForce, "yes", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool ListPortsRequested(string[] args)
+    {
+        return args.Any(arg =>
+            string.Equals(arg, "--list", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(arg, "--list-ports", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(arg, "--ports", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static void PrintPortList(string workDir)
+    {
+        FlashManifest manifest = LoadFlashManifest();
+        string[] ports = GetInteractivePorts();
+        Console.WriteLine($"Bundle target: {manifest.Role ?? "unknown"} {manifest.EnvName}".TrimEnd());
+        Console.WriteLine();
+
+        if (ports.Length == 0)
+        {
+            Console.WriteLine($"No {PortLabelPlural()} found. Connect the board over USB-C and try again.");
+            return;
+        }
+
+        Console.WriteLine($"Available {PortLabelPlural()}:");
+        for (int i = 0; i < ports.Length; i++)
+        {
+            string port = ports[i];
+            bool probe = IsLikelyUsbFlashingPort(port);
+            DeviceIdentity? identity = probe ? TryReadDeviceIdentity(port) : null;
+            EspToolChipIdentity? chip = probe && identity is null ? TryReadEspToolChipIdentity(port, workDir) : null;
+
+            Console.WriteLine($"  {i + 1}. {port}{PortHintSuffix(port)}");
+            if (identity is not null)
+            {
+                Console.WriteLine($"     identity: {identity.Role} v{identity.FirmwareVersion} {identity.BuildEnv}".TrimEnd());
+            }
+            else if (chip is not null)
+            {
+                string mac = string.IsNullOrWhiteSpace(chip.MacAddress) ? string.Empty : $" {chip.MacAddress}";
+                Console.WriteLine($"     hardware: {chip.ChipName}{mac}".TrimEnd());
+                Console.WriteLine("     identity: unavailable; SG98 firmware metadata was not readable");
+            }
+            else
+            {
+                Console.WriteLine(probe
+                    ? "     identity: unavailable"
+                    : "     identity: skipped; not a likely USB flashing port");
+            }
+            Console.WriteLine(probe
+                ? $"     force: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(port)}"
+                : "     force: not recommended for this port");
+        }
+
+        Console.WriteLine();
+        Console.WriteLine($"You can also run {DisplayCommandName()} --force and choose from the port list interactively.");
+    }
+
+    private static string DisplayCommandName()
+    {
+        string? processPath = Environment.ProcessPath;
+        if (!string.IsNullOrWhiteSpace(processPath))
+        {
+            return Path.GetFileName(processPath);
+        }
+
+        return OperatingSystem.IsWindows() ? "SG98-Updater.exe" : "./SG98-Updater";
+    }
+
+    private static string QuoteArgumentForDisplay(string value)
+    {
+        if (!value.Any(char.IsWhiteSpace))
+        {
+            return value;
+        }
+
+        return QuoteArgument(value);
+    }
+
+    private static void PrintUsage()
+    {
+        Console.WriteLine("Usage:");
+        Console.WriteLine("  SG98-Updater [--port COMx] [--full | --app-only | --force]");
+        Console.WriteLine("  SG98-Updater --list");
+        Console.WriteLine();
+        Console.WriteLine("Modes:");
+        Console.WriteLine("  auto        Probe USB-C identity and choose app-only when safe. Default.");
+        Console.WriteLine("  --full      Flash the full image set after the normal identity probe.");
+        Console.WriteLine("  --app-only  Flash only the application partition.");
+        Console.WriteLine("  --force     Skip the USB-C identity probe and full-flash this bundle.");
+        Console.WriteLine("  --list      List ports, SG98/ESP32 hints, and force-update commands.");
+        Console.WriteLine();
+        Console.WriteLine("Use --force only when the connected SG98 target is known but its running");
+        Console.WriteLine("firmware cannot report reliable USB-C identity metadata.");
     }
 
     private static UpdateMode ResolveUpdateMode(string[] args)
@@ -343,6 +491,80 @@ internal static class Program
         }
 
         return null;
+    }
+
+    private static EspToolChipIdentity? TryReadEspToolChipIdentity(string portName, string workDir)
+    {
+        try
+        {
+            var flasher = ResolveFlasher(workDir);
+            string args = flasher.ArgumentsPrefix
+                + $"--chip esp32s3 --port {QuoteArgument(portName)} --baud 115200 "
+                + "--connect-attempts 1 --before default_reset --after hard_reset chip_id";
+            ProcessCaptureResult result = RunProcessCapture(flasher.FileName, args, 7000);
+            if (result.ExitCode != 0)
+            {
+                return null;
+            }
+
+            return ParseEspToolChipIdentity(result.Output);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static EspToolChipIdentity? ParseEspToolChipIdentity(string output)
+    {
+        if (string.IsNullOrWhiteSpace(output))
+        {
+            return null;
+        }
+
+        string chipName = string.Empty;
+        string mac = string.Empty;
+        foreach (string rawLine in output.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries))
+        {
+            string line = rawLine.Trim();
+            int chipIndex = line.IndexOf("Chip is ", StringComparison.OrdinalIgnoreCase);
+            if (chipIndex >= 0)
+            {
+                chipName = line[(chipIndex + "Chip is ".Length)..].Trim();
+                int detailIndex = chipName.IndexOf(" (", StringComparison.Ordinal);
+                if (detailIndex > 0)
+                {
+                    chipName = chipName[..detailIndex].Trim();
+                }
+            }
+
+            int detectIndex = line.IndexOf("Detecting chip type...", StringComparison.OrdinalIgnoreCase);
+            if (string.IsNullOrWhiteSpace(chipName) && detectIndex >= 0)
+            {
+                string detected = line[(detectIndex + "Detecting chip type...".Length)..].Trim();
+                if (detected.StartsWith("ESP", StringComparison.OrdinalIgnoreCase))
+                {
+                    chipName = detected;
+                }
+            }
+
+            if (line.StartsWith("MAC:", StringComparison.OrdinalIgnoreCase))
+            {
+                mac = line["MAC:".Length..].Trim();
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(chipName) && output.Contains("ESP32-S3", StringComparison.OrdinalIgnoreCase))
+        {
+            chipName = "ESP32-S3";
+        }
+
+        if (string.IsNullOrWhiteSpace(chipName))
+        {
+            return null;
+        }
+
+        return new EspToolChipIdentity(chipName, mac);
     }
 
     private static DeviceIdentity? TryParseDeviceIdentity(string line)
@@ -611,6 +833,37 @@ internal static class Program
         return process.ExitCode;
     }
 
+    private static ProcessCaptureResult RunProcessCapture(string fileName, string arguments, int timeoutMs)
+    {
+        using Process process = new();
+        process.StartInfo.FileName = fileName;
+        process.StartInfo.Arguments = arguments;
+        process.StartInfo.UseShellExecute = false;
+        process.StartInfo.RedirectStandardOutput = true;
+        process.StartInfo.RedirectStandardError = true;
+        process.StartInfo.CreateNoWindow = true;
+
+        process.Start();
+        Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+        Task<string> stderr = process.StandardError.ReadToEndAsync();
+        if (!process.WaitForExit(timeoutMs))
+        {
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // Best-effort cleanup for a diagnostic probe.
+            }
+
+            return new ProcessCaptureResult(-1, string.Empty);
+        }
+
+        string output = stdout.GetAwaiter().GetResult() + "\n" + stderr.GetAwaiter().GetResult();
+        return new ProcessCaptureResult(process.ExitCode, output);
+    }
+
     private static int PortPriority(string port)
     {
         if (IsLikelyUsbFlashingPort(port))
@@ -672,19 +925,34 @@ internal static class Program
         {
             Console.WriteLine("If the board does not appear as a COM port, install the Espressif ESP32-C3/S3 USB driver support:");
             Console.WriteLine("https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-guides/jtag-debugging/configure-builtin-jtag.html");
-            Console.WriteLine("If upload still fails, hold BOOT0, short-press EN, then retry the update.");
-            return;
         }
-
-        if (!string.IsNullOrWhiteSpace(selectedPort) && !IsLikelyUsbFlashingPort(selectedPort))
+        else
         {
-            Console.WriteLine($"The selected port {selectedPort} does not look like the ESP32-S3 USB flashing port.");
+            if (!string.IsNullOrWhiteSpace(selectedPort) && !IsLikelyUsbFlashingPort(selectedPort))
+            {
+                Console.WriteLine($"The selected port {selectedPort} does not look like the ESP32-S3 USB flashing port.");
+            }
+
+            Console.WriteLine("Prefer a /dev/cu.usbmodem* or /dev/cu.usbserial* device for the SG98 board.");
+            Console.WriteLine("If flashing fails because esptool is missing, install it with:");
+            Console.WriteLine("python3 -m pip install --user esptool");
         }
 
-        Console.WriteLine("Prefer a /dev/cu.usbmodem* or /dev/cu.usbserial* device for the SG98 board.");
-        Console.WriteLine("If upload still fails, hold BOOT0, short-press EN, then retry the update.");
-        Console.WriteLine("If flashing fails because esptool is missing, install it with:");
-        Console.WriteLine("python3 -m pip install --user esptool");
+        Console.WriteLine();
+        Console.WriteLine("If this is the original SG98 controller board and the upgrade failed:");
+        Console.WriteLine($"1. Run {DisplayCommandName()} --list.");
+        Console.WriteLine("2. Pick the port that shows SG98 identity or ESP32-S3 hardware.");
+        if (!string.IsNullOrWhiteSpace(selectedPort) && IsLikelyUsbFlashingPort(selectedPort))
+        {
+            Console.WriteLine($"3. Retry with: {DisplayCommandName()} --force --port {QuoteArgumentForDisplay(selectedPort)}");
+        }
+        else
+        {
+            Console.WriteLine($"3. Retry with the listed command: {DisplayCommandName()} --force --port <port>");
+        }
+        Console.WriteLine("4. If no ESP32-S3 appears, hold BOOT/BOOT0, tap EN/RESET, then run --list again.");
+        Console.WriteLine();
+        Console.WriteLine("Use the controller updater for the controller and the remote updater for the remote.");
     }
 
     private static void PauseIfInteractive()
@@ -738,6 +1006,10 @@ internal static class Program
     }
 
     private sealed record ExtractedFlashSegment(string Offset, string FileName, string Path, string Kind);
+
+    private sealed record ProcessCaptureResult(int ExitCode, string Output);
+
+    private sealed record EspToolChipIdentity(string ChipName, string MacAddress);
 
     private sealed record DeviceIdentity(
         string Role,

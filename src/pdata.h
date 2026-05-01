@@ -15,5 +15,11 @@ int16_t pdata_read_drive_type();
 void pdata_write_drive_type(int16_t drive_type);
 void pdata_read_smart_purge_learning(uint16_t* learnedLoad, uint16_t* confidence, size_t count);
 void pdata_write_smart_purge_learning(const uint16_t* learnedLoad, const uint16_t* confidence, size_t count);
+bool pdata_read_burr_gap_seen();
+void pdata_write_burr_gap_seen(bool seen);
+int32_t pdata_read_burr_gap_last_um();
+void pdata_write_burr_gap_last_um(int32_t gapUm);
+int32_t pdata_read_burr_gap_offset_um();
+void pdata_write_burr_gap_offset_um(int32_t offsetUm);
 
 #endif

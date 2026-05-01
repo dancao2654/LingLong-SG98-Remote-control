@@ -2,6 +2,7 @@
 
 #include <cstring>
 
+#include "burr_gap.h"
 #include "controller_env.h"
 #include "controller_board.h"
 #include "comm.h"
@@ -84,6 +85,17 @@ bool finishCommand(bool ok) {
     return ok;
 }
 
+int16_t gaugeMenuValueFromUm(int32_t gapUm) {
+    int32_t steps = gapUm >= 0 ? (gapUm + 5) / 10 : (gapUm - 5) / 10;
+    if(steps > Menu1[Menu1Items::GAUGESET].maxValue) steps = Menu1[Menu1Items::GAUGESET].maxValue;
+    if(steps < Menu1[Menu1Items::GAUGESET].minValue) steps = Menu1[Menu1Items::GAUGESET].minValue;
+    return static_cast<int16_t>(steps);
+}
+
+void syncGaugeMenuValue() {
+    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_display_um());
+}
+
 const char* commTextCompact(COMM_STATUS value) {
     switch(value) {
         case COMM_DISCONNECTED: return "DISCONNECTED";
@@ -115,7 +127,9 @@ const char* scaleTextCompact(SCALE_STATUS value) {
 
 const menuEntry* menuByNumber(uint8_t menuNum) {
     switch(menuNum) {
-        case 1: return Menu1;
+        case 1:
+            syncGaugeMenuValue();
+            return Menu1;
         case 2: return Menu2;
         case 3: return Menu3;
         case 4: return Menu4;

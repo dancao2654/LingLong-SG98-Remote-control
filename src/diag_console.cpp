@@ -7,6 +7,7 @@
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 
+#include "burr_gap.h"
 #include "controller_board.h"
 #include "display.h"
 #include "error_history.h"
@@ -276,6 +277,17 @@ uint8_t menuCountByNumber(uint8_t menuNum) {
         case 5: return NUM_MENU5_ITEMS;
         default: return 0;
     }
+}
+
+int16_t gaugeMenuValueFromUm(int32_t gapUm) {
+    int32_t steps = gapUm >= 0 ? (gapUm + 5) / 10 : (gapUm - 5) / 10;
+    if(steps > Menu1[Menu1Items::GAUGESET].maxValue) steps = Menu1[Menu1Items::GAUGESET].maxValue;
+    if(steps < Menu1[Menu1Items::GAUGESET].minValue) steps = Menu1[Menu1Items::GAUGESET].minValue;
+    return static_cast<int16_t>(steps);
+}
+
+void syncGaugeMenuValue() {
+    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_display_um());
 }
 
 uint8_t visibleMenuCountByNumber(uint8_t menuNum) {
@@ -784,6 +796,18 @@ void apiPrintStatus() {
     Serial.print(motor_currentTorque);
     Serial.print(",\"torquePercent\":");
     Serial.print(motor_get_torque_percent());
+    Serial.print(",\"burrGapEnabled\":");
+    Serial.print(burr_gap_enabled() ? "true" : "false");
+    Serial.print(",\"burrGapKnown\":");
+    Serial.print(burr_gap_has_value() ? "true" : "false");
+    Serial.print(",\"burrGapLive\":");
+    Serial.print(burr_gap_live() ? "true" : "false");
+    Serial.print(",\"burrGapUm\":");
+    Serial.print(static_cast<long>(burr_gap_display_um()));
+    Serial.print(",\"burrGapRawUm\":");
+    Serial.print(static_cast<long>(burr_gap_raw_um()));
+    Serial.print(",\"burrGapOffsetUm\":");
+    Serial.print(static_cast<long>(burr_gap_offset_um()));
     Serial.print(",\"setWeight\":");
     Serial.print(static_cast<unsigned long>(setWeight));
     Serial.print(",\"weight\":");
@@ -804,6 +828,10 @@ void apiPrintStatus() {
 }
 
 void apiPrintMenu(uint8_t menuNum) {
+    if(menuNum == 1) {
+        syncGaugeMenuValue();
+    }
+
     const menuEntry* menu = menuByNumber(menuNum);
     if(menu == nullptr) {
         return;
@@ -1013,7 +1041,11 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
                 return false;
             }
         }
-        persistMenuValue(menuNum, itemIdx);
+        if(itemIdx == Menu1Items::GAUGESET) {
+            burr_gap_set_current_gap_um(static_cast<int32_t>(Menu1[itemIdx].value) * 10);
+        } else {
+            persistMenuValue(menuNum, itemIdx);
+        }
     } else if(menuNum == 2) {
         Menu2[itemIdx].value = clampMenuValue(Menu2[itemIdx], requestedValue);
         persistMenuValue(menuNum, itemIdx);
@@ -1347,6 +1379,18 @@ void appendStatusJson(String& out) {
     out += String(motor_currentTorque);
     out += ",\"torquePercent\":";
     out += String(motor_get_torque_percent());
+    out += ",\"burrGapEnabled\":";
+    out += burr_gap_enabled() ? "true" : "false";
+    out += ",\"burrGapKnown\":";
+    out += burr_gap_has_value() ? "true" : "false";
+    out += ",\"burrGapLive\":";
+    out += burr_gap_live() ? "true" : "false";
+    out += ",\"burrGapUm\":";
+    out += String(static_cast<long>(burr_gap_display_um()));
+    out += ",\"burrGapRawUm\":";
+    out += String(static_cast<long>(burr_gap_raw_um()));
+    out += ",\"burrGapOffsetUm\":";
+    out += String(static_cast<long>(burr_gap_offset_um()));
     out += ",\"setWeight\":";
     out += String(static_cast<unsigned long>(setWeight));
     out += ",\"weight\":";
@@ -1367,6 +1411,9 @@ void appendStatusJson(String& out) {
 }
 
 void appendMenuSnapshotJson(String& out, uint8_t menuNum) {
+    if(menuNum == 1) {
+        syncGaugeMenuValue();
+    }
     if(menuNum == 5) {
         Menu5[Menu5Items::WIRELESS_RADIO_MODE].value = Menu1[Menu1Items::RADIOMODE].value;
     }
@@ -1478,7 +1525,7 @@ void printStatus() {
     }
 
     Serial.printf(
-        "[diag] drive=%s uart=%s jmc_pref=%lu state=%s comm=%s motor=%s err=%u setRPM=%d curRPM=%d torque=%d setWeight=%lu weight=%ld scale=%s saved_name=\"%s\" saved_mac=\"%s\" seen_name=\"%s\" seen_mac=\"%s\"\n",
+        "[diag] drive=%s uart=%s jmc_pref=%lu state=%s comm=%s motor=%s err=%u setRPM=%d curRPM=%d torque=%d gap=%ldum gap_live=%s setWeight=%lu weight=%ld scale=%s saved_name=\"%s\" saved_mac=\"%s\" seen_name=\"%s\" seen_mac=\"%s\"\n",
         motor_get_type_label(),
         comm_get_profile_label(),
         static_cast<unsigned long>(motor_get_preferred_jmc_baud()),
@@ -1489,6 +1536,8 @@ void printStatus() {
         motor_get_effective_set_rpm(),
         motor_currentRPM,
         motor_currentTorque,
+        static_cast<long>(burr_gap_display_um()),
+        burr_gap_live() ? "yes" : "no",
         static_cast<unsigned long>(setWeight),
         static_cast<long>(currentWeight),
         scaleText(scaleStatus),
