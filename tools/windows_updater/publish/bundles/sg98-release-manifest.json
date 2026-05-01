@@ -9,15 +9,15 @@
       "envName": "controller-universal-s3",
       "boardName": "controller-universal-s3",
       "version": "2026.04.28",
-      "gitSha": "a6767cc1",
+      "gitSha": "2afec60f",
       "gitDirty": false,
-      "size": 28608852,
-      "sha256": "4a65716b4c9ea46054a7382f26221f3c6fd5d982de6d66cee203ba366284b2ec",
-      "md5": "66b616ef74d0ebdabb5a1b6aa111dbd3",
+      "size": 28609128,
+      "sha256": "b0c0ef9d5884daf212c3e5b7db3214e387b180899333b56f0b36a6efb50c74d0",
+      "md5": "12d4bb0f200517ca481c721c60569d76",
       "application": {
         "offset": "0x10000",
         "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "da4621bf86cd95de41b233eb9687cb388705f2697bb23d2aa80876e3e2e60a13",
+        "sha256": "17846774cc82a45e087448f1f581403054dd816856391a1346294471a826abc2",
         "size": 2035760
       },
       "updatePolicy": {
@@ -38,15 +38,15 @@
       "envName": "controller-universal-s3",
       "boardName": "controller-universal-s3",
       "version": "2026.04.28",
-      "gitSha": "a6767cc1",
+      "gitSha": "2afec60f",
       "gitDirty": false,
-      "size": 45733079,
-      "sha256": "a05eb27538b9e00c50257f46cfca88b2b50c97f40649f8e875bd22f1120c27a1",
-      "md5": "3d3e096aaae8ac35df378eb8fcd243c7",
+      "size": 45729226,
+      "sha256": "81ee6a2ec99a2025aa5dc5eba9a7e1edd1df01164654394f7b92ce9162c28529",
+      "md5": "a8ebbb26aa2d4a3524624a9cab2ab4ab",
       "application": {
         "offset": "0x10000",
         "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "0961cc01aa570d5c41039ecdd2f1b5062e6399c81b52487eaf7ed384b80164f3",
+        "sha256": "1c034569ae35a1e40df576a9f26dd74f7e4db631a4c36aafe06b60b9f8d91f9e",
         "size": 2035760
       },
       "updatePolicy": {
@@ -67,15 +67,15 @@
       "envName": "remote-universal-s3",
       "boardName": "remote-universal-s3",
       "version": "2026.04.28",
-      "gitSha": "a6767cc1",
+      "gitSha": "2afec60f",
       "gitDirty": false,
-      "size": 28589547,
-      "sha256": "c135736b1dcc1d40c7fa14501b14f3a74fd552d30e3f59a546640be197e79eac",
-      "md5": "8550cc2f229f099c99138f58cfbc4911",
+      "size": 28586311,
+      "sha256": "c27b028b1fe3e607298395d03dfdfe0d9ca1c025ee6ba96762283374c9be4861",
+      "md5": "def4fe98f5d892a0c01abb8779db0645",
       "application": {
         "offset": "0x10000",
         "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "8e0ca65f8eb7743629fcd1bda42e619e55b0f6db487175d76042a971cdc015cb",
+        "sha256": "b2a9840e822a53fd41938fd18975b8df7b1da168fc79ed1afc6ffbdc063ea1e9",
         "size": 1987648
       },
       "updatePolicy": {
@@ -96,15 +96,15 @@
       "envName": "remote-universal-s3",
       "boardName": "remote-universal-s3",
       "version": "2026.04.28",
-      "gitSha": "a6767cc1",
+      "gitSha": "2afec60f",
       "gitDirty": false,
-      "size": 45706894,
-      "sha256": "92d7cce94a56a980e01c731805aaf72407ea00231ab12a0654df49e19b2aa7ae",
-      "md5": "7f8c4564f4bcfd8107e5a7a479b1a76c",
+      "size": 45708410,
+      "sha256": "09204fa0a51e3684ae019e54d155947fc303b8a904632806b2c90373a6ff3eeb",
+      "md5": "c4cc367998564504e62659e56ac056ad",
       "application": {
         "offset": "0x10000",
         "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "2fa7150f2cf23a24ff973847943cb021d4adfcd44dac304bb4b2eff5ef09fe77",
+        "sha256": "580c274f5881bfdfcf892c7156bdd815548bf3ab6c7136e320464cb1c4b6a202",
         "size": 1987648
       },
       "updatePolicy": {
@@ -118,7 +118,7 @@
       }
     }
   ],
-  "generatedAtUtc": "2026-05-01T19:05:42Z",
+  "generatedAtUtc": "2026-05-01T19:30:52Z",
   "version": "2026.04.28",
-  "gitSha": "a6767cc1"
+  "gitSha": "2afec60f"
 }
