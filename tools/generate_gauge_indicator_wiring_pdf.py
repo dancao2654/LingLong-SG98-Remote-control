@@ -151,9 +151,9 @@ def main() -> None:
     pdf.text(54, 691, "Assumption: the indicator exposes the common 4-wire clock/data port: V+, GND, CLK, DATA.", 9.2, "F2")
     pdf.text(54, 676, "Keep the indicator battery installed unless you confirm the gauge accepts external 3.3V power.", 9.2)
 
-    # Main diagram with aligned rows so labels do not sit on top of wires.
+    # Main diagram with the level-shifter pin order matching the photographed board.
     block(pdf, 44, 436, 168, 190, "Digital Indicator", "Low-voltage gauge side", (0.98, 0.94, 0.86))
-    block(pdf, 230, 392, 152, 266, "Level Shifter", "A side = LV, B side = HV", (0.91, 0.96, 1.0))
+    block(pdf, 230, 392, 152, 266, "Level Shifter", "Photo view: text on right", (0.91, 0.96, 1.0))
     block(pdf, 400, 436, 168, 190, "SG98 Controller", "EX_I2C header as GPIO", (0.91, 0.97, 0.92))
 
     row_y = {
@@ -161,7 +161,6 @@ def main() -> None:
         "gnd": 540,
         "clk": 506,
         "data": 472,
-        "oe": 422,
     }
     colors = {
         "power": (0.91, 0.48, 0.02),
@@ -169,12 +168,19 @@ def main() -> None:
         "gnd": (0.08, 0.09, 0.11),
         "clk": (0.05, 0.36, 0.86),
         "data": (0.00, 0.50, 0.28),
+        "oe": (0.48, 0.26, 0.68),
+        "unused": (0.52, 0.56, 0.62),
     }
 
     ind_dot_x = 202
-    shift_l_x = 240
-    shift_r_x = 372
     ctl_dot_x = 410
+    board_x = 242
+    board_y = 396
+    board_w = 128
+    board_h = 204
+    pin_x = [board_x + 12 + i * 21 for i in range(6)]
+    top_y = board_y + board_h - 30
+    bottom_y = board_y + 28
 
     indicator_rows = [
         ("V+ / battery +", "power"),
@@ -189,31 +195,6 @@ def main() -> None:
         pdf.color(*colors[key], fill=True, stroke=False)
         pdf.circle(ind_dot_x, y, 4.2, fill=True, stroke=False)
 
-    shifter_left = [
-        ("LV", "power"),
-        ("GND", "gnd"),
-        ("A1", "clk"),
-        ("A2", "data"),
-    ]
-    shifter_right = [
-        ("HV", "hv", "power"),
-        ("GND", "gnd", "gnd"),
-        ("B1", "clk", "clk"),
-        ("B2", "data", "data"),
-    ]
-    for label, key in shifter_left:
-        y = row_y[key]
-        pdf.color(*colors[key], fill=True, stroke=False)
-        pdf.circle(shift_l_x, y, 3.9, fill=True, stroke=False)
-        pdf.color(0.11, 0.12, 0.14, fill=True, stroke=False)
-        pdf.text(250, y + 8, label, 8.5, "F3")
-    for label, color_key, y_key in shifter_right:
-        y = row_y[y_key]
-        pdf.color(*colors[color_key], fill=True, stroke=False)
-        pdf.circle(shift_r_x, y, 3.9, fill=True, stroke=False)
-        pdf.color(0.11, 0.12, 0.14, fill=True, stroke=False)
-        pdf.text(342, y + 8, label, 8.5, "F3")
-
     controller_rows = [
         ("3V3", "hv", "power"),
         ("GND", "gnd", "gnd"),
@@ -227,32 +208,144 @@ def main() -> None:
         pdf.color(0.11, 0.12, 0.14, fill=True, stroke=False)
         pdf.text(424, y - 4, label, 9.4, "F2")
 
-    pdf.color(0.40, 0.44, 0.50, fill=True, stroke=False)
-    pdf.centered_text(306, 446, "TXS010x-style", 8.8)
-    pdf.centered_text(306, 432, "bidirectional shifter", 8.8)
     pdf.text(424, 452, "Header order:", 8.2, "F2")
     pdf.text(424, 438, "1 3V3  2 GND  3 GPIO9  4 GPIO8", 7.8, "F3")
 
-    # Signal wires: details are in the table below.
-    draw_wire(pdf, [(ind_dot_x, row_y["power"]), (shift_l_x, row_y["power"])], colors["power"], "", 0, 0)
-    draw_wire(pdf, [(ind_dot_x, row_y["gnd"]), (shift_l_x, row_y["gnd"])], colors["gnd"], "", 0, 0)
-    draw_wire(pdf, [(ind_dot_x, row_y["clk"]), (shift_l_x, row_y["clk"])], colors["clk"], "", 0, 0)
-    draw_wire(pdf, [(ind_dot_x, row_y["data"]), (shift_l_x, row_y["data"])], colors["data"], "", 0, 0)
-    draw_wire(pdf, [(shift_l_x, row_y["clk"]), (shift_r_x, row_y["clk"])], colors["clk"], "", 0, 0)
-    draw_wire(pdf, [(shift_l_x, row_y["data"]), (shift_r_x, row_y["data"])], colors["data"], "", 0, 0)
-    draw_wire(pdf, [(shift_r_x, row_y["power"]), (ctl_dot_x, row_y["power"])], colors["hv"], "", 0, 0)
-    draw_wire(pdf, [(shift_r_x, row_y["gnd"]), (ctl_dot_x, row_y["gnd"])], colors["gnd"], "", 0, 0)
-    draw_wire(pdf, [(shift_r_x, row_y["clk"]), (ctl_dot_x, row_y["clk"])], colors["clk"], "", 0, 0)
-    draw_wire(pdf, [(shift_r_x, row_y["data"]), (ctl_dot_x, row_y["data"])], colors["data"], "", 0, 0)
+    # Photo board outline and pin order. Upper row is the controller/HV side;
+    # lower row is the indicator/LV side.
+    pdf.color(0.05, 0.055, 0.06, fill=True, stroke=True)
+    pdf.rect(board_x, board_y, board_w, board_h, fill=True, stroke=True)
+    pdf.color(1.0, 1.0, 1.0, fill=True, stroke=False)
+    pdf.centered_text(board_x + board_w / 2, board_y + board_h - 15, "top row to SG98", 6.8, "F2")
+    pdf.centered_text(board_x + board_w / 2, board_y + 12, "bottom row to indicator", 6.8, "F2")
+    pdf.color(0.78, 0.82, 0.88, stroke=True)
+    pdf.line_width(0.8)
+    pdf.line(pin_x[1], bottom_y + 8, pin_x[1], top_y - 8)
+    pdf.line(pin_x[2], bottom_y + 8, pin_x[2], top_y - 8)
 
-    # OE enable tied to LV, drawn low inside the shifter to avoid the signal rows.
-    pdf.color(*colors["power"], stroke=True, fill=True)
-    pdf.line_width(3.0)
-    pdf.polyline([(shift_l_x, row_y["power"]), (shift_l_x, row_y["oe"]), (270, row_y["oe"])])
-    pdf.circle(shift_l_x, row_y["oe"], 3.5, fill=True, stroke=False)
-    pdf.color(0.11, 0.12, 0.14, fill=True, stroke=False)
-    pdf.text(252, row_y["oe"] - 4, "OE", 8.5, "F3")
-    pdf.text(278, row_y["oe"] - 4, "tie to LV", 8.4, "F2")
+    bottom_pins = {
+        "lv": (pin_x[0], bottom_y),
+        "a1": (pin_x[1], bottom_y),
+        "a2": (pin_x[2], bottom_y),
+        "a3": (pin_x[3], bottom_y),
+        "a4": (pin_x[4], bottom_y),
+        "oe": (pin_x[5], bottom_y),
+    }
+    top_pins = {
+        "hv": (pin_x[0], top_y),
+        "b1": (pin_x[1], top_y),
+        "b2": (pin_x[2], top_y),
+        "b3": (pin_x[3], top_y),
+        "b4": (pin_x[4], top_y),
+        "gnd": (pin_x[5], top_y),
+    }
+
+    # Signal wires: details are in the table below.
+    draw_wire(
+        pdf,
+        [(ind_dot_x, row_y["power"]), (222, row_y["power"]), (222, 438), bottom_pins["lv"]],
+        colors["power"],
+        "",
+        0,
+        0,
+    )
+    draw_wire(
+        pdf,
+        [(ind_dot_x, row_y["gnd"]), (230, row_y["gnd"]), (230, top_y), top_pins["gnd"]],
+        colors["gnd"],
+        "",
+        0,
+        0,
+    )
+    draw_wire(
+        pdf,
+        [(ind_dot_x, row_y["clk"]), (214, row_y["clk"]), (214, 422), bottom_pins["a1"]],
+        colors["clk"],
+        "",
+        0,
+        0,
+    )
+    draw_wire(
+        pdf,
+        [(ind_dot_x, row_y["data"]), (210, row_y["data"]), (210, 414), bottom_pins["a2"]],
+        colors["data"],
+        "",
+        0,
+        0,
+    )
+    draw_wire(
+        pdf,
+        [top_pins["hv"], (386, top_y), (386, row_y["power"]), (ctl_dot_x, row_y["power"])],
+        colors["hv"],
+        "",
+        0,
+        0,
+    )
+    draw_wire(
+        pdf,
+        [top_pins["gnd"], (390, top_y), (390, row_y["gnd"]), (ctl_dot_x, row_y["gnd"])],
+        colors["gnd"],
+        "",
+        0,
+        0,
+    )
+    draw_wire(
+        pdf,
+        [top_pins["b1"], (394, top_y), (394, row_y["clk"]), (ctl_dot_x, row_y["clk"])],
+        colors["clk"],
+        "",
+        0,
+        0,
+    )
+    draw_wire(
+        pdf,
+        [top_pins["b2"], (398, top_y), (398, row_y["data"]), (ctl_dot_x, row_y["data"])],
+        colors["data"],
+        "",
+        0,
+        0,
+    )
+    draw_wire(
+        pdf,
+        [bottom_pins["lv"], (pin_x[0], 384), (pin_x[5], 384), bottom_pins["oe"]],
+        colors["oe"],
+        "",
+        0,
+        0,
+    )
+
+    top_labels = [("HV", "hv"), ("B1", "clk"), ("B2", "data"), ("B3", "unused"), ("B4", "unused"), ("GND", "gnd")]
+    bottom_labels = [("LV", "power"), ("A1", "clk"), ("A2", "data"), ("A3", "unused"), ("A4", "unused"), ("OE", "oe")]
+    pin_text_colors = {
+        "power": (1.0, 0.66, 0.16),
+        "hv": (1.0, 0.36, 0.36),
+        "gnd": (1.0, 1.0, 1.0),
+        "clk": (0.36, 0.62, 1.0),
+        "data": (0.26, 0.78, 0.48),
+        "oe": (0.78, 0.56, 1.0),
+        "unused": (0.68, 0.71, 0.78),
+    }
+    for idx, (label, key) in enumerate(top_labels):
+        x = pin_x[idx]
+        pdf.color(0.84, 0.84, 0.80, fill=True, stroke=False)
+        pdf.circle(x, top_y, 5.6, fill=True, stroke=False)
+        pdf.color(0.05, 0.055, 0.06, fill=True, stroke=False)
+        pdf.circle(x, top_y, 3.0, fill=True, stroke=False)
+        pdf.color(*pin_text_colors[key], fill=True, stroke=False)
+        pdf.centered_text(x, top_y - 18, label, 7.3, "F3")
+    for idx, (label, key) in enumerate(bottom_labels):
+        x = pin_x[idx]
+        pdf.color(0.84, 0.84, 0.80, fill=True, stroke=False)
+        pdf.circle(x, bottom_y, 5.6, fill=True, stroke=False)
+        pdf.color(0.05, 0.055, 0.06, fill=True, stroke=False)
+        pdf.circle(x, bottom_y, 3.0, fill=True, stroke=False)
+        pdf.color(*pin_text_colors[key], fill=True, stroke=False)
+        pdf.centered_text(x, bottom_y + 11, label, 7.3, "F3")
+
+    pdf.color(0.40, 0.44, 0.50, fill=True, stroke=False)
+    pdf.centered_text(306, 526, "A1/B1 = CLK", 8.0, "F2")
+    pdf.centered_text(306, 512, "A2/B2 = DATA", 8.0, "F2")
+    pdf.centered_text(306, 388, "OE jumper to LV", 7.4, "F2")
 
     # Connection table.
     table_x = 48
@@ -268,11 +361,11 @@ def main() -> None:
     pdf.color(0.70, 0.73, 0.78, stroke=True)
     pdf.line(table_x, table_y + 94, table_x + 516, table_y + 94)
     rows = [
-        ("V+ / battery +", "LV and OE", "no direct controller pin"),
-        ("GND", "GND", "EX_I2C pin 2 / GND"),
-        ("CLK", "A1 -> B1", "EX_I2C pin 3 / GPIO9"),
-        ("DATA", "A2 -> B2", "EX_I2C pin 4 / GPIO8"),
-        ("none", "HV", "EX_I2C pin 1 / 3V3"),
+        ("V+ / battery +", "bottom LV + OE jumper", "no direct controller pin"),
+        ("GND", "top GND, shared", "EX_I2C pin 2 / GND"),
+        ("CLK", "bottom A1 -> top B1", "EX_I2C pin 3 / GPIO9"),
+        ("DATA", "bottom A2 -> top B2", "EX_I2C pin 4 / GPIO8"),
+        ("none", "top HV", "EX_I2C pin 1 / 3V3"),
     ]
     for idx, row in enumerate(rows):
         y = table_y + 74 - idx * 18
@@ -290,8 +383,8 @@ def main() -> None:
     pdf.text(notes_x + 14, notes_y + 70, "Bring-up notes", 12, "F2")
     pdf.text(notes_x + 14, notes_y + 52, "1. Confirm GND and V+ at the gauge battery/data connector before wiring.", 8.6)
     pdf.text(notes_x + 14, notes_y + 38, "2. Probe the remaining two pins while moving the plunger; assign CLK and DATA by waveform.", 8.6)
-    pdf.text(notes_x + 14, notes_y + 24, "3. Do not connect gauge CLK/DATA directly to ESP32 GPIO. Use the level shifter.", 8.6)
-    pdf.text(notes_x + 14, notes_y + 10, "4. EX_I2C is only used as free GPIO here; this is not an I2C device.", 8.6, "F2")
+    pdf.text(notes_x + 14, notes_y + 24, "3. Photo board pin order: top HV B1 B2 B3 B4 GND; bottom LV A1 A2 A3 A4 OE.", 8.6)
+    pdf.text(notes_x + 14, notes_y + 10, "4. Jumper OE to LV; tie SG98 GND, shifter top GND, and gauge GND together.", 8.6, "F2")
 
     write_pdf(pdf, OUT)
     print(OUT)

@@ -4,11 +4,13 @@
 #include <cstring>
 
 #include <WiFi.h>
+#include <driver/gpio.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 
 #include "burr_gap.h"
 #include "controller_board.h"
+#include "definitions.h"
 #include "display.h"
 #include "error_history.h"
 #include "gbw.h"
@@ -38,9 +40,32 @@ char serialLineBuffer[384];
 size_t serialLineLen = 0;
 char otaMessageBuffer[160];
 
+constexpr uint8_t kGaugeProbeFrameBits = 24;
+constexpr uint32_t kGaugeProbeFrameGapUs = 5000;
+constexpr uint16_t kGaugeProbeDefaultMs = 1000;
+constexpr uint16_t kGaugeProbeMinMs = 50;
+constexpr uint16_t kGaugeProbeMaxMs = 5000;
+constexpr int32_t kGaugeProbeMaxReasonableGapUm = 60000;
+
 struct OtaWifiGuard {
     bool wifiWasActive = false;
     bool espNowWasActive = false;
+};
+
+struct GaugeProbeResult {
+    uint32_t samples = 0;
+    uint32_t clkTransitions = 0;
+    uint32_t clkRising = 0;
+    uint32_t clkFalling = 0;
+    uint32_t dataTransitions = 0;
+    uint32_t frames = 0;
+    uint32_t validFrames = 0;
+    uint32_t lastFrame = 0;
+    int32_t lastUm = 0;
+    uint8_t initialClk = 0;
+    uint8_t initialData = 0;
+    uint8_t finalClk = 0;
+    uint8_t finalData = 0;
 };
 
 const char* stateText(States value) {
@@ -197,6 +222,125 @@ const char* errorText(uint8_t code) {
     return "unknown";
 }
 
+bool decodeGaugeProbeFrameUm(uint32_t frame, int32_t* outUm) {
+    if(outUm == nullptr) return false;
+
+    const bool inchMode = (frame & (1UL << 23)) != 0;
+    const bool negative = (frame & (1UL << 20)) != 0;
+    const uint32_t counts = frame & 0x000FFFFFUL;
+    int64_t um = 0;
+
+    if(inchMode) {
+        um = (static_cast<int64_t>(counts) * 635 + 50) / 100;
+    } else {
+        um = static_cast<int64_t>(counts) * 5;
+    }
+
+    if(negative) {
+        um = -um;
+    }
+
+    if(um > kGaugeProbeMaxReasonableGapUm || um < -kGaugeProbeMaxReasonableGapUm) {
+        return false;
+    }
+
+    *outUm = static_cast<int32_t>(um);
+    return true;
+}
+
+bool gpioProbePinValid(uint32_t pin) {
+    return pin < GPIO_NUM_MAX && pin != 19 && pin != 20;
+}
+
+bool defaultGaugeProbeMapping(uint8_t* clkPin, uint8_t* dataPin, const char** header) {
+    const ControllerBoardBurrGapInput& input = controller_board_burr_gap_input();
+    if(!controller_board_pin_valid(input.clock) || !controller_board_pin_valid(input.data)) {
+        return false;
+    }
+    if(clkPin != nullptr) {
+        *clkPin = static_cast<uint8_t>(input.clock);
+    }
+    if(dataPin != nullptr) {
+        *dataPin = static_cast<uint8_t>(input.data);
+    }
+    if(header != nullptr) {
+        *header = input.headerLabel != nullptr ? input.headerLabel : "controller burr gap GPIO mapping";
+    }
+    return true;
+}
+
+GaugeProbeResult runGaugeProbe(uint8_t clkPin, uint8_t dataPin, uint16_t durationMs) {
+    GaugeProbeResult result;
+
+    pinMode(clkPin, INPUT);
+    pinMode(dataPin, INPUT);
+    delayMicroseconds(100);
+
+    uint8_t lastClk = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(clkPin)) != 0);
+    uint8_t lastData = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(dataPin)) != 0);
+    result.initialClk = lastClk;
+    result.initialData = lastData;
+
+    uint8_t bitIndex = 0;
+    uint32_t shift = 0;
+    uint32_t lastEdgeUs = 0;
+    const uint32_t startUs = micros();
+    const uint32_t durationUs = static_cast<uint32_t>(durationMs) * 1000UL;
+
+    while(static_cast<uint32_t>(micros() - startUs) < durationUs) {
+        const uint32_t nowUs = micros();
+        const uint8_t clk = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(clkPin)) != 0);
+        const uint8_t data = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(dataPin)) != 0);
+        result.samples++;
+
+        if(data != lastData) {
+            result.dataTransitions++;
+            lastData = data;
+        }
+
+        if(clk == lastClk) {
+            continue;
+        }
+
+        result.clkTransitions++;
+        if(clk != 0) {
+            result.clkRising++;
+        } else {
+            result.clkFalling++;
+            if((nowUs - lastEdgeUs) > kGaugeProbeFrameGapUs) {
+                bitIndex = 0;
+                shift = 0;
+            }
+
+            if(bitIndex < kGaugeProbeFrameBits) {
+                if(data != 0) {
+                    shift |= (1UL << bitIndex);
+                }
+                bitIndex++;
+            }
+
+            if(bitIndex >= kGaugeProbeFrameBits) {
+                result.frames++;
+                result.lastFrame = shift;
+                int32_t um = 0;
+                if(decodeGaugeProbeFrameUm(shift, &um)) {
+                    result.validFrames++;
+                    result.lastUm = um;
+                }
+                bitIndex = 0;
+                shift = 0;
+            }
+            lastEdgeUs = nowUs;
+        }
+
+        lastClk = clk;
+    }
+
+    result.finalClk = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(clkPin)) != 0);
+    result.finalData = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(dataPin)) != 0);
+    return result;
+}
+
 const char* levelText(uint8_t level) {
     switch(level) {
         case ERROR_HISTORY_LEVEL_INFO: return "INFO";
@@ -280,14 +424,14 @@ uint8_t menuCountByNumber(uint8_t menuNum) {
 }
 
 int16_t gaugeMenuValueFromUm(int32_t gapUm) {
-    int32_t steps = gapUm >= 0 ? (gapUm + 5) / 10 : (gapUm - 5) / 10;
+    int32_t steps = gapUm / 10;
     if(steps > Menu1[Menu1Items::GAUGESET].maxValue) steps = Menu1[Menu1Items::GAUGESET].maxValue;
     if(steps < Menu1[Menu1Items::GAUGESET].minValue) steps = Menu1[Menu1Items::GAUGESET].minValue;
     return static_cast<int16_t>(steps);
 }
 
 void syncGaugeMenuValue() {
-    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_display_um());
+    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_base_lcd_um());
 }
 
 uint8_t visibleMenuCountByNumber(uint8_t menuNum) {
@@ -582,6 +726,17 @@ void apiPrintDevice() {
     jsonPrintQuoted(controller_board_target_name());
     Serial.print(",\"board\":");
     jsonPrintQuoted(controller_board_display_name());
+    const ControllerBoardBurrGapInput& burrGapInput = controller_board_burr_gap_input();
+    const bool hasBurrGapInput = controller_board_has_burr_gap_input();
+    Serial.print(",\"burrGapInput\":{\"enabled\":");
+    Serial.print(hasBurrGapInput ? "true" : "false");
+    Serial.print(",\"clockGpio\":");
+    Serial.print(hasBurrGapInput ? static_cast<int>(burrGapInput.clock) : -1);
+    Serial.print(",\"dataGpio\":");
+    Serial.print(hasBurrGapInput ? static_cast<int>(burrGapInput.data) : -1);
+    Serial.print(",\"mapping\":");
+    jsonPrintQuoted(hasBurrGapInput && burrGapInput.headerLabel != nullptr ? burrGapInput.headerLabel : "");
+    Serial.print("}");
     Serial.print(",\"mac\":");
     jsonPrintQuoted(stableDeviceMacAddress());
     Serial.print(",\"firmwareVersion\":");
@@ -730,6 +885,122 @@ void apiPrintAck(const char* cmd, bool ok, const char* message = nullptr) {
     Serial.println("}");
 }
 
+void apiPrintGaugeProbe(uint16_t durationMs, uint8_t clkPin, uint8_t dataPin) {
+    const GaugeProbeResult result = runGaugeProbe(clkPin, dataPin, durationMs);
+    Serial.print("{\"type\":\"gauge_probe\",\"durationMs\":");
+    Serial.print(static_cast<unsigned>(durationMs));
+    Serial.print(",\"clkGpio\":");
+    Serial.print(static_cast<unsigned>(clkPin));
+    Serial.print(",\"dataGpio\":");
+    Serial.print(static_cast<unsigned>(dataPin));
+    Serial.print(",\"samples\":");
+    Serial.print(static_cast<unsigned long>(result.samples));
+    Serial.print(",\"clkInitial\":");
+    Serial.print(static_cast<unsigned>(result.initialClk));
+    Serial.print(",\"clkFinal\":");
+    Serial.print(static_cast<unsigned>(result.finalClk));
+    Serial.print(",\"dataInitial\":");
+    Serial.print(static_cast<unsigned>(result.initialData));
+    Serial.print(",\"dataFinal\":");
+    Serial.print(static_cast<unsigned>(result.finalData));
+    Serial.print(",\"clkTransitions\":");
+    Serial.print(static_cast<unsigned long>(result.clkTransitions));
+    Serial.print(",\"clkRising\":");
+    Serial.print(static_cast<unsigned long>(result.clkRising));
+    Serial.print(",\"clkFalling\":");
+    Serial.print(static_cast<unsigned long>(result.clkFalling));
+    Serial.print(",\"dataTransitions\":");
+    Serial.print(static_cast<unsigned long>(result.dataTransitions));
+    Serial.print(",\"frames\":");
+    Serial.print(static_cast<unsigned long>(result.frames));
+    Serial.print(",\"validFrames\":");
+    Serial.print(static_cast<unsigned long>(result.validFrames));
+    Serial.print(",\"lastFrame\":\"0x");
+    char frameHex[9];
+    snprintf(frameHex, sizeof(frameHex), "%06lX", static_cast<unsigned long>(result.lastFrame & 0x00FFFFFFUL));
+    Serial.print(frameHex);
+    Serial.print("\",\"lastUm\":");
+    Serial.print(static_cast<long>(result.lastUm));
+    Serial.print(",\"mappedHeader\":");
+    const char* header = nullptr;
+    uint8_t mappedClk = 0;
+    uint8_t mappedData = 0;
+    const bool matchesMapping =
+        defaultGaugeProbeMapping(&mappedClk, &mappedData, &header) &&
+        mappedClk == clkPin &&
+        mappedData == dataPin;
+    jsonPrintQuoted(matchesMapping && header != nullptr ? header : "custom GPIOs");
+    Serial.println("}");
+}
+
+void apiPrintGaugeProbeAuto(uint16_t durationMs) {
+    uint8_t pinA = 0;
+    uint8_t pinB = 0;
+    const char* header = nullptr;
+    if(!defaultGaugeProbeMapping(&pinA, &pinB, &header)) {
+        apiPrintAck("gauge_probe", false, "no burr gap GPIO mapping for this controller");
+        return;
+    }
+
+    const GaugeProbeResult aClk = runGaugeProbe(pinA, pinB, durationMs);
+    const GaugeProbeResult bClk = runGaugeProbe(pinB, pinA, durationMs);
+    const bool preferA =
+        aClk.validFrames > bClk.validFrames ||
+        (aClk.validFrames == bClk.validFrames && aClk.frames > bClk.frames) ||
+        (aClk.validFrames == bClk.validFrames && aClk.frames == bClk.frames && aClk.clkFalling > bClk.clkFalling);
+
+    Serial.print("{\"type\":\"gauge_probe_auto\",\"durationMs\":");
+    Serial.print(static_cast<unsigned>(durationMs));
+    Serial.print(",\"mappedHeader\":");
+    jsonPrintQuoted(header);
+    Serial.print(",\"candidateA\":{\"clkGpio\":");
+    Serial.print(static_cast<unsigned>(pinA));
+    Serial.print(",\"dataGpio\":");
+    Serial.print(static_cast<unsigned>(pinB));
+    Serial.print(",\"clkTransitions\":");
+    Serial.print(static_cast<unsigned long>(aClk.clkTransitions));
+    Serial.print(",\"dataTransitions\":");
+    Serial.print(static_cast<unsigned long>(aClk.dataTransitions));
+    Serial.print(",\"frames\":");
+    Serial.print(static_cast<unsigned long>(aClk.frames));
+    Serial.print(",\"validFrames\":");
+    Serial.print(static_cast<unsigned long>(aClk.validFrames));
+    Serial.print(",\"lastFrame\":\"0x");
+    char frameHex[9];
+    snprintf(frameHex, sizeof(frameHex), "%06lX", static_cast<unsigned long>(aClk.lastFrame & 0x00FFFFFFUL));
+    Serial.print(frameHex);
+    Serial.print("\",\"lastUm\":");
+    Serial.print(static_cast<long>(aClk.lastUm));
+    Serial.print("},\"candidateB\":{\"clkGpio\":");
+    Serial.print(static_cast<unsigned>(pinB));
+    Serial.print(",\"dataGpio\":");
+    Serial.print(static_cast<unsigned>(pinA));
+    Serial.print(",\"clkTransitions\":");
+    Serial.print(static_cast<unsigned long>(bClk.clkTransitions));
+    Serial.print(",\"dataTransitions\":");
+    Serial.print(static_cast<unsigned long>(bClk.dataTransitions));
+    Serial.print(",\"frames\":");
+    Serial.print(static_cast<unsigned long>(bClk.frames));
+    Serial.print(",\"validFrames\":");
+    Serial.print(static_cast<unsigned long>(bClk.validFrames));
+    Serial.print(",\"lastFrame\":\"0x");
+    snprintf(frameHex, sizeof(frameHex), "%06lX", static_cast<unsigned long>(bClk.lastFrame & 0x00FFFFFFUL));
+    Serial.print(frameHex);
+    Serial.print("\",\"lastUm\":");
+    Serial.print(static_cast<long>(bClk.lastUm));
+    Serial.print("},\"recommended\":\"");
+    if(preferA) {
+        Serial.print("A");
+    } else {
+        Serial.print("B");
+    }
+    Serial.print("\",\"recommendedClkGpio\":");
+    Serial.print(static_cast<unsigned>(preferA ? pinA : pinB));
+    Serial.print(",\"recommendedDataGpio\":");
+    Serial.print(static_cast<unsigned>(preferA ? pinB : pinA));
+    Serial.println("}");
+}
+
 void apiPrintStatus() {
     String connectedName;
     String connectedMac;
@@ -802,10 +1073,14 @@ void apiPrintStatus() {
     Serial.print(burr_gap_has_value() ? "true" : "false");
     Serial.print(",\"burrGapLive\":");
     Serial.print(burr_gap_live() ? "true" : "false");
+    Serial.print(",\"burrGapManualBase\":");
+    Serial.print(burr_gap_manual_base_set() ? "true" : "false");
     Serial.print(",\"burrGapUm\":");
-    Serial.print(static_cast<long>(burr_gap_display_um()));
+    Serial.print(static_cast<long>(burr_gap_display_lcd_um()));
     Serial.print(",\"burrGapRawUm\":");
     Serial.print(static_cast<long>(burr_gap_raw_um()));
+    Serial.print(",\"burrGapBaseUm\":");
+    Serial.print(static_cast<long>(burr_gap_base_lcd_um()));
     Serial.print(",\"burrGapOffsetUm\":");
     Serial.print(static_cast<long>(burr_gap_offset_um()));
     Serial.print(",\"setWeight\":");
@@ -1042,7 +1317,7 @@ bool apiSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t requestedValue, c
             }
         }
         if(itemIdx == Menu1Items::GAUGESET) {
-            burr_gap_set_current_gap_um(static_cast<int32_t>(Menu1[itemIdx].value) * 10);
+            burr_gap_set_base_um(static_cast<int32_t>(Menu1[itemIdx].value) * 10);
         } else {
             persistMenuValue(menuNum, itemIdx);
         }
@@ -1385,10 +1660,14 @@ void appendStatusJson(String& out) {
     out += burr_gap_has_value() ? "true" : "false";
     out += ",\"burrGapLive\":";
     out += burr_gap_live() ? "true" : "false";
+    out += ",\"burrGapManualBase\":";
+    out += burr_gap_manual_base_set() ? "true" : "false";
     out += ",\"burrGapUm\":";
-    out += String(static_cast<long>(burr_gap_display_um()));
+    out += String(static_cast<long>(burr_gap_display_lcd_um()));
     out += ",\"burrGapRawUm\":";
     out += String(static_cast<long>(burr_gap_raw_um()));
+    out += ",\"burrGapBaseUm\":";
+    out += String(static_cast<long>(burr_gap_base_lcd_um()));
     out += ",\"burrGapOffsetUm\":";
     out += String(static_cast<long>(burr_gap_offset_um()));
     out += ",\"setWeight\":";
@@ -1536,7 +1815,7 @@ void printStatus() {
         motor_get_effective_set_rpm(),
         motor_currentRPM,
         motor_currentTorque,
-        static_cast<long>(burr_gap_display_um()),
+        static_cast<long>(burr_gap_display_lcd_um()),
         burr_gap_live() ? "yes" : "no",
         static_cast<unsigned long>(setWeight),
         static_cast<long>(currentWeight),
@@ -2110,6 +2389,65 @@ void handleLineCommand(char* line) {
 
         if(strcmp(subcmd, "status") == 0) {
             apiPrintStatus();
+            return;
+        }
+
+        if(strcmp(subcmd, "gauge_probe") == 0) {
+            uint32_t duration = kGaugeProbeDefaultMs;
+            uint8_t clkPin = 0;
+            uint8_t dataPin = 0;
+            bool usingDefaultMapping = defaultGaugeProbeMapping(&clkPin, &dataPin, nullptr);
+
+            char* firstArg = strtok_r(nullptr, " \t", &savePtr);
+            if(firstArg != nullptr) {
+                if(strcmp(firstArg, "auto") == 0 || strcmp(firstArg, "both") == 0) {
+                    uint32_t requestedDuration = duration;
+                    char* durationArg = strtok_r(nullptr, " \t", &savePtr);
+                    if(durationArg != nullptr && !parseUnsignedToken(durationArg, &requestedDuration)) {
+                        apiPrintAck("gauge_probe", false, "usage: api gauge_probe [auto [duration_ms] | duration_ms [clk_gpio data_gpio]]");
+                        return;
+                    }
+                    if(requestedDuration < kGaugeProbeMinMs) requestedDuration = kGaugeProbeMinMs;
+                    if(requestedDuration > kGaugeProbeMaxMs) requestedDuration = kGaugeProbeMaxMs;
+                    apiPrintGaugeProbeAuto(static_cast<uint16_t>(requestedDuration));
+                    return;
+                }
+
+                if(!parseUnsignedToken(firstArg, &duration)) {
+                    apiPrintAck("gauge_probe", false, "usage: api gauge_probe [auto [duration_ms] | duration_ms [clk_gpio data_gpio]]");
+                    return;
+                }
+
+                char* clkArg = strtok_r(nullptr, " \t", &savePtr);
+                char* dataArg = strtok_r(nullptr, " \t", &savePtr);
+                if(clkArg != nullptr || dataArg != nullptr) {
+                    uint32_t parsedClk = 0;
+                    uint32_t parsedData = 0;
+                    if(clkArg == nullptr || dataArg == nullptr ||
+                       !parseUnsignedToken(clkArg, &parsedClk) ||
+                       !parseUnsignedToken(dataArg, &parsedData) ||
+                       !gpioProbePinValid(parsedClk) ||
+                       !gpioProbePinValid(parsedData)) {
+                        apiPrintAck("gauge_probe", false, "usage: api gauge_probe [auto [duration_ms] | duration_ms [clk_gpio data_gpio]]");
+                        return;
+                    }
+                    clkPin = static_cast<uint8_t>(parsedClk);
+                    dataPin = static_cast<uint8_t>(parsedData);
+                    usingDefaultMapping = true;
+                }
+            }
+
+            if(!usingDefaultMapping) {
+                apiPrintAck("gauge_probe", false, "no burr gap GPIO mapping for this controller");
+                return;
+            }
+            if(duration < kGaugeProbeMinMs) duration = kGaugeProbeMinMs;
+            if(duration > kGaugeProbeMaxMs) duration = kGaugeProbeMaxMs;
+            if(!gpioProbePinValid(clkPin) || !gpioProbePinValid(dataPin)) {
+                apiPrintAck("gauge_probe", false, "invalid GPIO");
+                return;
+            }
+            apiPrintGaugeProbe(static_cast<uint16_t>(duration), clkPin, dataPin);
             return;
         }
 

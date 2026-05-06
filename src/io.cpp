@@ -354,7 +354,7 @@ void openAboutInfo(States returnState) {
 }
 
 int16_t gaugeMenuValueFromUm(int32_t gapUm) {
-    int32_t steps = gapUm >= 0 ? (gapUm + 5) / 10 : (gapUm - 5) / 10;
+    int32_t steps = gapUm / 10;
     if(steps > Menu1[Menu1Items::GAUGESET].maxValue) steps = Menu1[Menu1Items::GAUGESET].maxValue;
     if(steps < Menu1[Menu1Items::GAUGESET].minValue) steps = Menu1[Menu1Items::GAUGESET].minValue;
     return static_cast<int16_t>(steps);
@@ -365,7 +365,7 @@ int32_t gaugeMenuValueToUm(int16_t value) {
 }
 
 void syncGaugeSetMenuValue() {
-    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_display_um());
+    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_base_lcd_um());
 }
 }
 
@@ -660,7 +660,7 @@ void do_io() {
                 startCalibrationFromMenu(notReleasedYet);
             } else if(menu1Selected == Menu1Items::GAUGESET) {
                 enterMenu = false;
-                burr_gap_set_current_gap_um(gaugeMenuValueToUm(Menu1[Menu1Items::GAUGESET].value));
+                burr_gap_set_base_um(gaugeMenuValueToUm(Menu1[Menu1Items::GAUGESET].value));
                 display_show_action_feedback("Gap set");
             } else { 
                 enterMenu = false;

@@ -1571,18 +1571,7 @@ static String formatControllerTime() {
 }
 
 static String formatGaugeSetMenuValue(int16_t value) {
-    const bool negative = value < 0;
-    const int32_t magnitude = negative ? -static_cast<int32_t>(value) : value;
-    const int32_t whole = magnitude / 100;
-    const int32_t decimal = magnitude % 100;
-    char text[18];
-    snprintf(text,
-             sizeof(text),
-             "%s%ld.%02ld",
-             negative ? "-" : "",
-             static_cast<long>(whole),
-             static_cast<long>(decimal));
-    return String(text);
+    return String(static_cast<long>(value) * 10L);
 }
 
 static String clippedInfoValue(const String& value, uint8_t maxLen) {
@@ -2197,7 +2186,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
 
           // Measure unit
           int16_t x1u, y1u; uint16_t wu, hu;
-	          const char* unitText = gaugeSetValue ? "mm" : (item.unit ? item.unit : "");
+	          const char* unitText = gaugeSetValue ? "um" : (item.unit ? item.unit : "");
 	          tft->getTextBounds(unitText, 0, 0, &x1u, &y1u, &wu, &hu);
 
           // Total width to center

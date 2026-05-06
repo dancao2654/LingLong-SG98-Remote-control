@@ -86,14 +86,14 @@ bool finishCommand(bool ok) {
 }
 
 int16_t gaugeMenuValueFromUm(int32_t gapUm) {
-    int32_t steps = gapUm >= 0 ? (gapUm + 5) / 10 : (gapUm - 5) / 10;
+    int32_t steps = gapUm / 10;
     if(steps > Menu1[Menu1Items::GAUGESET].maxValue) steps = Menu1[Menu1Items::GAUGESET].maxValue;
     if(steps < Menu1[Menu1Items::GAUGESET].minValue) steps = Menu1[Menu1Items::GAUGESET].minValue;
     return static_cast<int16_t>(steps);
 }
 
 void syncGaugeMenuValue() {
-    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_display_um());
+    Menu1[Menu1Items::GAUGESET].value = gaugeMenuValueFromUm(burr_gap_base_lcd_um());
 }
 
 const char* commTextCompact(COMM_STATUS value) {
@@ -229,7 +229,7 @@ bool handleActionCommand(const String& rawAction, String* message) {
 
 String remote_link_build_status_frame() {
     String out;
-    out.reserve(192);
+    out.reserve(224);
     out += sg98_protocol::kFrameStatus;
     out += sg98_protocol::kFrameSeparator;
     out += stateTextCompact(state);
@@ -275,6 +275,14 @@ String remote_link_build_status_frame() {
     out += controller_env_time_valid() ? '1' : '0';
     out += sg98_protocol::kFrameSeparator;
     out += controller_env_weather_valid() ? '1' : '0';
+    out += sg98_protocol::kFrameSeparator;
+    out += burr_gap_enabled() ? '1' : '0';
+    out += sg98_protocol::kFrameSeparator;
+    out += burr_gap_has_value() ? '1' : '0';
+    out += sg98_protocol::kFrameSeparator;
+    out += burr_gap_live() ? '1' : '0';
+    out += sg98_protocol::kFrameSeparator;
+    out += String(static_cast<long>(burr_gap_display_lcd_um()));
     return out;
 }
 

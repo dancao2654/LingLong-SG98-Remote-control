@@ -37,12 +37,19 @@ constexpr ControllerBoardPins kAdafruitPins = {
     GPIO_NUM_16,
 };
 
+constexpr ControllerBoardBurrGapInput kAdafruitBurrGapInput = {
+    9,
+    8,
+    "controller EX_I2C: CLK=GPIO9/SCL DATA=GPIO8/SDA",
+};
+
 constexpr ControllerBoardInfo kAdafruitBoard = {
     ControllerBoardId::AdafruitFeather,
     "controller_box",
     "Adafruit Feather Controller",
     kAdafruitFeatures,
     kAdafruitPins,
+    kAdafruitBurrGapInput,
 };
 
 constexpr ControllerBoardFeatures kHeadlessSimFeatures = {
@@ -59,6 +66,7 @@ constexpr ControllerBoardInfo kAdafruitHeadlessSimBoard = {
     "Adafruit Feather Headless Simulation",
     kHeadlessSimFeatures,
     kAdafruitPins,
+    kAdafruitBurrGapInput,
 };
 
 constexpr ControllerBoardFeatures kWaveshareFeatures = {
@@ -93,12 +101,19 @@ constexpr ControllerBoardPins kWavesharePins = {
     GPIO_NUM_21,
 };
 
+constexpr ControllerBoardBurrGapInput kWaveshareBurrGapInput = {
+    1,
+    2,
+    "waveshare EXIO: CLK=O1/GPIO1 DATA=O2/GPIO2",
+};
+
 constexpr ControllerBoardInfo kWaveshareBoard = {
     ControllerBoardId::WaveshareRs485Can,
     "waveshare_rs485_can",
     "Waveshare RS485/CAN Controller",
     kWaveshareFeatures,
     kWavesharePins,
+    kWaveshareBurrGapInput,
 };
 
 constexpr uint32_t kControllerBoxFlashBytes = 8U * 1024U * 1024U;
@@ -184,6 +199,10 @@ const ControllerBoardFeatures& controller_board_features() {
 
 const ControllerBoardPins& controller_board_pins() {
     return controller_board_info().pins;
+}
+
+const ControllerBoardBurrGapInput& controller_board_burr_gap_input() {
+    return controller_board_info().burrGap;
 }
 
 const char* controller_board_target_name() {

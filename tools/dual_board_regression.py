@@ -11,12 +11,20 @@ import serial
 
 
 # Current Mac bench wiring:
-# remote: /dev/cu.usbmodem21201, USB serial 1C:DB:D4:7B:67:94
-# controller: /dev/cu.usbmodem21101, USB serial FC:01:2C:D6:38:BC
+# remote: auto-detected from `api device`
+# controller: auto-detected from `api device`
 DEFAULT_REMOTE_PORT = "auto"
 DEFAULT_CONTROLLER_PORT = "auto"
 DEFAULT_CONTROLLER_MAC = "auto"
 FALLBACK_CONTROLLER_MAC = "FC:01:2C:D6:38:BC"
+
+MENU1_RADIO_MODE = 12
+MENU1_SLEEP_TIME = 14
+MENU2_AUTO_PURGE_ENABLED = 1
+MENU3_GBW_RPM_SET = 1
+RADIO_WIFI = 0
+RADIO_ESPNOW = 1
+RADIO_OFF = 2
 
 
 class TestFailure(RuntimeError):
@@ -27,7 +35,7 @@ class SerialConsole:
     def __init__(self, label, port, baudrate=115200, timeout=0.2):
         self.label = label
         self.port = port
-        self.ser = serial.Serial(port, baudrate, timeout=timeout)
+        self.ser = serial.Serial(port, baudrate, timeout=timeout, dsrdtr=True, rtscts=False)
         self.log = deque(maxlen=200)
         self.timings = []
 
@@ -176,6 +184,9 @@ class DualBoardRegression:
     def controller_snapshot(self):
         return self.controller.request_controller_snapshot()
 
+    def controller_wifi(self):
+        return self.controller.request_json("api wifi", None)
+
     def controller_menu_value(self, snapshot, menu_num, item_idx):
         return snapshot["menus"][menu_num]["items"][item_idx]["value"]
 
@@ -199,6 +210,28 @@ class DualBoardRegression:
         if last_error is not None:
             self.fail(f"{description} failed: {last_error}")
         self.fail(f"timeout waiting for {description}")
+
+    def probe_controller_ap(self, label):
+        wifi = self.controller_wifi()
+        ssid = wifi.get("apSsid")
+        self.expect(wifi.get("apRunning") is True and ssid,
+                    f"{label}: controller AP is not running: {wifi}")
+        self.remote_command_ok(f"wifi probe {ssid} 192.168.4.1 /hotspot-detect.html")
+
+    def establish_espnow_link(self, timeout=35.0):
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_ESPNOW}")
+        self.remote_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_ESPNOW}")
+        self.remote_command_ok("transport espnow")
+        self.remote_command_ok("peer lock " + self.controller_mac)
+        status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=timeout)
+        self.expect(status.get("lockedPeerConfigured") is True,
+                    f"remote did not persist locked controller peer: {status}")
+        self.expect(status.get("lockedPeer") == self.controller_mac,
+                    f"remote locked peer mismatch: expected {self.controller_mac}, got {status}")
+        controller_status = self.controller_status()
+        self.expect(controller_status["radioMode"] == "ESP-NOW",
+                    f"controller did not stay in ESP-NOW mode: {controller_status}")
+        return status
 
     def controller_command_ok(self, command, ack_cmd=None):
         expected_cmd = ack_cmd or command.split()[1]
@@ -225,10 +258,10 @@ class DualBoardRegression:
         snap = self.controller_snapshot()
         status = snap["status"]
         self.original = {
-            "radio_mode": self.controller_menu_value(snap, 1, 4),
-            "sleep_time": self.controller_menu_value(snap, 1, 5),
-            "purge_auto": self.controller_menu_value(snap, 2, 1),
-            "gbw_rpm": self.controller_menu_value(snap, 3, 1),
+            "radio_mode": self.controller_menu_value(snap, 1, MENU1_RADIO_MODE),
+            "sleep_time": self.controller_menu_value(snap, 1, MENU1_SLEEP_TIME),
+            "purge_auto": self.controller_menu_value(snap, 2, MENU2_AUTO_PURGE_ENABLED),
+            "gbw_rpm": self.controller_menu_value(snap, 3, MENU3_GBW_RPM_SET),
             "rpm": status["setRPM"],
             "weight": status["setWeight"],
             "state": status["state"],
@@ -237,21 +270,21 @@ class DualBoardRegression:
     def restore_original_state(self):
         if not self.original:
             return
-        self.controller_command_ok(f"api set 1 5 {self.original['sleep_time']}")
-        self.controller_command_ok(f"api set 2 1 {self.original['purge_auto']}")
-        self.controller_command_ok(f"api set 3 1 {self.original['gbw_rpm']}")
+        self.controller_command_ok(f"api set 1 {MENU1_SLEEP_TIME} {self.original['sleep_time']}")
+        self.controller_command_ok(f"api set 2 {MENU2_AUTO_PURGE_ENABLED} {self.original['purge_auto']}")
+        self.controller_command_ok(f"api set 3 {MENU3_GBW_RPM_SET} {self.original['gbw_rpm']}")
         self.controller_command_ok(f"api setrpm {self.original['rpm']}", ack_cmd="setrpm")
         self.controller_command_ok(f"api setweight {self.original['weight']}", ack_cmd="setweight")
         if self.original["state"] == "IDLE_GBW":
             self.controller_command_ok("api action idle_gbw", ack_cmd="action")
         else:
             self.controller_command_ok("api action idle", ack_cmd="action")
-        self.controller_command_ok(f"api set 1 4 {self.original['radio_mode']}")
-        if self.original["radio_mode"] == 0:
-            self.remote_command_ok("transport ws")
-        else:
-            self.remote_command_ok("peer lock " + self.controller_mac)
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {self.original['radio_mode']}")
+        if self.original["radio_mode"] == RADIO_ESPNOW:
             self.remote_command_ok("transport espnow")
+            self.remote_command_ok("peer lock " + self.controller_mac)
+        elif self.original["radio_mode"] == RADIO_WIFI:
+            self.remote_command_ok("transport ws")
 
     def reset_network_for_factory_test(self):
         print("== Factory/no-info reset ==")
@@ -259,12 +292,12 @@ class DualBoardRegression:
         self.remote_command_ok("peer clear")
         self.controller_command_ok("api action reset_network", ack_cmd="action")
         self.controller_command_ok("api action idle", ack_cmd="action")
-        self.controller_command_ok("api set 1 4 1")
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_ESPNOW}")
         self.remote_command_ok("transport espnow")
 
     def fresh_discovery_suite(self):
         print("== ESP-NOW-first no-info discovery suite ==")
-        self.controller_command_ok("api set 1 4 1")
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_ESPNOW}")
         self.remote_command_ok("api action reset_network")
         self.remote_command_ok("peer clear")
         self.remote_command_ok("transport espnow")
@@ -284,47 +317,17 @@ class DualBoardRegression:
         print("== Web mode matrix suite ==")
         self.controller_command_ok("api action reset_network", ack_cmd="action")
 
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_WIFI}")
         controller_status = self.controller_status()
-        if controller_status.get("remoteRecoveryRequired"):
-            payload = self.controller_command_expect_fail("api set 1 4 0", ack_cmd="set")
-            self.expect("web-only" in payload.get("message", "").lower(),
-                        f"headless WEB-only rejection message was unexpected: {payload}")
-            controller_status = self.controller_status()
-            self.expect(controller_status["radioMode"] != "WEB",
-                        f"headless controller must not enter WEB-only mode: {controller_status}")
-        else:
-            self.controller_command_ok("api set 1 4 0")
-            controller_status = self.controller_status()
-            self.expect(controller_status["radioMode"] == "WEB" and controller_status["radioStatus"] == "AP only",
-                        f"plain WEB mode should be AP/Wi-Fi only, not dual: {controller_status}")
-            self.remote_command_ok("peer clear")
-            self.remote_command_ok("transport espnow")
-            time.sleep(6.0)
-            remote_status = self.remote_status()
-            self.expect(remote_status["transport"] == "ESP-NOW" and not remote_status["linkOnline"],
-                        f"plain WEB-only should not pretend ESP-NOW is reachable: {remote_status}")
+        self.expect(controller_status["radioMode"] == "WiFi" and "AP" in controller_status["radioStatus"],
+                    f"controller should expose Wi-Fi/AP recovery mode: {controller_status}")
+        self.probe_controller_ap("Wi-Fi/AP recovery")
 
-        self.controller_command_ok("api set 1 4 3")
-        controller_status = self.controller_status()
-        self.expect(controller_status["radioMode"] == "WEB+ESP",
-                    f"controller should enter WEB+ESP for web GUI/recovery: {controller_status}")
-        self.remote_command_ok("transport espnow")
-        self.remote_command_ok("peer scan")
-        remote_status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=35.0)
-        time.sleep(6.0)
-        controller_status = self.controller_status()
-        self.expect(controller_status["radioMode"] == "WEB+ESP" and "AP only" in controller_status["radioStatus"],
-                    f"WEB+ESP should keep the web GUI/recovery AP available while ESP-NOW is online: {controller_status}")
-        remote_status = self.remote_status()
-        self.expect(remote_status["wifi"]["active"] is False,
-                    f"remote Wi-Fi should stay off while using controller WEB+ESP over ESP-NOW: {remote_status}")
-        self.load_probe("WEB+ESP web GUI / recovery")
-
-        self.controller_command_ok("api set 1 4 1")
-        remote_status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=15.0)
+        self.establish_espnow_link(timeout=35.0)
         controller_status = self.controller_status()
         self.expect(controller_status["radioMode"] == "ESP-NOW",
                     f"explicit ESP-NOW mode should turn controller Wi-Fi/AP off: {controller_status}")
+        remote_status = self.remote_status()
         self.expect(remote_status["wifi"]["active"] is False,
                     f"remote Wi-Fi should remain off in explicit ESP-NOW mode: {remote_status}")
 
@@ -335,27 +338,24 @@ class DualBoardRegression:
             return
 
         print("== Full-size controller-only suite ==")
-        self.controller_command_ok("api set 1 4 1")
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_ESPNOW}")
         self.remote_command_ok("transport ws")
         time.sleep(8.0)
         controller_status = self.controller_status()
         self.expect(controller_status["radioMode"] == "ESP-NOW" and not controller_status["remoteRecoveryRequired"],
                     f"full-size controller-only should remain locally usable in ESP-NOW mode: {controller_status}")
 
-        self.controller_command_ok("api set 1 4 3")
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_WIFI}")
         controller_status = self.controller_status()
-        self.expect(controller_status["radioMode"] == "WEB+ESP",
-                    f"full-size controller-only should allow local WEB+ESP for phone UI: {controller_status}")
+        self.expect(controller_status["radioMode"] == "WiFi",
+                    f"full-size controller-only should allow local Wi-Fi for phone UI: {controller_status}")
 
-        self.controller_command_ok("api set 1 4 2")
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_OFF}")
         controller_status = self.controller_status()
-        self.expect(controller_status["radioMode"] == "OFF",
+        self.expect(controller_status["radioMode"] == "Radio Off",
                     f"full-size controller-only should allow OFF because local recovery exists: {controller_status}")
 
-        self.controller_command_ok("api set 1 4 1")
-        self.remote_command_ok("transport espnow")
-        self.remote_command_ok("peer scan")
-        self.wait_remote_transport("ESP-NOW", require_online=True, timeout=35.0)
+        self.establish_espnow_link(timeout=35.0)
 
     def headless_espnow_fallback_suite(self):
         status = self.controller_status()
@@ -364,20 +364,32 @@ class DualBoardRegression:
             return
 
         print("== Headless ESP-NOW fallback suite ==")
-        self.controller_command_ok("api set 1 4 3")
-        self.controller_command_ok("api set 1 4 1")
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_WIFI}")
+        self.wait_until(
+            "controller Wi-Fi mode before fallback",
+            lambda: (lambda s: s if s["radioMode"] == "WiFi" else None)(self.controller_status()),
+            timeout=15.0,
+            interval=0.5,
+        )
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_ESPNOW}")
+        self.wait_until(
+            "fresh controller ESP-NOW mode before fallback",
+            lambda: (lambda s: s if s["radioMode"] == "ESP-NOW" else None)(self.controller_status()),
+            timeout=15.0,
+            interval=0.5,
+        )
+        self.remote_command_ok("peer clear")
         self.remote_command_ok("transport ws")
         recovered = self.wait_until(
-            "headless ESP-NOW boot fallback to WEB+ESP",
-            lambda: (lambda s: s if s["radioMode"] == "WEB+ESP" and s.get("radioRecovery") else None)(self.controller_status()),
+            "headless ESP-NOW boot fallback to Wi-Fi recovery",
+            lambda: (lambda s: s if s["radioMode"] == "WiFi" and s.get("radioRecovery") else None)(self.controller_status()),
             timeout=75.0,
             interval=1.0,
         )
-        self.expect(recovered["radioMode"] == "WEB+ESP",
-                    f"headless controller did not fall back to WEB+ESP recovery: {recovered}")
-        self.remote_command_ok("transport espnow")
-        self.remote_command_ok("peer scan")
-        self.wait_remote_transport("ESP-NOW", require_online=True, timeout=35.0)
+        self.expect(recovered["radioMode"] == "WiFi",
+                    f"headless controller did not fall back to Wi-Fi recovery: {recovered}")
+        self.probe_controller_ap("Headless ESP-NOW fallback")
+        self.establish_espnow_link(timeout=35.0)
         self.load_probe("Headless ESP-NOW fallback")
 
     def wait_remote_transport(self, expected_transport, require_online=False, timeout=20.0):
@@ -450,11 +462,8 @@ class DualBoardRegression:
         return self.wait_until(f"remote menu {menu_num}/{item_idx} == {value}", check, timeout=timeout)
 
     def espnow_suite(self):
-        print("== ESP-NOW suite ==")
-        self.controller_command_ok("api set 1 4 1")
-        self.remote_command_ok("peer lock " + self.controller_mac)
-        self.remote_command_ok("transport espnow")
-        self.wait_remote_transport("ESP-NOW", require_online=True)
+        print("== ESP-NOW remote UI/API path suite ==")
+        self.establish_espnow_link()
         self.remote_command_ok("raw GET_MENU=4")
         self.wait_remote_menu(4, 5, 0)
 
@@ -475,22 +484,22 @@ class DualBoardRegression:
         self.wait_remote_status_field("controller.setWeightMg", 21000)
 
         new_sleep = 125 if self.original["sleep_time"] != 125 else 120
-        self.remote_command_ok(f"api set 1 5 {new_sleep}")
-        self.wait_controller_menu(1, 5, new_sleep)
-        self.wait_remote_menu(1, 5, new_sleep)
+        self.remote_command_ok(f"api set 1 {MENU1_SLEEP_TIME} {new_sleep}")
+        self.wait_controller_menu(1, MENU1_SLEEP_TIME, new_sleep)
+        self.wait_remote_menu(1, MENU1_SLEEP_TIME, new_sleep)
 
         new_purge_auto = 0 if self.original["purge_auto"] else 1
-        self.remote_command_ok(f"api set 2 1 {new_purge_auto}")
-        self.wait_controller_menu(2, 1, new_purge_auto)
-        self.wait_remote_menu(2, 1, new_purge_auto)
+        self.remote_command_ok(f"api set 2 {MENU2_AUTO_PURGE_ENABLED} {new_purge_auto}")
+        self.wait_controller_menu(2, MENU2_AUTO_PURGE_ENABLED, new_purge_auto)
+        self.wait_remote_menu(2, MENU2_AUTO_PURGE_ENABLED, new_purge_auto)
 
         new_gbw_rpm = 325 if self.original["gbw_rpm"] != 325 else 350
-        self.remote_command_ok(f"api set 3 1 {new_gbw_rpm}")
-        self.wait_controller_menu(3, 1, new_gbw_rpm)
-        self.wait_remote_menu(3, 1, new_gbw_rpm)
+        self.remote_command_ok(f"api set 3 {MENU3_GBW_RPM_SET} {new_gbw_rpm}")
+        self.wait_controller_menu(3, MENU3_GBW_RPM_SET, new_gbw_rpm)
+        self.wait_remote_menu(3, MENU3_GBW_RPM_SET, new_gbw_rpm)
 
-        self.controller_command_ok("api set 2 1 " + str(self.original["purge_auto"]))
-        self.wait_remote_menu(2, 1, self.original["purge_auto"])
+        self.controller_command_ok(f"api set 2 {MENU2_AUTO_PURGE_ENABLED} " + str(self.original["purge_auto"]))
+        self.wait_remote_menu(2, MENU2_AUTO_PURGE_ENABLED, self.original["purge_auto"])
 
         self.remote_command_ok("api action idle_gbw")
         self.wait_controller_state("IDLE_GBW")
@@ -514,11 +523,11 @@ class DualBoardRegression:
 
     def websocket_suite(self):
         print("== WebSocket suite ==")
-        self.controller_command_ok("api set 1 4 0")
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_WIFI}")
         self.remote_command_ok("transport ws")
         self.wait_remote_transport("WebSocket", require_online=True, timeout=40.0)
         self.wait_remote_status_field("wsConnected", True, timeout=20.0)
-        self.wait_remote_menu(1, 4, 0, timeout=20.0)
+        self.wait_remote_menu(1, MENU1_RADIO_MODE, RADIO_WIFI, timeout=20.0)
         self.remote_command_ok("raw GET_MENU=4")
         self.wait_remote_menu(4, 5, 0, timeout=20.0)
 
@@ -535,9 +544,9 @@ class DualBoardRegression:
         self.remote_command_ok("api setweight 21500")
         self.wait_controller_weight(21500, timeout=20.0)
 
-        self.remote_command_ok("api set 1 5 130")
-        self.wait_controller_menu(1, 5, 130, timeout=20.0)
-        self.wait_remote_menu(1, 5, 130, timeout=20.0)
+        self.remote_command_ok(f"api set 1 {MENU1_SLEEP_TIME} 130")
+        self.wait_controller_menu(1, MENU1_SLEEP_TIME, 130, timeout=20.0)
+        self.wait_remote_menu(1, MENU1_SLEEP_TIME, 130, timeout=20.0)
 
         self.remote_command_ok("api action idle_gbw")
         self.wait_controller_state("IDLE_GBW", timeout=20.0)
@@ -563,12 +572,13 @@ class DualBoardRegression:
             return
 
         print("== Headless guard suite ==")
-        payload = self.controller_command_expect_fail("api set 1 4 2", ack_cmd="set")
+        payload = self.controller_command_expect_fail(f"api set 1 {MENU1_RADIO_MODE} {RADIO_OFF}", ack_cmd="set")
         self.expect("headless" in payload.get("message", "").lower(),
                     f"headless OFF rejection message was unexpected: {payload}")
         status = self.controller_status()
-        self.expect(status["radioDesiredMode"] != "OFF" and status["remoteRecoveryRequired"] is True,
+        self.expect(status["radioDesiredMode"] != "Radio Off" and status["remoteRecoveryRequired"] is True,
                     f"headless controller should reject OFF and require remote recovery: {status}")
+        self.establish_espnow_link()
         self.load_probe("Headless guard")
 
     def load_probe(self, label, samples=12):
@@ -644,7 +654,7 @@ def candidate_serial_ports():
 
 def read_json_response(port, command, expected_type=None, timeout=2.5):
     try:
-        with serial.Serial(port, 115200, timeout=0.2) as ser:
+        with serial.Serial(port, 115200, timeout=0.2, dsrdtr=True, rtscts=False) as ser:
             time.sleep(0.2)
             ser.reset_input_buffer()
             ser.write((command + "\n").encode("utf-8"))

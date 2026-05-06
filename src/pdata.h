@@ -21,5 +21,8 @@ int32_t pdata_read_burr_gap_last_um();
 void pdata_write_burr_gap_last_um(int32_t gapUm);
 int32_t pdata_read_burr_gap_offset_um();
 void pdata_write_burr_gap_offset_um(int32_t offsetUm);
+bool pdata_has_burr_gap_manual_base();
+bool pdata_read_burr_gap_manual_base();
+void pdata_write_burr_gap_manual_base(bool manual);
 
 #endif

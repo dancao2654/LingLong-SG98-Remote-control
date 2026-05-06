@@ -509,7 +509,7 @@ void detectDriveTypeIfNeeded(bool force) {
     lastProbeAt = millis();
     autoProbeDone = true;
     if (detectedType != motorDriveType) {
-        selectDriveType(detectedType, true);
+        selectDriveType(detectedType, false);
     }
     showProbeResult(detectedType);
 }

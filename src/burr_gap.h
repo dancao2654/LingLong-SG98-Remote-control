@@ -9,10 +9,15 @@ bool burr_gap_enabled();
 bool burr_gap_has_value();
 bool burr_gap_live();
 bool burr_gap_recently_tared();
+bool burr_gap_manual_base_set();
 
 int32_t burr_gap_display_um();
+int32_t burr_gap_display_lcd_um();
 int32_t burr_gap_raw_um();
+int32_t burr_gap_base_um();
+int32_t burr_gap_base_lcd_um();
 int32_t burr_gap_offset_um();
 uint32_t burr_gap_last_frame_ms();
 
+void burr_gap_set_base_um(int32_t gapUm);
 void burr_gap_set_current_gap_um(int32_t gapUm);

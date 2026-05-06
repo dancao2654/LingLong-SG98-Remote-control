@@ -54,6 +54,11 @@ struct StatusFrame {
   bool envSyncFieldsPresent = false;
   bool envTimeValid = false;
   bool envWeatherValid = false;
+  bool burrGapFieldsPresent = false;
+  bool burrGapEnabled = false;
+  bool burrGapKnown = false;
+  bool burrGapLive = false;
+  int32_t burrGapUm = 0;
 };
 
 struct MenuFrame {
@@ -340,6 +345,25 @@ inline bool parseStatusFrame(const String& frame, StatusFrame* out) {
      detail::parseIntToken(token, &parsed)) {
     out->envWeatherValid = parsed != 0;
     out->envSyncFieldsPresent = true;
+  }
+  if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
+    out->burrGapEnabled = parsed != 0;
+    out->burrGapFieldsPresent = true;
+  }
+  if(out->burrGapFieldsPresent &&
+     detail::nextToken(frame, start, kFrameSeparator, &token) &&
+     detail::parseIntToken(token, &parsed)) {
+    out->burrGapKnown = parsed != 0;
+  }
+  if(out->burrGapFieldsPresent &&
+     detail::nextToken(frame, start, kFrameSeparator, &token) &&
+     detail::parseIntToken(token, &parsed)) {
+    out->burrGapLive = parsed != 0;
+  }
+  if(out->burrGapFieldsPresent &&
+     detail::nextToken(frame, start, kFrameSeparator, &token) &&
+     detail::parseIntToken(token, &parsed)) {
+    out->burrGapUm = parsed;
   }
   return true;
 }

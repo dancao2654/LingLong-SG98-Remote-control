@@ -39,6 +39,7 @@ constexpr uint16_t kColorPanel = 0x10A3;
 constexpr uint16_t kColorPanelHi = 0x18E5;
 constexpr uint16_t kColorAccent = 0x2CF9;
 constexpr uint16_t kColorAccent2 = 0xFD20;
+constexpr uint16_t kColorGauge = kColorAccent2;
 constexpr uint16_t kColorWarn = 0xFD20;
 constexpr uint16_t kColorDanger = 0xF9C6;
 constexpr uint16_t kColorGood = 0x3D8A;
@@ -470,6 +471,11 @@ struct PersistedStatusFrame {
     bool enterMenu = false;
     int32_t jmcBaud = 0;
     int32_t preferredJmcBaud = 0;
+    bool burrGapFieldsPresent = false;
+    bool burrGapEnabled = false;
+    bool burrGapKnown = false;
+    bool burrGapLive = false;
+    int32_t burrGapUm = 0;
 };
 
 struct SleepSnapshot {
@@ -550,6 +556,7 @@ constexpr SettingItem kPurgeItems[] = {
 };
 
 constexpr SettingItem kGbwItems[] = {
+    {"Gauge Set", ItemKind::Value, 1, GAUGESET, -1200, 1200, 1, "um", nullptr, nullptr},
     {"Max RPM", ItemKind::Value, 1, SETMAX, absolute_min_rpm, absolute_max_rpm, rpm_scalar, "rpm", nullptr, nullptr},
     {"Min RPM", ItemKind::Value, 1, SETMIN, absolute_min_rpm, 500, rpm_scalar, "rpm", nullptr, nullptr},
     {"Motor torque", ItemKind::Value, 1, SETMOTORTORQUE, 1, 300, 1, "%", nullptr, nullptr},
@@ -557,7 +564,6 @@ constexpr SettingItem kGbwItems[] = {
     {"Motor direction", ItemKind::Toggle, 1, SETMOTORDIRECTION, 0, 1, 1, "", nullptr, nullptr},
     {"Drive", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "drive"},
     {"Calibrate", ItemKind::Action, 0, 0, 0, 0, 0, "", "calibrate", nullptr},
-    {"Gauge Set", ItemKind::Value, 1, GAUGESET, -1200, 1200, 1, "mm", nullptr, nullptr},
     {"GbW RPM", ItemKind::Value, 3, GBW_RPM_SET, 200, 1500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow RPM", ItemKind::Value, 3, GBW_SLOW_RPM, rpm_scalar, 500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow mg", ItemKind::Value, 3, GBW_SLOW_MG, 0, 6000, 100, "mg", nullptr, nullptr},
@@ -640,7 +646,7 @@ char g_consoleLineBuffer[384] = {};
 size_t g_consoleLineLen = 0;
 
 constexpr uint32_t kSleepSnapshotMagic = 0x53473938UL;
-constexpr uint16_t kSleepSnapshotVersion = 10;
+constexpr uint16_t kSleepSnapshotVersion = 11;
 constexpr uint16_t kSleepSnapshotVersionLegacyUiSoundsOff = 6;
 constexpr uint32_t kInteractiveLoopWaitMs = 4;
 constexpr uint32_t kAnimatingLoopWaitMs = 16;
@@ -1485,6 +1491,109 @@ String weightLabel(int32_t mg) {
     out += String(frac);
     out += " g";
     return out;
+}
+
+String homeGapValueLabel() {
+    if(!app.hasStatus || !app.status.burrGapFieldsPresent || !app.status.burrGapEnabled) {
+        return "-";
+    }
+    if(!app.status.burrGapKnown) {
+        return "--";
+    }
+    const int32_t wholeDisplayUm = (app.status.burrGapUm / 10) * 10;
+    return String(wholeDisplayUm);
+}
+
+String dockGapLine() {
+    if(!app.hasStatus || !app.status.burrGapFieldsPresent || !app.status.burrGapEnabled ||
+       !app.status.burrGapKnown) {
+        return "-- um";
+    }
+    return homeGapValueLabel() + " um";
+}
+
+void drawScaledGlyph(RemoteCanvas& canvas,
+                     int16_t x,
+                     int16_t y,
+                     const uint8_t* rows,
+                     uint8_t width,
+                     uint8_t height,
+                     uint8_t scale,
+                     uint16_t color) {
+    for(uint8_t row = 0; row < height; ++row) {
+        for(uint8_t col = 0; col < width; ++col) {
+            if((rows[row] & (1u << (width - 1 - col))) == 0) {
+                continue;
+            }
+            canvas.fillRect(static_cast<int16_t>(x + col * scale),
+                            static_cast<int16_t>(y + row * scale),
+                            scale,
+                            scale,
+                            color);
+        }
+    }
+}
+
+void drawMicronUnitIcon(RemoteCanvas& canvas,
+                        int16_t x,
+                        int16_t centerY,
+                        RemoteTextStyle style,
+                        uint16_t color) {
+    static constexpr uint8_t kMicronRows[] = {
+        0b00000,
+        0b10010,
+        0b10010,
+        0b10010,
+        0b10010,
+        0b11110,
+        0b10000,
+        0b10000,
+    };
+    static constexpr uint8_t kMeterRows[] = {
+        0b00000,
+        0b00000,
+        0b11010,
+        0b10101,
+        0b10101,
+        0b10101,
+        0b10101,
+        0b00000,
+    };
+    const uint8_t scale = textScale(style);
+    const int16_t y = static_cast<int16_t>(centerY - 4 * scale);
+    drawScaledGlyph(canvas, x, y, kMicronRows, 5, 8, scale, color);
+    drawScaledGlyph(canvas, static_cast<int16_t>(x + 6 * scale), y, kMeterRows, 5, 8, scale, color);
+}
+
+void drawGapReadout(RemoteCanvas& canvas,
+                    int16_t centerX,
+                    int16_t centerY,
+                    const String& value,
+                    RemoteTextStyle valueStyle,
+                    RemoteTextStyle unitStyle,
+                    uint16_t color,
+                    uint16_t bgColor) {
+    const uint8_t valueScale = textScale(valueStyle);
+    const uint8_t unitScale = textScale(unitStyle);
+    const bool showUnit = value != "-" && value != "--";
+    const int16_t unitW = showUnit ? static_cast<int16_t>(11 * unitScale) : 0;
+    const int16_t gap = showUnit ? static_cast<int16_t>(max<uint8_t>(4, 2 * valueScale)) : 0;
+    const int16_t numberW = estimatedTextWidth(value, valueStyle);
+    const int16_t totalW = static_cast<int16_t>(numberW + gap + unitW);
+    const int16_t left = static_cast<int16_t>(centerX - totalW / 2);
+    canvas.drawCenteredText(value,
+                            static_cast<int16_t>(left + numberW / 2),
+                            centerY,
+                            valueStyle,
+                            color,
+                            bgColor);
+    if(showUnit) {
+        drawMicronUnitIcon(canvas,
+                           static_cast<int16_t>(left + numberW + gap),
+                           centerY,
+                           unitStyle,
+                           color);
+    }
 }
 
 String weightValueText(int32_t mg) {
@@ -2390,6 +2499,33 @@ bool isGaugeSetItem(const SettingItem& item) {
     return item.menuNum == 1 && item.itemIdx == GAUGESET;
 }
 
+bool pendingGaugeSetWriteValue(int32_t* valueOut = nullptr) {
+    for(const PendingMenuWrite& pending : app.pendingMenuWrites) {
+        if(pending.active && pending.menuNum == 1 && pending.itemIdx == GAUGESET) {
+            if(valueOut != nullptr) {
+                *valueOut = pending.value;
+            }
+            return true;
+        }
+    }
+    return false;
+}
+
+bool gaugeSetMenuValueKnown() {
+    return app.controllerMenuSynced[1] || pendingGaugeSetWriteValue();
+}
+
+int32_t gaugeSetMenuValue() {
+    int32_t pendingValue = 0;
+    if(pendingGaugeSetWriteValue(&pendingValue)) {
+        return pendingValue;
+    }
+    if(app.controllerMenuSynced[1]) {
+        return app.controllerMenuValues[1][GAUGESET];
+    }
+    return 0;
+}
+
 bool isMotorDirectionItem(const SettingItem& item) {
     return item.menuNum == 1 && item.itemIdx == SETMOTORDIRECTION;
 }
@@ -2745,6 +2881,11 @@ void persistStatusFrame(PersistedStatusFrame* out, const sg98_protocol::StatusFr
     out->enterMenu = status.enterMenu;
     out->jmcBaud = status.jmcBaud;
     out->preferredJmcBaud = status.preferredJmcBaud;
+    out->burrGapFieldsPresent = status.burrGapFieldsPresent;
+    out->burrGapEnabled = status.burrGapEnabled;
+    out->burrGapKnown = status.burrGapKnown;
+    out->burrGapLive = status.burrGapLive;
+    out->burrGapUm = status.burrGapUm;
 }
 
 void restoreStatusFrame(const PersistedStatusFrame& in, sg98_protocol::StatusFrame* out) {
@@ -2768,6 +2909,11 @@ void restoreStatusFrame(const PersistedStatusFrame& in, sg98_protocol::StatusFra
     out->enterMenu = in.enterMenu;
     out->jmcBaud = in.jmcBaud;
     out->preferredJmcBaud = in.preferredJmcBaud;
+    out->burrGapFieldsPresent = in.burrGapFieldsPresent;
+    out->burrGapEnabled = in.burrGapEnabled;
+    out->burrGapKnown = in.burrGapKnown;
+    out->burrGapLive = in.burrGapLive;
+    out->burrGapUm = in.burrGapUm;
 }
 
 void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
@@ -2788,6 +2934,7 @@ void captureSnapshot(SleepSnapshot* snapshot, bool includeStatus) {
     snapshot->localUiSounds = app.localUiSounds;
     snapshot->localDriveSelection = app.localDriveSelection;
     memcpy(snapshot->menuValues, app.menuValues, sizeof(snapshot->menuValues));
+    snapshot->menuValues[1][GAUGESET] = 0;
     snapshot->menuSyncedMask = 0;
     for(uint8_t menu = 0; menu < kControllerMenuSlots; ++menu) {
         if(app.menuSynced[menu]) {
@@ -2823,6 +2970,9 @@ void restoreSnapshot(const SleepSnapshot& snapshot, LinkTransport* restoredTrans
     }
     setLocalDriveSelection(sanitizeLocalDriveSelection(snapshot.localDriveSelection));
     memcpy(app.menuValues, snapshot.menuValues, sizeof(app.menuValues));
+    app.menuValues[1][GAUGESET] = 0;
+    app.controllerMenuValues[1][GAUGESET] = 0;
+    app.controllerMenuSynced[1] = false;
     for(uint8_t menu = 0; menu < kControllerMenuSlots; ++menu) {
         app.menuSynced[menu] = (snapshot.menuSyncedMask & static_cast<uint8_t>(1u << menu)) != 0;
     }
@@ -3226,7 +3376,12 @@ bool statusFrameEqual(const sg98_protocol::StatusFrame& lhs, const sg98_protocol
            lhs.preferredJmcBaud == rhs.preferredJmcBaud &&
            lhs.envSyncFieldsPresent == rhs.envSyncFieldsPresent &&
            lhs.envTimeValid == rhs.envTimeValid &&
-           lhs.envWeatherValid == rhs.envWeatherValid;
+           lhs.envWeatherValid == rhs.envWeatherValid &&
+           lhs.burrGapFieldsPresent == rhs.burrGapFieldsPresent &&
+           lhs.burrGapEnabled == rhs.burrGapEnabled &&
+           lhs.burrGapKnown == rhs.burrGapKnown &&
+           lhs.burrGapLive == rhs.burrGapLive &&
+           lhs.burrGapUm == rhs.burrGapUm;
 }
 
 bool menuFrameMatchesCache(const sg98_protocol::MenuFrame& frame) {
@@ -3263,7 +3418,10 @@ bool shouldRedrawForStatusFrame(const sg98_protocol::StatusFrame& previous,
     }
 
     if(roundUiInteractionActive()) {
-        return status.state != previous.state || status.error != previous.error;
+        return status.state != previous.state || status.error != previous.error ||
+               status.burrGapKnown != previous.burrGapKnown ||
+               status.burrGapLive != previous.burrGapLive ||
+               status.burrGapUm != previous.burrGapUm;
     }
 
     if(status.state == "GRINDING" || status.state == "GRINDING_GBW" || status.state == "PURGING") {
@@ -3272,12 +3430,20 @@ bool shouldRedrawForStatusFrame(const sg98_protocol::StatusFrame& previous,
                status.currentWeightMg != previous.currentWeightMg ||
                status.setRpm != previous.setRpm ||
                status.setWeightMg != previous.setWeightMg ||
+               status.burrGapKnown != previous.burrGapKnown ||
+               status.burrGapLive != previous.burrGapLive ||
+               status.burrGapUm != previous.burrGapUm ||
                status.motor != previous.motor || status.drive != previous.drive;
     }
 
     return status.state != previous.state || status.error != previous.error ||
            status.motor != previous.motor || status.drive != previous.drive ||
            status.comm != previous.comm ||
+           status.burrGapFieldsPresent != previous.burrGapFieldsPresent ||
+           status.burrGapEnabled != previous.burrGapEnabled ||
+           status.burrGapKnown != previous.burrGapKnown ||
+           status.burrGapLive != previous.burrGapLive ||
+           status.burrGapUm != previous.burrGapUm ||
            status.setRpm != previous.setRpm ||
            status.setWeightMg != previous.setWeightMg;
 }
@@ -3431,6 +3597,9 @@ int32_t menuValue(const SettingItem& item) {
     if(isUiSoundsItem(item)) {
         return app.localUiSounds;
     }
+    if(isGaugeSetItem(item)) {
+        return gaugeSetMenuValue();
+    }
     if(item.menuNum == 0) {
         return 0;
     }
@@ -3446,17 +3615,8 @@ int32_t displayValueForItem(const SettingItem& item, int32_t value) {
 }
 
 String gaugeGapLabelFromMenuValue(int32_t value) {
-    const bool negative = value < 0;
-    const int32_t magnitude = negative ? -value : value;
-    const int32_t whole = magnitude / 100;
-    const int32_t decimal = magnitude % 100;
     char text[18];
-    snprintf(text,
-             sizeof(text),
-             "%s%ld.%02ld mm",
-             negative ? "-" : "",
-             static_cast<long>(whole),
-             static_cast<long>(decimal));
+    snprintf(text, sizeof(text), "%ld um", static_cast<long>(value) * 10L);
     return text;
 }
 
@@ -3551,6 +3711,9 @@ String formatSettingValue(const SettingItem& item) {
         return item.kind == ItemKind::Danger ? "HOLD" : "RUN";
     }
 
+    if(isGaugeSetItem(item) && !gaugeSetMenuValueKnown()) {
+        return "--";
+    }
     return formatValueLabel(item, menuValue(item));
 }
 
@@ -5071,6 +5234,9 @@ uint16_t roundMenuItemAccentColor(const SettingItem& item) {
         return blendColor565(kColorAccent, kColorPanelHi, 0.24f);
     }
     if(item.kind == ItemKind::Value) {
+        if(isGaugeSetItem(item) && !gaugeSetMenuValueKnown()) {
+            return blendColor565(kColorMuted, kColorPanelHi, 0.25f);
+        }
         return ringColorForLevel(normalizedItemLevel(item, menuValue(item)));
     }
     return blendColor565(kColorAccent, kColorPanelHi, 0.18f);
@@ -5780,6 +5946,9 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
         const int16_t unitWidth = static_cast<int16_t>((layout.homeDialInnerRadius * 2) + 82);
         const RemoteTextStyle valueStyle = chooseValueTextStyle(primaryValue, valueWidth);
         const RemoteTextStyle unitStyle = chooseLabelTextStyle(unitLine, unitWidth);
+        const String gapLine = homeGapValueLabel();
+        const RemoteTextStyle gapValueStyle = isLargeCanvas() ? RemoteTextStyle::Large : RemoteTextStyle::Medium;
+        const RemoteTextStyle gapUnitStyle = isLargeCanvas() ? RemoteTextStyle::Medium : RemoteTextStyle::Small;
         const uint16_t ringAccent = reverseLiveRpm ? reverseRpmAccentColor() : palette.accent;
         const uint16_t valueColor = isGbwState()
                                         ? blendColor565(kColorText, palette.accent, 0.24f)
@@ -5834,6 +6003,14 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                                 unitStyle,
                                 unitColor,
                                 palette.background);
+        drawGapReadout(canvas,
+                       layout.homeDialCx,
+                       static_cast<int16_t>(layout.homeDialCy + (isLargeCanvas() ? 72 : 54)),
+                       gapLine,
+                       gapValueStyle,
+                       gapUnitStyle,
+                       kColorGauge,
+                       palette.background);
 
         drawBatteryIndicator(canvas, layout, palette.background);
         return;
@@ -5905,10 +6082,7 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
     const String telemetryLine =
         String("RPM ") + (app.hasStatus ? String(rpmMagnitude(homeWheelDisplayRpm())) : "-") +
         "  WT " + (app.hasStatus ? weightLabel(app.status.currentWeightMg) : String("-"));
-    const String detailLine =
-        String("COMM ") + (app.hasStatus ? app.status.comm : String("NO DATA")) +
-        "  TORQ " + (app.hasStatus ? String(app.status.torquePercent) : String("-")) +
-        "% ERR " + (app.hasStatus ? String(app.status.error) : String("-"));
+    const String gapLine = homeGapValueLabel();
 
     canvas.drawCenteredText(stateLine,
                             layout.width / 2,
@@ -5922,12 +6096,14 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                             tinyTextStyle(),
                             palette.muted,
                             palette.background);
-    canvas.drawCenteredText(detailLine,
-                            layout.width / 2,
-                            static_cast<int16_t>(layout.homeActionButton.y + layout.homeActionButton.h + layout.gap + (isLargeCanvas() ? 58 : 36)),
-                            tinyTextStyle(),
-                            palette.muted,
-                            palette.background);
+    drawGapReadout(canvas,
+                   layout.width / 2,
+                   static_cast<int16_t>(layout.homeActionButton.y + layout.homeActionButton.h + layout.gap + (isLargeCanvas() ? 58 : 36)),
+                   gapLine,
+                   bodyTextStyle(),
+                   tinyTextStyle(),
+                   kColorGauge,
+                   palette.background);
 
     drawTabs(canvas, layout);
 }
@@ -6807,18 +6983,12 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
         canvas.drawCircle(cx, cy, 12, blendColor565(grid, accent, 0.16f));
     }
 
-    char timeText[12] = {};
     char dateText[24] = {};
     char shortDateText[8] = {};
     if(hasTime) {
-        strftime(timeText, sizeof(timeText), "%I:%M", &timeInfo);
-        if(timeText[0] == '0') {
-            memmove(timeText, timeText + 1, strlen(timeText));
-        }
         strftime(dateText, sizeof(dateText), "%a %b %d", &timeInfo);
         strftime(shortDateText, sizeof(shortDateText), "%m/%d", &timeInfo);
     } else {
-        copyStringToBuffer(String("SYNC"), timeText);
         dateText[0] = '\0';
         shortDateText[0] = '\0';
     }
@@ -6833,8 +7003,9 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
                                 bg);
     }
     const String weather = roundClock ? dockWeatherMetricLine() : dockWeatherLine();
+    const String gapText = dockGapLine();
     if(roundClock) {
-        const uint16_t timeAccent = blendColor565(packColor565(255, 196, 82), accent, 0.18f);
+        const uint16_t gapAccent = blendColor565(packColor565(255, 150, 48), accent, 0.16f);
         const uint16_t dateAccent = blendColor565(packColor565(96, 236, 174), accent, 0.14f);
         const uint16_t weatherAccent = blendColor565(packColor565(88, 190, 255), accent, 0.20f);
         const uint16_t placeAccent = blendColor565(packColor565(178, 160, 255), accent, 0.12f);
@@ -6889,9 +7060,9 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
                                  bottomY,
                                  timeW,
                                  38,
-                                 timeText,
+                                 gapText,
                                  RemoteTextStyle::Medium,
-                                 timeAccent,
+                                 gapAccent,
                                  sectionFace,
                                  bg);
         const uint16_t handBody = blendColor565(packColor565(182, 198, 205), kColorText, 0.20f);
@@ -6927,11 +7098,11 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
         canvas.fillCircle(cx, cy, 4, secondRed);
         canvas.drawCircle(cx, cy, 13, blendColor565(secondRed, kColorText, 0.12f));
     } else {
-        canvas.drawCenteredText(timeText,
+        canvas.drawCenteredText(gapText,
                                 cx,
                                 static_cast<int16_t>(cy + radius + 24),
                                 RemoteTextStyle::Medium,
-                                text,
+                                blendColor565(packColor565(255, 150, 48), text, 0.18f),
                                 bg);
         if(hasTime) {
             canvas.drawCenteredText(dateText,
@@ -9268,7 +9439,7 @@ void syncPolling() {
     }
 }
 
-bool applyMenuValue(const SettingItem& item, int32_t value) {
+bool applyMenuValue(const SettingItem& item, int32_t value, bool allowGaugeSetWrite = false) {
     if(!settingItemVisible(item)) {
         return false;
     }
@@ -9284,6 +9455,10 @@ bool applyMenuValue(const SettingItem& item, int32_t value) {
         return true;
     }
     if(item.menuNum == 0) {
+        return false;
+    }
+    if(isGaugeSetItem(item) && !allowGaugeSetWrite) {
+        requestMenu(1);
         return false;
     }
 
@@ -9455,6 +9630,12 @@ void activateSelectedItem() {
 
     if(item.kind == ItemKind::Value || (item.kind == ItemKind::Toggle && useRoundNavigation()) || isConfirmActionItem(item)) {
         if(!app.editing) {
+            if(isGaugeSetItem(item) && !gaugeSetMenuValueKnown()) {
+                requestMenu(1);
+                setToast("Syncing gauge set", 900);
+                app.redraw = true;
+                return;
+            }
             app.draftValue = isConfirmActionItem(item) ? 0 : menuValue(item);
             app.editing = true;
             setToast(isConfirmActionItem(item) ? String(item.label) + "?"
@@ -9470,7 +9651,8 @@ void activateSelectedItem() {
                 }
             } else {
                 const int32_t nextValue = clampValue(app.draftValue, item.minValue, item.maxValue);
-                if(applyMenuValue(item, nextValue)) {
+                const bool allowGaugeSetWrite = isGaugeSetItem(item) && app.screen == Screen::Gbw;
+                if(applyMenuValue(item, nextValue, allowGaugeSetWrite)) {
                     if(isRadioModeItem(item)) {
                         if(safeUserRadioMode(nextValue) == kControllerRadioOff) {
                             setToast("Radio off", 1200);
@@ -10722,6 +10904,16 @@ void appendRemoteControllerStatusJson(String& out) {
     out += app.status.envTimeValid ? "true" : "false";
     out += ",\"envWeatherValid\":";
     out += app.status.envWeatherValid ? "true" : "false";
+    out += ",\"burrGapFieldsPresent\":";
+    out += app.status.burrGapFieldsPresent ? "true" : "false";
+    out += ",\"burrGapEnabled\":";
+    out += app.status.burrGapEnabled ? "true" : "false";
+    out += ",\"burrGapKnown\":";
+    out += app.status.burrGapKnown ? "true" : "false";
+    out += ",\"burrGapLive\":";
+    out += app.status.burrGapLive ? "true" : "false";
+    out += ",\"burrGapUm\":";
+    out += String(app.status.burrGapUm);
     out += '}';
 }
 

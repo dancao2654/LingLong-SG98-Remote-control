@@ -48,9 +48,11 @@ int16_t sanitize_drive_type(int16_t drive_type) {
 
 constexpr const char* SMART_PURGE_LOAD_KEY = "SPLOAD";
 constexpr const char* SMART_PURGE_CONF_KEY = "SPCONF";
+constexpr const char* DRIVE_FORCE_KEY = "driveForce";
 constexpr const char* BURR_GAP_SEEN_KEY = "BGAPSEEN";
 constexpr const char* BURR_GAP_LAST_KEY = "BGAPLAST";
 constexpr const char* BURR_GAP_OFFSET_KEY = "BGAPOFF";
+constexpr const char* BURR_GAP_MANUAL_KEY = "BGAPMANUAL";
 }
 
 void pdata_init() { 
@@ -202,6 +204,7 @@ void pdata_write(uint8_t what) { // 0 = ALL SETTIGNS , 1 = Calibration array, 2 
         preferences.putFloat("speedModifier", speedModifier);
         preferences.putULong("jmcBaud", DEFAULT_JMC_BAUD);
         preferences.putShort("driveType", DEFAULT_DRIVE_TYPE);
+        preferences.putBool(DRIVE_FORCE_KEY, false);
 
         preferences.putString("SCALE_NAME", "");
         preferences.putString("SCALE_MAC", "");
@@ -210,6 +213,7 @@ void pdata_write(uint8_t what) { // 0 = ALL SETTIGNS , 1 = Calibration array, 2 
         preferences.putBool(BURR_GAP_SEEN_KEY, false);
         preferences.putLong(BURR_GAP_LAST_KEY, 0);
         preferences.putLong(BURR_GAP_OFFSET_KEY, 0);
+        preferences.putBool(BURR_GAP_MANUAL_KEY, false);
 
         String currentBuildID = BUILD_ID;
         preferences.putString("build_id", currentBuildID);
@@ -299,11 +303,15 @@ void pdata_write_jmc_baud(uint32_t baud_rate) {
 }
 
 int16_t pdata_read_drive_type() {
-    return sanitize_drive_type(preferences.getShort("driveType", DEFAULT_DRIVE_TYPE));
+    const int16_t driveType = sanitize_drive_type(preferences.getShort("driveType", DEFAULT_DRIVE_TYPE));
+    if(driveType == DRIVE_TYPE_UNKNOWN) return DRIVE_TYPE_UNKNOWN;
+    return preferences.getBool(DRIVE_FORCE_KEY, false) ? driveType : DRIVE_TYPE_UNKNOWN;
 }
 
 void pdata_write_drive_type(int16_t drive_type) {
-    preferences.putShort("driveType", sanitize_drive_type(drive_type));
+    const int16_t driveType = sanitize_drive_type(drive_type);
+    preferences.putShort("driveType", driveType);
+    preferences.putBool(DRIVE_FORCE_KEY, driveType != DRIVE_TYPE_UNKNOWN);
 }
 
 void pdata_read_smart_purge_learning(uint16_t* learnedLoad, uint16_t* confidence, size_t count) {
@@ -358,4 +366,16 @@ int32_t pdata_read_burr_gap_offset_um() {
 
 void pdata_write_burr_gap_offset_um(int32_t offsetUm) {
     preferences.putLong(BURR_GAP_OFFSET_KEY, offsetUm);
+}
+
+bool pdata_has_burr_gap_manual_base() {
+    return preferences.isKey(BURR_GAP_MANUAL_KEY);
+}
+
+bool pdata_read_burr_gap_manual_base() {
+    return preferences.getBool(BURR_GAP_MANUAL_KEY, false);
+}
+
+void pdata_write_burr_gap_manual_base(bool manual) {
+    preferences.putBool(BURR_GAP_MANUAL_KEY, manual);
 }

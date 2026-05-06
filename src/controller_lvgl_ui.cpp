@@ -49,6 +49,7 @@ constexpr uint32_t kColorMenuItemActiveText = 0xFFFFFF;
 constexpr uint32_t kColorMenuItemText = 0xE6F2FF;
 constexpr uint32_t kColorGood = 0x57E89A;
 constexpr uint32_t kColorWarn = 0xFFD86A;
+constexpr uint32_t kColorGauge = kColorWarn;
 constexpr uint32_t kColorDanger = 0xFF7272;
 constexpr uint32_t kColorRun = 0x2FD67B;
 constexpr uint32_t kColorEspNow = 0x63C7FF;
@@ -227,27 +228,15 @@ String formatMassMg(int32_t mg) {
     return text;
 }
 
-String formatGapUm(int32_t um) {
-    const bool negative = um < 0;
-    const int32_t magnitude = negative ? -um : um;
-    int32_t hundredths = (magnitude + 5) / 10;
-    const int32_t whole = hundredths / 100;
-    const int32_t decimal = hundredths % 100;
-    char text[18];
-    snprintf(text,
-             sizeof(text),
-             "%s%ld.%02ld",
-             negative ? "-" : "",
-             static_cast<long>(whole),
-             static_cast<long>(decimal));
-    return text;
+String formatGapMicrons(int32_t um) {
+    return String((um / 10) * 10);
 }
 
 int32_t gaugeSetMenuDisplayUm(const menuEntry& item) {
     if(state == MENU1 && enterMenu && menu1Selected == Menu1Items::GAUGESET) {
         return static_cast<int32_t>(item.value) * 10;
     }
-    return burr_gap_display_um();
+    return burr_gap_base_lcd_um();
 }
 
 String ageLabel(uint32_t timestampMs) {
@@ -733,7 +722,7 @@ String menuItemSummary(const menuEntry& item, int menuNum, int selectedIdx) {
     const MotorCommandDescriptor* command = motorCommandForMenuItem(menuNum, selectedIdx);
     if(command != nullptr && !command->supported) return "N/A";
     if(menuNum == 1 && selectedIdx == Menu1Items::GAUGESET) {
-        return formatGapUm(gaugeSetMenuDisplayUm(item)) + "mm";
+        return formatGapMicrons(gaugeSetMenuDisplayUm(item)) + " um";
     }
     if(menuNum == 1 && selectedIdx == Menu1Items::RADIOMODE) {
         return "Open";
@@ -781,7 +770,7 @@ String menuDetailValue(const menuEntry& item, int menuNum, int selectedIdx) {
     if(menuNum == 4 && isJmcBaudMenuItem(selectedIdx)) return String(baudForJmcMenuItem(selectedIdx));
     if(menuNum == 1 && selectedIdx == Menu1Items::ABOUT) return sg98_version::aboutVersionLine();
     if(menuNum == 1 && selectedIdx == Menu1Items::GAUGESET) {
-        return formatGapUm(gaugeSetMenuDisplayUm(item)) + "mm";
+        return formatGapMicrons(gaugeSetMenuDisplayUm(item)) + " um";
     }
     if(item.scalar == 0 && item.maxValue == 0 && item.minValue == 0) {
         if(menuNum == 1 && selectedIdx == CALIBRATE) return "Ready";
@@ -1067,7 +1056,7 @@ void createDashboardUi() {
     lv_obj_set_width(ui.dashGapValue, 60);
     lv_obj_set_style_text_font(ui.dashGapValue, &lv_font_montserrat_18, 0);
     lv_obj_set_style_text_align(ui.dashGapValue, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_color(ui.dashGapValue, lvColor(kColorAccent), 0);
+    lv_obj_set_style_text_color(ui.dashGapValue, lvColor(kColorGauge), 0);
     lv_label_set_long_mode(ui.dashGapValue, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.dashGapValue, LV_ALIGN_TOP_MID, 0, 2);
 
@@ -1076,7 +1065,7 @@ void createDashboardUi() {
     lv_obj_set_style_text_font(ui.dashGapLabel, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_align(ui.dashGapLabel, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_color(ui.dashGapLabel, lvColor(kColorMuted), 0);
-    lv_label_set_text(ui.dashGapLabel, "GAP mm");
+    lv_label_set_text(ui.dashGapLabel, "um");
     lv_label_set_long_mode(ui.dashGapLabel, LV_LABEL_LONG_DOT);
     lv_obj_align(ui.dashGapLabel, LV_ALIGN_BOTTOM_MID, 0, -1);
 
@@ -1499,10 +1488,10 @@ void syncBurrGapPanel(bool visible) {
 
     const bool live = burr_gap_live();
     const bool tared = burr_gap_recently_tared();
-    const uint32_t valueColor = tared ? kColorGood : (live ? kColorAccent : kColorMuted);
-    const char* label = tared ? "ZERO" : (live ? "GAP mm" : "SAVED");
+    const uint32_t valueColor = tared ? kColorGood : (live ? kColorGauge : kColorMuted);
+    const char* label = tared ? "ZEROED" : (live ? "um" : "SAVED");
 
-    lv_label_set_text(ui.dashGapValue, fitText(formatGapUm(burr_gap_display_um()), 7).c_str());
+    lv_label_set_text(ui.dashGapValue, fitText(formatGapMicrons(burr_gap_display_lcd_um()), 7).c_str());
     lv_obj_set_style_text_color(ui.dashGapValue, lvColor(valueColor), 0);
     lv_label_set_text(ui.dashGapLabel, label);
     lv_obj_set_style_text_color(ui.dashGapLabel, lvColor(live || tared ? kColorSoft : kColorMuted), 0);

@@ -296,6 +296,45 @@ int16_t reg_0503 = -1; // torque SET POINT (-300 to 300)
 int16_t reg_0510 = -1; // internal fw torque limit (int 0-300)
 int16_t reg_0511 = -1; // internal rv torque limit (int -300 - 0)
 
+void resetJmcRuntimeRegisterMirror() {
+  reg_6040 = -1;
+  reg_0101 = -1;
+  reg_0121 = -1;
+  reg_0102 = -1;
+  reg_0103 = -1;
+  reg_0500 = -1;
+  reg_0501 = -1;
+  reg_0502 = -1;
+  reg_0503 = -1;
+  reg_0510 = -1;
+  reg_0511 = -1;
+}
+
+void resetJmcStartCommandMirror() {
+  reg_6040 = -1;
+  reg_0502 = -1;
+  reg_0503 = 0;
+}
+
+bool writeJmcRuntimeConfig(int16_t configuredRamp,
+                           int16_t configuredTorque,
+                           int16_t configuredReverseTorque) {
+  int score = 0;
+  if(writeConfirm(0x2101, 2)) { reg_0101 = 2; score++; } // torque control
+  if(writeConfirm(0x2102, 1)) { reg_0102 = 1; score++; } // semi-auto rigidity source
+  if(writeConfirm(0x2103, configuredRamp)) { reg_0103 = configuredRamp; score++; }
+  if(writeConfirm(0x2121, 30)) { reg_0121 = 30; score++; }
+  if(writeConfirm(0x2203, 0)) { score++; } // velocity feedforward gain
+  if(writeConfirm(0x2204, 2000)) { score++; }
+  if(writeConfirm(0x2500, 1)) { reg_0500 = 1; score++; } // torque command source
+  if(writeConfirm(0x2501, 1)) { reg_0501 = 1; score++; } // speed limit source
+  if(writeConfirm(0x2502, 0)) { reg_0502 = 0; score++; }
+  if(writeConfirm(0x2503, 0)) { reg_0503 = 0; score++; }
+  if(writeConfirm(0x2510, configuredTorque)) { reg_0510 = configuredTorque; score++; }
+  if(writeConfirm(0x2511, configuredReverseTorque)) { reg_0511 = configuredReverseTorque; score++; }
+  return score >= 12;
+}
+
 enum DriveStatus{
     SWITCH_ON_DISABLED,
     READY_TO_SWITCH_ON,
@@ -347,14 +386,7 @@ SYSTEM_STATUS changeToStatus(DriveStatus decodedStatusWord) {
 void motor_jmc_init_backend() {
   motor_setRPM = 0;
   motor_currentRPM = 0;
-  reg_6040 = -1; //Control word
-
-  reg_0500 = -1; // torq command source = 1
-  reg_0501 = -1; // speed limit source = 1
-  reg_0502 = -1; // speed limit setpoint = RPM (uint)
-  reg_0503 = -1; // torque SET POINT (-300 to 300)
-  reg_0510 = -1; // internal fw torque limit (int 0-300)
-  reg_0511 = -1; // internal rv torque limit (int -300 - 0)
+  resetJmcRuntimeRegisterMirror();
   jmcRpmReadReg = JMC_RPM_REG_LEGACY;
   resetJmcRpmLogSession();
   resetJmcRpmReadHealth();
@@ -394,9 +426,11 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
   // static uint8_t lastCommType;
   static uint8_t nextCommType;
   static int16_t motor_lastSetRPM = -1;
+  static int16_t lastEffectiveSetRPM = 0;
   const int16_t configuredRamp = motor_get_command_menu_value(MOTOR_COMMAND_RAMP_LEVEL);
   const int16_t configuredTorque = motor_get_formatted_command_value(MOTOR_COMMAND_TORQUE_LIMIT, 1);
   const int16_t configuredReverseTorque = motor_get_formatted_command_value(MOTOR_COMMAND_TORQUE_LIMIT, -1);
+  const int16_t effectiveSetRPM = motor_get_effective_set_rpm();
 
   //Disconnect flow
   // BLE scale activity can momentarily stretch the loop timing; use the explicit
@@ -413,9 +447,7 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
     currentStatus = MOTOR_NOT_CONNECTED;
     disp_updateRequired = true;
 
-    reg_6040 = -1; //Control word
-    reg_0502 = -1; //speed
-    reg_0503 = -1; //torque
+    resetJmcRuntimeRegisterMirror();
   }
 
 //Cannot establish connection 
@@ -445,6 +477,14 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
 
   checkJmcRpmZeroLog();
 
+  if(effectiveSetRPM != 0 && lastEffectiveSetRPM == 0) {
+    resetJmcStartCommandMirror();
+    nextCommType = 0;
+    resetJmcRpmLogSession();
+    resetJmcRpmReadHealth();
+  }
+  lastEffectiveSetRPM = effectiveSetRPM;
+
   // First communication when disconnected
   if(commStatus == COMM_DISCONNECTED) { 
 
@@ -461,35 +501,10 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
       if(lastRead[0] != 0x6576 && lastRead[1] != 0x6173) { 
         if(!writeMultipleConfirm(0x1010, 2, 0x6576, 0x6173)) return false;  // magic byte "Save" to 0x1010 
         if(readReturn(0x2101, 1) != 2) error = 8;   //Confirm we've already written data or not.. to recognize a first boot event.
-
-        int score = 0; 
-        if(writeConfirm(0x2101, 2)) { reg_0101 = 2; score++; } //Set mode to torque control
-
-        // Motor rigidity settings.. automatic mode with 0 gain and 2000 filter.
-        if(writeConfirm(0x2102, 1)) { reg_0102 = 1; score++; } // MODE 1 - semi auto
-        if(writeConfirm(0x2103, configuredRamp)) { reg_0103 = configuredRamp; score++; } //P103 set, this is set in the MENU
-
-        if(writeConfirm(0x2121, 30)) { reg_0121 = 30;  score ++; } //This is the quickstop ramp down torque (currently not used i believe the way we use it)
-
-        if(writeConfirm(0x2203, 0)) { score ++; } // velocity feedforward gain
-        if(writeConfirm(0x2204, 2000)) { score ++; } // 
-        // VALUES ABOVE 
-
-        // torque control settings
-        if(writeConfirm(0x2500, 1)) { reg_0500 = 1; score++; } 
-        if(writeConfirm(0x2501, 1)) { reg_0501 = 1; score++; } 
-        if(writeConfirm(0x2502, 0)) { reg_0502 = 0; score++; }
-        if(writeConfirm(0x2503, 0)) { reg_0503 = 0; score++; }
-        if(writeConfirm(0x2510, configuredTorque)) { reg_0510 = configuredTorque; score++; } 
-        if(writeConfirm(0x2511, configuredReverseTorque)) { reg_0511 = configuredReverseTorque; score++; } 
-       if (score < 12) { error = 7; return false; } // Total score count = 12 if i can count 
-      } else { 
-        reg_0101 = 2;
-        reg_0102 = 1;
-        reg_0103 = configuredRamp;
-        reg_0121 = 30;
-        reg_0500 = 1;
-        reg_0501 = 1;
+      }
+      if(!writeJmcRuntimeConfig(configuredRamp, configuredTorque, configuredReverseTorque)) {
+        error = 7;
+        return false;
       }
       reg_6040 = 1;
       if(readReturn(JMC_RPM_REG_LEGACY, jmcRpmRegisterCount(JMC_RPM_REG_LEGACY)) != 0xFFFF) {
@@ -517,10 +532,10 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
 
   // The only FAST & blocking service we're offering!
   if(motor_setRPM == 0 && motor_lastSetRPM != 0) { 
-     if(reg_0502 != 0) { 
-      if(writeConfirm(0x2503, 0)) { // Set rotation speed to 0.
+     if(reg_0503 != 0) {
+      if(writeConfirm(0x2503, 0)) { // Set torque command to 0.
         lastCommSend = millis(); 
-        reg_0502 = 0;
+        reg_0503 = 0;
         nextCommType = 0;
         motor_lastSetRPM = motor_setRPM;
         return false;
@@ -633,8 +648,6 @@ bool motor_jmc_do_comm_backend() { // can be called continously and will update 
 
     return true;
   } else newData = false; // We've made one complete round!
-
-  const int16_t effectiveSetRPM = motor_get_effective_set_rpm();
 
   //Determine COMM delay
   uint16_t delay;

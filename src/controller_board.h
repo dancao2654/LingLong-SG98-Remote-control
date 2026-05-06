@@ -44,12 +44,19 @@ struct ControllerBoardPins {
     gpio_num_t sleepDe;
 };
 
+struct ControllerBoardBurrGapInput {
+    int8_t clock;
+    int8_t data;
+    const char* headerLabel;
+};
+
 struct ControllerBoardInfo {
     ControllerBoardId id;
     const char* targetName;
     const char* displayName;
     ControllerBoardFeatures features;
     ControllerBoardPins pins;
+    ControllerBoardBurrGapInput burrGap;
 };
 
 void controller_board_init();
@@ -57,6 +64,7 @@ bool controller_board_ready();
 const ControllerBoardInfo& controller_board_info();
 const ControllerBoardFeatures& controller_board_features();
 const ControllerBoardPins& controller_board_pins();
+const ControllerBoardBurrGapInput& controller_board_burr_gap_input();
 const char* controller_board_target_name();
 const char* controller_board_display_name();
 uint32_t controller_board_detected_flash_size_bytes();
@@ -87,6 +95,11 @@ inline bool controller_board_has_encoder() {
 
 inline bool controller_board_has_encoder_button() {
     return controller_board_features().hasEncoderButton;
+}
+
+inline bool controller_board_has_burr_gap_input() {
+    const ControllerBoardBurrGapInput& input = controller_board_burr_gap_input();
+    return controller_board_pin_valid(input.clock) && controller_board_pin_valid(input.data);
 }
 
 inline bool controller_board_has_local_settings_ui() {
