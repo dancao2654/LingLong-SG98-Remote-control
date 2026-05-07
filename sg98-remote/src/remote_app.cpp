@@ -3565,6 +3565,12 @@ bool stateAllowsModeToggle() {
     return !app.hasStatus || app.status.state == "IDLE" || app.status.state == "IDLE_GBW";
 }
 
+bool controllerOtaReady() {
+    return app.hasStatus &&
+           app.status.controllerOtaReadyFieldsPresent &&
+           app.status.controllerOtaReady;
+}
+
 int applyDialDirection(int delta) {
     if(delta == 0) {
         return 0;
@@ -3623,7 +3629,9 @@ bool statusFrameEqual(const sg98_protocol::StatusFrame& lhs, const sg98_protocol
            lhs.burrGapEnabled == rhs.burrGapEnabled &&
            lhs.burrGapKnown == rhs.burrGapKnown &&
            lhs.burrGapLive == rhs.burrGapLive &&
-           lhs.burrGapUm == rhs.burrGapUm;
+           lhs.burrGapUm == rhs.burrGapUm &&
+           lhs.controllerOtaReadyFieldsPresent == rhs.controllerOtaReadyFieldsPresent &&
+           lhs.controllerOtaReady == rhs.controllerOtaReady;
 }
 
 bool menuFrameMatchesCache(const sg98_protocol::MenuFrame& frame) {
@@ -3925,7 +3933,7 @@ String formatSettingValue(const SettingItem& item) {
         }
         if(item.action != nullptr && strcmp(item.action, "screen") == 0) {
             if(item.actionArg != nullptr && strcmp(item.actionArg, "about") == 0) {
-                return sg98_version::shortVersion();
+                return controllerOtaReady() ? "OTA READY" : sg98_version::shortVersion();
             }
             if(item.actionArg != nullptr && strcmp(item.actionArg, "drive") == 0) {
                 return localDriveSelectionLabel(currentLocalDriveSelection());
@@ -7663,6 +7671,22 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
         rowY = static_cast<int16_t>(rowY + rowH);
     }
 
+    if(controllerOtaReady()) {
+        const int16_t buttonH = useRoundNavigation() ? 40 : 30;
+        const int16_t buttonY = max<int16_t>(
+            static_cast<int16_t>(rowY + (useRoundNavigation() ? 10 : 6)),
+            static_cast<int16_t>(panel.y + panel.h - panelPad - buttonH));
+        const Rect button = {innerX, buttonY, innerW, buttonH};
+        const bool armed = dangerIsArmed(Screen::About, 0);
+        const uint16_t buttonFace = armed ? kColorWarn : blendColor565(kColorGood, kColorPanel, 0.30f);
+        const uint16_t buttonText = armed ? kColorBlack : kColorText;
+        drawPill(canvas,
+                 button,
+                 armed ? "CONFIRM CONTROLLER OTA" : "CONTROLLER OTA READY",
+                 buttonFace,
+                 buttonText);
+    }
+
     if(!useRoundNavigation()) {
         drawTabs(canvas, layout);
     }
@@ -9404,6 +9428,10 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
         previous.burrGapKnown != displayStatus.burrGapKnown ||
         previous.burrGapLive != displayStatus.burrGapLive ||
         previous.burrGapUm != displayStatus.burrGapUm;
+    const bool controllerOtaBecameReady =
+        displayStatus.controllerOtaReadyFieldsPresent &&
+        displayStatus.controllerOtaReady &&
+        (!hadStatus || !previous.controllerOtaReady);
     app.status = displayStatus;
     app.hasStatus = true;
     const uint32_t now = millis();
@@ -9431,6 +9459,9 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
         app.redraw = true;
     } else if(valuesChanged && useRoundNavigation() && app.screen == Screen::Home && roundUiInteractionActive()) {
         app.deferredHomeStatusRedraw = true;
+    }
+    if(controllerOtaBecameReady) {
+        setToast("Controller OTA ready", 2200);
     }
     requestFullControllerRefreshOnLinkOnline(wasOnline);
 }
@@ -10006,17 +10037,37 @@ bool sendControllerWifiConfigIfAvailable() {
 
 bool requestControllerOta(String* message) {
     const bool wifiSent = sendControllerWifiConfigIfAvailable();
-    const bool otaSent = sendAction("ota_manifest_reboot", "latest");
+    const bool otaSent = sendAction("ota_manifest", "latest");
     if(message != nullptr) {
         if(otaSent && wifiSent) {
-            *message = "Wi-Fi + OTA sent";
+            *message = "Wi-Fi + OTA download sent";
         } else if(otaSent) {
-            *message = "OTA sent";
+            *message = "OTA download sent";
         } else {
             *message = "OTA send failed";
         }
     }
     return otaSent;
+}
+
+void confirmControllerOtaReady() {
+    if(!controllerOtaReady()) {
+        setToast("No controller OTA ready", 1200);
+        return;
+    }
+
+    if(!dangerIsArmed(Screen::About, 0)) {
+        armDanger(Screen::About, 0);
+        setToast("Press again to update controller", remote_config::kDangerConfirmMs);
+        app.redraw = true;
+        return;
+    }
+
+    app.dangerArmUntil = 0;
+    const bool sent = sendAction("ota_apply_ready_reboot");
+    app.lastStatusPollAt = 0;
+    setToast(sent ? "Controller OTA applying" : "OTA apply send failed", 1800);
+    app.redraw = true;
 }
 
 String actionFeedbackLabel(const SettingItem& item) {
@@ -10030,7 +10081,7 @@ String actionFeedbackLabel(const SettingItem& item) {
     if(strcmp(item.action, "reset_defaults") == 0) return "Defaults reset";
     if(strcmp(item.action, "about") == 0) return sg98_version::aboutVersionLine();
     if(strcmp(item.action, "calibrate") == 0) return "Calibration started";
-    if(strcmp(item.action, "controller_ota") == 0) return "OTA requested";
+    if(strcmp(item.action, "controller_ota") == 0) return "OTA download requested";
     if(strcmp(item.action, "redetect") == 0) return "Detecting drive";
     if(strcmp(item.action, "drive") == 0) return "Drive applied";
     if(strcmp(item.action, "jmc_baud") == 0) return "Baud applied";
@@ -10482,6 +10533,11 @@ void triggerRunAction() {
 }
 
 void handlePrimaryShortPress() {
+    if(app.screen == Screen::About && !app.editing && controllerOtaReady()) {
+        confirmControllerOtaReady();
+        return;
+    }
+
     if(app.screen == Screen::Profiler && !app.editing) {
         armPressureProfiler();
         return;
@@ -11204,6 +11260,11 @@ void handleTouchTap(int16_t x, int16_t y) {
     }
     rememberTouchTap(x, y);
 
+    if(app.screen == Screen::About && !app.editing && controllerOtaReady()) {
+        confirmControllerOtaReady();
+        return;
+    }
+
     if(useRoundNavigation()) {
         if(app.screen != Screen::Home && !app.editing) {
             if(handleRoundNavTouch(x, y)) {
@@ -11490,6 +11551,10 @@ void appendRemoteControllerStatusJson(String& out) {
     out += app.status.burrGapLive ? "true" : "false";
     out += ",\"burrGapUm\":";
     out += String(app.status.burrGapUm);
+    out += ",\"controllerOtaReadyFieldsPresent\":";
+    out += app.status.controllerOtaReadyFieldsPresent ? "true" : "false";
+    out += ",\"controllerOtaReady\":";
+    out += app.status.controllerOtaReady ? "true" : "false";
     out += '}';
 }
 
@@ -12691,7 +12756,7 @@ void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
-    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|controller_ota|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
+    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|controller_ota|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
     Serial.println("[remote-diag] wifi: wifi phone <controller_ap_ssid> <home_ssid> <home_password>");
@@ -12861,6 +12926,20 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
 
     if(action == "controller_ota") {
         const bool ok = requestControllerOta(message);
+        return ok;
+    }
+
+    if(action == "controller_ota_apply") {
+        if(!controllerOtaReady()) {
+            if(message != nullptr) {
+                *message = "no controller ota ready";
+            }
+            return false;
+        }
+        const bool ok = sendAction("ota_apply_ready_reboot");
+        if(message != nullptr) {
+            *message = ok ? "apply sent" : "send failed";
+        }
         return ok;
     }
 

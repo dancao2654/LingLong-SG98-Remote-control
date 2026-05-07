@@ -18,6 +18,7 @@
 #include "ble_console.h"
 #include "comm.h"
 #include "controller_env.h"
+#include "controller_ota.h"
 #include "espnow_control.h"
 #include "motor_hal.h"
 #include "pdata.h"
@@ -715,6 +716,9 @@ bool apiDownloadOta(const char* url, String* message) {
 
     sg98_ota_download::Result result;
     const bool ok = sg98_ota_download::downloadToNextSlot(String(url), &result);
+    if(ok) {
+        (void)controller_ota_note_downloaded(result);
+    }
     restoreOtaWifi(guard);
     if(message != nullptr) {
         *message = result.message;
@@ -742,6 +746,9 @@ bool apiDownloadOtaManifest(const char* url, String* message) {
 
     sg98_ota_download::Result result;
     const bool ok = sg98_ota_download::downloadManifestToNextSlot(resolvedUrl, &result);
+    if(ok) {
+        (void)controller_ota_note_downloaded(result);
+    }
     restoreOtaWifi(guard);
     if(message != nullptr) {
         *message = result.message;
@@ -1668,6 +1675,10 @@ void appendStatusJson(String& out) {
     appendJsonQuoted(out, sg98_version::buildEnv());
     out += ",\"remoteRecoveryRequired\":";
     out += controller_board_requires_remote_recovery() ? "true" : "false";
+    out += ",\"controllerOtaReady\":";
+    out += controller_ota_ready_for_remote() ? "true" : "false";
+    out += ",\"controllerOtaReadyDetail\":";
+    appendJsonQuoted(out, controller_ota_ready_detail());
     out += ",\"error\":";
     out += String(static_cast<unsigned>(error));
     out += ",\"errorText\":";
@@ -1812,9 +1823,9 @@ void printHelp() {
     Serial.println("[diag] raw-uart: mru <baud> <8N1|8N2|8E1|8E2|8O1|8O2> <slave> <reg> <count> | mwu <baud> <mode> <slave> <reg> <value>");
     Serial.println("[diag] dbg: dbg status | dbg wifi <on|off|reset|scan> | dbg espnow <on|off|coexist> | dbg ws <on|off> | dbg all off");
     Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
-    Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
+    Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|ota_manifest [latest]|ota_manifest_reboot [latest]>");
+    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|ota_manifest [latest]|ota_apply_ready_reboot>");
 }
 
 void printStatus() {
@@ -2516,7 +2527,7 @@ void handleLineCommand(char* line) {
         if(strcmp(subcmd, "ota") == 0) {
             char* action = strtok_r(nullptr, " \t", &savePtr);
             if(action == nullptr) {
-                apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
+                apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
                 return;
             }
             if(strcmp(action, "boot") == 0) {
@@ -2530,6 +2541,24 @@ void handleLineCommand(char* line) {
                     Serial.flush();
                     ESP.restart();
                 }
+                return;
+            }
+            if(strcmp(action, "apply_ready") == 0) {
+                const char* rebootToken = strtok_r(nullptr, " \t", &savePtr);
+                String message;
+                const bool ok = controller_ota_mark_ready_bootable(&message);
+                apiPrintAck("ota", ok, message.c_str());
+                if(ok && rebootToken != nullptr && strcmp(rebootToken, "reboot") == 0) {
+                    delay(150);
+                    Serial.flush();
+                    ESP.restart();
+                }
+                return;
+            }
+            if(strcmp(action, "invalidate_inactive") == 0) {
+                String message;
+                const bool ok = controller_ota_invalidate_inactive_slot(&message);
+                apiPrintAck("ota", ok, message.c_str());
                 return;
             }
             if(strcmp(action, "download") == 0) {
@@ -2577,7 +2606,7 @@ void handleLineCommand(char* line) {
                 ESP.restart();
                 return;
             }
-            apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
+            apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
             return;
         }
 
@@ -3123,10 +3152,24 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
             }
             rawMessage = dynamicMessage.c_str();
         }
+    } else if(strcmp(action, "ota_apply_ready") == 0 ||
+              strcmp(action, "ota_apply_ready_reboot") == 0) {
+        if(!apiCanStartOta()) {
+            rawMessage = "ota requires idle/menu state";
+        } else {
+            ok = controller_ota_mark_ready_bootable(&dynamicMessage);
+            if(ok && strcmp(action, "ota_apply_ready_reboot") == 0) {
+                dynamicMessage += "; reboot queued";
+                scheduleApiReboot();
+            }
+            rawMessage = dynamicMessage.c_str();
+        }
+    } else if(strcmp(action, "ota_invalidate_inactive") == 0) {
+        ok = controller_ota_invalidate_inactive_slot(&dynamicMessage);
+        rawMessage = dynamicMessage.c_str();
     } else if(strcmp(action, "ota_boot_next") == 0) {
-        const char* bootMessage = nullptr;
-        ok = apiSetOtaBootPartition("next", &bootMessage);
-        rawMessage = bootMessage != nullptr ? bootMessage : "";
+        ok = controller_ota_mark_ready_bootable(&dynamicMessage);
+        rawMessage = dynamicMessage.c_str();
     } else if(strcmp(action, "ota_reboot") == 0) {
         ok = apiCanStartOta();
         rawMessage = ok ? "reboot queued" : "reboot requires idle/menu state";

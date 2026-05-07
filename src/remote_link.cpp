@@ -5,6 +5,7 @@
 #include "burr_gap.h"
 #include "controller_env.h"
 #include "controller_board.h"
+#include "controller_ota.h"
 #include "comm.h"
 #include "diag_console.h"
 #include "display.h"
@@ -283,6 +284,10 @@ String remote_link_build_status_frame() {
     out += burr_gap_live() ? '1' : '0';
     out += sg98_protocol::kFrameSeparator;
     out += String(static_cast<long>(burr_gap_display_lcd_um()));
+    if(controller_ota_ready_for_remote()) {
+        out += sg98_protocol::kFrameSeparator;
+        out += '1';
+    }
     return out;
 }
 

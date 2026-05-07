@@ -59,6 +59,8 @@ struct StatusFrame {
   bool burrGapKnown = false;
   bool burrGapLive = false;
   int32_t burrGapUm = 0;
+  bool controllerOtaReadyFieldsPresent = false;
+  bool controllerOtaReady = false;
 };
 
 struct MenuFrame {
@@ -364,6 +366,10 @@ inline bool parseStatusFrame(const String& frame, StatusFrame* out) {
      detail::nextToken(frame, start, kFrameSeparator, &token) &&
      detail::parseIntToken(token, &parsed)) {
     out->burrGapUm = parsed;
+  }
+  if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
+    out->controllerOtaReadyFieldsPresent = true;
+    out->controllerOtaReady = parsed != 0;
   }
   return true;
 }

@@ -3,6 +3,7 @@
 #include "burr_gap.h"
 #include "controller_board.h"
 #include "controller_env.h"
+#include "controller_ota.h"
 #include "display.h"
 #include "main.h"
 #include "gbw.h"
@@ -437,6 +438,7 @@ void setup() {
     radio_mode_init();
     smart_purge_learning_init();
     vitals_init();
+    controller_ota_init();
     lastActivity = millis();
 }
 
