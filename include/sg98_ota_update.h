@@ -92,7 +92,10 @@ inline bool shouldCheck(const State& state, uint32_t now) {
            static_cast<uint32_t>(now - state.lastAttemptAt) >= kOnlineCheckIntervalMs;
 }
 
-inline bool checkLatestManifest(State* state, uint32_t now) {
+inline bool checkManifestUrl(State* state,
+                             uint32_t now,
+                             const String& manifestUrl,
+                             sg98_ota_download::ManifestSpec* specOut = nullptr) {
     if(state == nullptr) {
         return false;
     }
@@ -100,7 +103,6 @@ inline bool checkLatestManifest(State* state, uint32_t now) {
     state->lastAttemptAt = now;
     sg98_ota_download::ManifestSpec spec;
     sg98_ota_download::Result result;
-    const String manifestUrl = sg98_ota_source::latestManifestUrl();
     if(!sg98_ota_download::fetchManifestSpec(manifestUrl, &spec, &result)) {
         state->lastAttemptOk = false;
         state->message = result.message.length() > 0 ? result.message : String("check failed");
@@ -119,7 +121,16 @@ inline bool checkLatestManifest(State* state, uint32_t now) {
     state->latestImageSize = spec.size;
     state->updateAvailable = manifestLooksNewer(spec);
     state->message = state->updateAvailable ? "update available" : "current";
+    if(specOut != nullptr) {
+        *specOut = spec;
+    }
     return true;
+}
+
+inline bool checkLatestManifest(State* state,
+                                uint32_t now,
+                                sg98_ota_download::ManifestSpec* specOut = nullptr) {
+    return checkManifestUrl(state, now, sg98_ota_source::latestManifestUrl(), specOut);
 }
 
 inline String compactGit(const String& gitSha) {

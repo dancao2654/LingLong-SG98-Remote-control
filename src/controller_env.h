@@ -17,3 +17,5 @@ String controller_env_ota_update_line();
 String controller_env_ota_update_detail();
 bool controller_env_ota_update_available();
 uint32_t controller_env_last_ota_check_ms();
+bool controller_env_check_ota_manifest_now(const String& manifestUrl, String* message);
+bool controller_env_download_ota_if_available_now(const String& manifestUrl, String* message);

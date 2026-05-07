@@ -756,6 +756,52 @@ bool apiDownloadOtaManifest(const char* url, String* message) {
     return ok;
 }
 
+bool apiCheckOtaManifest(const char* url, String* message) {
+    const String resolvedUrl = sg98_ota_source::resolveManifestUrl(url != nullptr ? String(url) : String());
+    if(resolvedUrl.length() == 0) {
+        if(message != nullptr) {
+            *message = "usage: api ota check [url|latest]";
+        }
+        return false;
+    }
+
+    OtaWifiGuard guard;
+    String wifiMessage;
+    if(!ensureOtaWifi(&guard, &wifiMessage)) {
+        if(message != nullptr) {
+            *message = wifiMessage;
+        }
+        return false;
+    }
+
+    const bool ok = controller_env_check_ota_manifest_now(resolvedUrl, message);
+    restoreOtaWifi(guard);
+    return ok;
+}
+
+bool apiDownloadOtaIfAvailable(const char* url, String* message) {
+    const String resolvedUrl = sg98_ota_source::resolveManifestUrl(url != nullptr ? String(url) : String());
+    if(resolvedUrl.length() == 0) {
+        if(message != nullptr) {
+            *message = "usage: api ota download_if_available [url|latest]";
+        }
+        return false;
+    }
+
+    OtaWifiGuard guard;
+    String wifiMessage;
+    if(!ensureOtaWifi(&guard, &wifiMessage)) {
+        if(message != nullptr) {
+            *message = wifiMessage;
+        }
+        return false;
+    }
+
+    const bool ok = controller_env_download_ota_if_available_now(resolvedUrl, message);
+    restoreOtaWifi(guard);
+    return ok;
+}
+
 void apiPrintDevice() {
     Serial.print("{\"type\":\"device\",\"protocol\":\"sg98-usb-device-v1\",\"role\":\"controller\",\"target\":");
     jsonPrintQuoted(controller_board_target_name());
@@ -1823,9 +1869,9 @@ void printHelp() {
     Serial.println("[diag] raw-uart: mru <baud> <8N1|8N2|8E1|8E2|8O1|8O2> <slave> <reg> <count> | mwu <baud> <mode> <slave> <reg> <value>");
     Serial.println("[diag] dbg: dbg status | dbg wifi <on|off|reset|scan> | dbg espnow <on|off|coexist> | dbg ws <on|off> | dbg all off");
     Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
-    Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
+    Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota check [url|latest] | api ota download_if_available [url|latest] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|ota_manifest [latest]|ota_apply_ready_reboot>");
+    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|ota_check [latest]|ota_download_if_available [latest]|ota_manifest [latest]|ota_apply_ready_reboot>");
 }
 
 void printStatus() {
@@ -2527,7 +2573,7 @@ void handleLineCommand(char* line) {
         if(strcmp(subcmd, "ota") == 0) {
             char* action = strtok_r(nullptr, " \t", &savePtr);
             if(action == nullptr) {
-                apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
+                apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota check [url|latest] | api ota download_if_available [url|latest] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
                 return;
             }
             if(strcmp(action, "boot") == 0) {
@@ -2558,6 +2604,20 @@ void handleLineCommand(char* line) {
             if(strcmp(action, "invalidate_inactive") == 0) {
                 String message;
                 const bool ok = controller_ota_invalidate_inactive_slot(&message);
+                apiPrintAck("ota", ok, message.c_str());
+                return;
+            }
+            if(strcmp(action, "check") == 0) {
+                const char* url = strtok_r(nullptr, " \t", &savePtr);
+                String message;
+                const bool ok = apiCheckOtaManifest(url != nullptr ? url : "latest", &message);
+                apiPrintAck("ota", ok, message.c_str());
+                return;
+            }
+            if(strcmp(action, "download_if_available") == 0) {
+                const char* url = strtok_r(nullptr, " \t", &savePtr);
+                String message;
+                const bool ok = apiDownloadOtaIfAvailable(url != nullptr ? url : "latest", &message);
                 apiPrintAck("ota", ok, message.c_str());
                 return;
             }
@@ -2606,7 +2666,7 @@ void handleLineCommand(char* line) {
                 ESP.restart();
                 return;
             }
-            apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
+            apiPrintAck("ota", false, "usage: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota check [url|latest] | api ota download_if_available [url|latest] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot]");
             return;
         }
 
@@ -3127,6 +3187,24 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
         ok = apiActionAbout(&rawMessage);
     } else if(strcmp(action, "reset_defaults") == 0) {
         ok = apiActionResetDefaults(arg0, &rawMessage);
+    } else if(strcmp(action, "ota_check") == 0) {
+        if(!apiCanStartOta()) {
+            rawMessage = "ota requires idle/menu state";
+        } else {
+            const String source = (arg0 != nullptr && *arg0 != '\0') ? String(arg0) : String("latest");
+            ok = apiCheckOtaManifest(source.c_str(), &dynamicMessage);
+            rawMessage = dynamicMessage.c_str();
+        }
+    } else if(strcmp(action, "ota_download_if_available") == 0) {
+        if(!apiCanStartOta()) {
+            rawMessage = "ota requires idle/menu state";
+        } else if(nextOtaSize() == 0) {
+            rawMessage = "ota partition unavailable";
+        } else {
+            const String source = (arg0 != nullptr && *arg0 != '\0') ? String(arg0) : String("latest");
+            ok = apiDownloadOtaIfAvailable(source.c_str(), &dynamicMessage);
+            rawMessage = dynamicMessage.c_str();
+        }
     } else if(strcmp(action, "ota_manifest") == 0 ||
               strcmp(action, "ota_manifest_boot") == 0 ||
               strcmp(action, "ota_manifest_reboot") == 0) {

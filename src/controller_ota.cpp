@@ -248,6 +248,25 @@ bool controller_ota_ready_for_remote() {
     return g_cachedReady;
 }
 
+bool controller_ota_ready_matches(const sg98_ota_download::ManifestSpec& spec) {
+    if(!controller_ota_ready_for_remote()) {
+        return false;
+    }
+
+    loadMarkerIfNeeded();
+    if(spec.sha256.length() > 0 &&
+       g_marker.imageSha256.length() > 0 &&
+       !g_marker.imageSha256.equalsIgnoreCase(spec.sha256)) {
+        return false;
+    }
+    if(spec.version.length() > 0 &&
+       g_marker.version.length() > 0 &&
+       g_marker.version != spec.version) {
+        return false;
+    }
+    return true;
+}
+
 String controller_ota_ready_detail() {
     (void)controller_ota_ready_for_remote();
     return g_cachedDetail;

@@ -94,6 +94,12 @@ constexpr uint32_t kDockWeatherRetryMs = 60000;
 constexpr uint32_t kDockWeatherQuickRetryMs = 8000;
 constexpr uint32_t kNetworkFetchMinFreeHeap = 30000;
 constexpr uint32_t kFirmwareCheckUserQuietMs = 5000;
+constexpr uint32_t kAutoOtaFirstCheckDelayMs = sg98_ota_update::kOnlineCheckIntervalMs;
+constexpr uint32_t kAutoOtaRetryAfterFailureMs = 15UL * 60UL * 1000UL;
+constexpr uint32_t kAutoOtaRetryAfterNoSavedWifiMs = 60UL * 60UL * 1000UL;
+constexpr uint32_t kControllerOtaCheckBusyMs = 75000UL;
+constexpr uint32_t kControllerOtaDownloadBusyMs = 8UL * 60UL * 1000UL;
+constexpr uint32_t kControllerOtaDownloadConfirmMs = 15000UL;
 constexpr uint32_t kControllerEnvironmentRetryMs = 60000;
 constexpr uint32_t kEnvironmentShareRetryMs = 30000;
 constexpr uint32_t kAutoEspNowReturnFlashMs = 5200;
@@ -417,6 +423,8 @@ struct AppState {
     bool sendOk = false;
     bool dockClockActive = false;
     bool dockClockTimeConfigured = false;
+    bool controllerOtaActionBusy = false;
+    bool controllerOtaDownloadArmed = false;
     LinkTransport currentTransport = LinkTransport::None;
     LinkTransport pendingTransport = LinkTransport::None;
     uint32_t targetCommitAt = 0;
@@ -468,6 +476,9 @@ struct AppState {
     int16_t dockClockLastWeatherHttpCode = 0;
     uint32_t lastControllerEnvironmentRequestAt = 0;
     uint32_t lastEnvironmentShareAt = 0;
+    uint32_t nextAutoOtaCheckAt = 0;
+    uint32_t controllerOtaActionUntil = 0;
+    uint32_t controllerOtaDownloadArmUntil = 0;
     uint32_t homeWheelAnimatedAt = 0;
     uint32_t homeWheelFrameAt = 0;
     int16_t menuEncoderRemainder = 0;
@@ -542,6 +553,11 @@ struct SleepSnapshot {
     PersistedStatusFrame status = {};
 };
 
+struct RemoteOtaWifiGuard {
+    LinkTransport previousTransport = LinkTransport::None;
+    bool switchedTransport = false;
+};
+
 template <size_t N>
 constexpr size_t arrayCount(const SettingItem (&)[N]) {
     return N;
@@ -552,6 +568,8 @@ bool isRadioModeItem(const SettingItem& item);
 bool isGaugeSetItem(const SettingItem& item);
 String gaugeGapLabelFromMenuValue(int32_t value);
 bool isConfirmActionItem(const SettingItem& item);
+bool isControllerOtaActionItem(const SettingItem& item);
+bool controllerOtaDownloadArmed();
 bool usesChoiceEditor(const SettingItem& item);
 bool hasActiveEspNowPeer();
 bool isEspNowPeerSlotItem(const SettingItem& item);
@@ -562,6 +580,8 @@ String espNowPeerLabelForItem(const SettingItem& item);
 bool pendingControllerSyncActive();
 void requestWebSocketDiscovery(bool resetSession);
 void switchTransportNow(LinkTransport transport);
+void restoreOtaWifi(const RemoteOtaWifiGuard& guard);
+bool ensureOtaWifi(RemoteOtaWifiGuard* guard, String* message);
 bool setEspNowChannel(uint8_t channel);
 bool webFallbackEspNowActive(uint32_t now);
 void remoteConsolePoll();
@@ -609,6 +629,7 @@ constexpr SettingItem kGbwItems[] = {
     {"Motor direction", ItemKind::Toggle, 1, SETMOTORDIRECTION, 0, 1, 1, "", nullptr, nullptr},
     {"Drive", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "drive"},
     {"Calibrate", ItemKind::Action, 0, 0, 0, 0, 0, "", "calibrate", nullptr},
+    {"Controller OTA", ItemKind::Action, 0, 0, 0, 0, 0, "", "controller_ota", nullptr},
     {"GbW RPM", ItemKind::Value, 3, GBW_RPM_SET, 200, 1500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow RPM", ItemKind::Value, 3, GBW_SLOW_RPM, rpm_scalar, 500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow mg", ItemKind::Value, 3, GBW_SLOW_MG, 0, 6000, 100, "mg", nullptr, nullptr},
@@ -621,7 +642,7 @@ constexpr SettingItem kGbwItems[] = {
 constexpr SettingItem kNetworkItems[] = {
     {"Wireless", ItemKind::Value, 1, RADIOMODE, 0, 2, 1, "", nullptr, nullptr},
     {"Controller link", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "peers"},
-    {"Controller OTA", ItemKind::Danger, 0, 0, 0, 0, 0, "", "controller_ota", nullptr},
+    {"Controller OTA", ItemKind::Action, 0, 0, 0, 0, 0, "", "controller_ota", nullptr},
     {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
 };
 
@@ -1469,6 +1490,9 @@ String displayHintForItem(const SettingItem& item) {
     if(isConfirmActionItem(item)) {
         return "CHOOSE NO OR YES";
     }
+    if(isControllerOtaActionItem(item)) {
+        return controllerOtaDownloadArmed() ? "CONFIRM DOWNLOAD" : "CHECK CONTROLLER UPDATE";
+    }
 
     switch(item.kind) {
         case ItemKind::Toggle:
@@ -2258,24 +2282,76 @@ bool remoteCanUseBackgroundNetwork() {
            static_cast<uint32_t>(millis() - app.lastControlActivityAt) >= kFirmwareCheckUserQuietMs;
 }
 
+void scheduleRemoteAutoOtaCheck(uint32_t now, uint32_t delayMs) {
+    app.nextAutoOtaCheckAt = now + delayMs;
+}
+
+bool remoteAutoOtaDue(uint32_t now) {
+    if(app.nextAutoOtaCheckAt == 0) {
+        scheduleRemoteAutoOtaCheck(now, kAutoOtaFirstCheckDelayMs);
+        return false;
+    }
+    return msUntilDeadline(now, app.nextAutoOtaCheckAt) == 0;
+}
+
 void serviceFirmwareUpdateCheck(uint32_t now) {
-    if(!remote_wifi_sta_connected() || !remoteCanUseBackgroundNetwork()) {
+    RemoteOtaWifiGuard wifiGuard;
+    bool temporaryWifi = false;
+
+    if(!remoteCanUseBackgroundNetwork()) {
         return;
     }
     if(ESP.getFreeHeap() < kNetworkFetchMinFreeHeap) {
         return;
     }
 
-    struct tm timeInfo = {};
-    const bool internetSynced = localClockTime(&timeInfo) || app.dockWeather.valid;
-    if(!internetSynced) {
-        return;
+    if(!remote_wifi_sta_connected()) {
+        if(!remoteAutoOtaDue(now)) {
+            return;
+        }
+        if(isEspNowLinkOnline()) {
+            scheduleRemoteAutoOtaCheck(now, kAutoOtaRetryAfterFailureMs);
+            return;
+        }
+        if(!sg98_ota_update::shouldCheck(app.otaUpdate, now)) {
+            scheduleRemoteAutoOtaCheck(now, sg98_ota_update::kOnlineCheckIntervalMs);
+            return;
+        }
+        if(!remote_wifi_has_saved_network()) {
+            scheduleRemoteAutoOtaCheck(now, kAutoOtaRetryAfterNoSavedWifiMs);
+            return;
+        }
+
+        String wifiMessage;
+        if(!ensureOtaWifi(&wifiGuard, &wifiMessage)) {
+            app.otaUpdate.message = wifiMessage;
+            scheduleRemoteAutoOtaCheck(now, kAutoOtaRetryAfterFailureMs);
+            return;
+        }
+        temporaryWifi = true;
+        now = millis();
+    } else {
+        struct tm timeInfo = {};
+        const bool internetSynced = localClockTime(&timeInfo) || app.dockWeather.valid;
+        if(!internetSynced) {
+            return;
+        }
     }
+
     if(!sg98_ota_update::shouldCheck(app.otaUpdate, now)) {
+        if(temporaryWifi) {
+            restoreOtaWifi(wifiGuard);
+            scheduleRemoteAutoOtaCheck(millis(), sg98_ota_update::kOnlineCheckIntervalMs);
+        }
         return;
     }
 
-    (void)sg98_ota_update::checkLatestManifest(&app.otaUpdate, now);
+    const bool ok = sg98_ota_update::checkLatestManifest(&app.otaUpdate, now);
+    if(temporaryWifi) {
+        restoreOtaWifi(wifiGuard);
+        scheduleRemoteAutoOtaCheck(millis(), ok ? sg98_ota_update::kOnlineCheckIntervalMs
+                                                : kAutoOtaRetryAfterFailureMs);
+    }
     if(app.screen == Screen::About) {
         app.redraw = true;
     }
@@ -3571,6 +3647,54 @@ bool controllerOtaReady() {
            app.status.controllerOtaReady;
 }
 
+bool controllerOtaActionBusy() {
+    return app.controllerOtaActionBusy && millis() < app.controllerOtaActionUntil;
+}
+
+bool controllerOtaDownloadArmed() {
+    return app.controllerOtaDownloadArmed && millis() < app.controllerOtaDownloadArmUntil;
+}
+
+void clearControllerOtaBusy() {
+    app.controllerOtaActionBusy = false;
+    app.controllerOtaActionUntil = 0;
+    if(app.flashTitle.startsWith("CONTROLLER OTA")) {
+        app.flashUntil = 0;
+        app.flashTitle = "";
+        app.flashSubtitle = "";
+    }
+    app.redraw = true;
+}
+
+void clearControllerOtaDownloadArm() {
+    app.controllerOtaDownloadArmed = false;
+    app.controllerOtaDownloadArmUntil = 0;
+    app.redraw = true;
+}
+
+void armControllerOtaDownload() {
+    app.controllerOtaDownloadArmed = true;
+    app.controllerOtaDownloadArmUntil = millis() + kControllerOtaDownloadConfirmMs;
+    app.redraw = true;
+}
+
+bool isControllerOtaActionItem(const SettingItem& item) {
+    return item.action != nullptr && strcmp(item.action, "controller_ota") == 0;
+}
+
+String controllerOtaActionValue() {
+    if(controllerOtaReady()) {
+        return "READY";
+    }
+    if(controllerOtaActionBusy()) {
+        return "BUSY";
+    }
+    if(controllerOtaDownloadArmed()) {
+        return "DOWNLOAD";
+    }
+    return "CHECK";
+}
+
 int applyDialDirection(int delta) {
     if(delta == 0) {
         return 0;
@@ -3726,6 +3850,18 @@ void showFlashScreen(const String& title, const String& subtitle, uint32_t durat
     app.flashAccent = accent;
     app.flashUntil = millis() + durationMs;
     app.redraw = true;
+}
+
+void serviceControllerOtaUi(uint32_t now) {
+    if(app.controllerOtaActionBusy && msUntilDeadline(now, app.controllerOtaActionUntil) == 0) {
+        clearControllerOtaBusy();
+        clearControllerOtaDownloadArm();
+        setToast("Controller OTA timeout", 1800);
+    }
+    if(app.controllerOtaDownloadArmed && msUntilDeadline(now, app.controllerOtaDownloadArmUntil) == 0) {
+        clearControllerOtaDownloadArm();
+        setToast("OTA download canceled", 1200);
+    }
 }
 
 void serviceFlashScreen(uint32_t now) {
@@ -3930,6 +4066,9 @@ String formatSettingValue(const SettingItem& item) {
         }
         if(isConfirmActionItem(item)) {
             return "CONFIRM";
+        }
+        if(isControllerOtaActionItem(item)) {
+            return controllerOtaActionValue();
         }
         if(item.action != nullptr && strcmp(item.action, "screen") == 0) {
             if(item.actionArg != nullptr && strcmp(item.actionArg, "about") == 0) {
@@ -7722,6 +7861,7 @@ void drawMenuList(RemoteCanvas& canvas, const Layout& layout, const char* title)
                                       isEspNowPeerScanItem(current) ||
                                       isEspNowPeerClearItem(current) ||
                                       isRadioModeItem(current) ||
+                                      isControllerOtaActionItem(current) ||
                                       (current.action != nullptr && strcmp(current.action, "screen") == 0);
         const bool currentGaugeValuePreview = showValuePreview && isGaugeSetItem(current) && gaugeSetMenuValueKnown();
         const String currentValue = showValuePreview ? upperText(formatSettingValue(current)) : String("");
@@ -9514,10 +9654,10 @@ void consumeMenuFrame(const sg98_protocol::MenuFrame& frame) {
     requestFullControllerRefreshOnLinkOnline(wasOnline);
 }
 
-void upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
+bool upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
     uint8_t mac[6] = {};
     if(!parseMacAddress(frame.mac, mac) || macAddressIsZero(mac)) {
-        return;
+        return false;
     }
 
     int targetIndex = -1;
@@ -9554,7 +9694,8 @@ void upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
                                  !lockedEspNowPeerMatches(peer.mac) &&
                                  !isLinkOnline();
     const bool shouldAutoLock = !hasActiveEspNowPeer() || staleLockedPeer;
-    if(lockedEspNowPeerMatches(peer.mac) || shouldAutoLock) {
+    const bool lockedPeerMatches = lockedEspNowPeerMatches(peer.mac);
+    if(lockedPeerMatches || shouldAutoLock) {
         (void)setEspNowChannel(peer.channel);
     }
     if(shouldAutoLock) {
@@ -9568,12 +9709,14 @@ void upsertDiscoveredEspNowPeer(const sg98_protocol::PeerFrame& frame) {
     }
     sanitizeSelections();
     app.redraw = app.redraw || app.screen == Screen::EspNowPeers;
+    return lockedPeerMatches || shouldAutoLock;
 }
 
 void consumePeerFrame(const sg98_protocol::PeerFrame& frame) {
     clearRecoveredSendFailureToast();
-    app.lastLinkActivityAt = millis();
-    upsertDiscoveredEspNowPeer(frame);
+    if(upsertDiscoveredEspNowPeer(frame)) {
+        app.lastLinkActivityAt = millis();
+    }
 }
 
 void consumeEnvironmentFrame(const sg98_protocol::EnvironmentFrame& frame) {
@@ -9607,6 +9750,49 @@ void consumeEnvironmentFrame(const sg98_protocol::EnvironmentFrame& frame) {
     if(changed) {
         app.redraw = true;
     }
+}
+
+bool handleControllerOtaAck(const sg98_protocol::AckFrame& ackFrame) {
+    if(!app.controllerOtaActionBusy) {
+        return false;
+    }
+
+    String message = ackFrame.message;
+    String lower = message;
+    lower.toLowerCase();
+    if(lower == "wifi saved" || lower == "wifi not saved" || lower == "env synced" || lower == "env ok") {
+        return true;
+    }
+
+    clearControllerOtaBusy();
+    if(!ackFrame.ok) {
+        clearControllerOtaDownloadArm();
+        setToast(String("OTA ERR: ") + message, 2600);
+        return true;
+    }
+
+    if(lower.startsWith("update available")) {
+        armControllerOtaDownload();
+        setToast("Update found: press OTA again", kControllerOtaDownloadConfirmMs);
+        return true;
+    }
+
+    if(lower.startsWith("download ready")) {
+        clearControllerOtaDownloadArm();
+        app.lastStatusPollAt = 0;
+        setToast("Controller OTA ready", 2400);
+        return true;
+    }
+
+    if(lower == "current" || lower.startsWith("current ")) {
+        clearControllerOtaDownloadArm();
+        setToast("Controller is current", 1800);
+        return true;
+    }
+
+    clearControllerOtaDownloadArm();
+    setToast(message.length() > 0 ? message : String("Controller OTA done"), 2200);
+    return true;
 }
 
 void consumeProtocolFrame(const String& frame) {
@@ -9666,6 +9852,9 @@ void consumeProtocolFrame(const String& frame) {
             requestWebFallbackWifiRelease(millis());
         }
         if(ackFrame.ok && ackFrame.message == "ok") {
+            return;
+        }
+        if(handleControllerOtaAck(ackFrame)) {
             return;
         }
         setToast(ackFrame.ok ? ackFrame.message : String("ERR: ") + ackFrame.message);
@@ -10035,9 +10224,47 @@ bool sendControllerWifiConfigIfAvailable() {
     return sendRaw(sg98_protocol::wifiConfig(ssid, remote_wifi_sta_password()));
 }
 
-bool requestControllerOta(String* message) {
+void beginControllerOtaBusy(const String& title, const String& subtitle, uint32_t durationMs) {
+    app.controllerOtaActionBusy = true;
+    app.controllerOtaActionUntil = millis() + durationMs;
+    showFlashScreen(title, subtitle, durationMs, kColorAccent2);
+}
+
+bool requestControllerOtaCheck(String* message) {
+    if(controllerOtaActionBusy()) {
+        if(message != nullptr) {
+            *message = "OTA already running";
+        }
+        return false;
+    }
+
     const bool wifiSent = sendControllerWifiConfigIfAvailable();
-    const bool otaSent = sendAction("ota_manifest", "latest");
+    const bool otaSent = sendAction("ota_check", "latest");
+    if(message != nullptr) {
+        if(otaSent && wifiSent) {
+            *message = "Wi-Fi + OTA check sent";
+        } else if(otaSent) {
+            *message = "OTA check sent";
+        } else {
+            *message = "OTA send failed";
+        }
+    }
+    if(otaSent) {
+        beginControllerOtaBusy("CONTROLLER OTA", "Checking for update", kControllerOtaCheckBusyMs);
+    }
+    return otaSent;
+}
+
+bool requestControllerOtaDownload(String* message) {
+    if(controllerOtaActionBusy()) {
+        if(message != nullptr) {
+            *message = "OTA already running";
+        }
+        return false;
+    }
+
+    const bool wifiSent = sendControllerWifiConfigIfAvailable();
+    const bool otaSent = sendAction("ota_download_if_available", "latest");
     if(message != nullptr) {
         if(otaSent && wifiSent) {
             *message = "Wi-Fi + OTA download sent";
@@ -10047,7 +10274,18 @@ bool requestControllerOta(String* message) {
             *message = "OTA send failed";
         }
     }
+    if(otaSent) {
+        clearControllerOtaDownloadArm();
+        beginControllerOtaBusy("CONTROLLER OTA", "Downloading update", kControllerOtaDownloadBusyMs);
+    }
     return otaSent;
+}
+
+bool requestControllerOta(String* message) {
+    if(controllerOtaDownloadArmed()) {
+        return requestControllerOtaDownload(message);
+    }
+    return requestControllerOtaCheck(message);
 }
 
 void confirmControllerOtaReady() {
@@ -10081,7 +10319,9 @@ String actionFeedbackLabel(const SettingItem& item) {
     if(strcmp(item.action, "reset_defaults") == 0) return "Defaults reset";
     if(strcmp(item.action, "about") == 0) return sg98_version::aboutVersionLine();
     if(strcmp(item.action, "calibrate") == 0) return "Calibration started";
-    if(strcmp(item.action, "controller_ota") == 0) return "OTA download requested";
+    if(strcmp(item.action, "controller_ota") == 0) {
+        return controllerOtaDownloadArmed() ? "OTA download requested" : "OTA check requested";
+    }
     if(strcmp(item.action, "redetect") == 0) return "Detecting drive";
     if(strcmp(item.action, "drive") == 0) return "Drive applied";
     if(strcmp(item.action, "jmc_baud") == 0) return "Baud applied";
@@ -12570,11 +12810,6 @@ bool setOtaBootPartition(String target, String* message) {
     return true;
 }
 
-struct RemoteOtaWifiGuard {
-    LinkTransport previousTransport = LinkTransport::None;
-    bool switchedTransport = false;
-};
-
 void restoreOtaWifi(const RemoteOtaWifiGuard& guard) {
     if(guard.switchedTransport && guard.previousTransport != LinkTransport::WebSocket) {
         switchTransportNow(guard.previousTransport);
@@ -12756,7 +12991,7 @@ void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
-    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|controller_ota|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
+    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
     Serial.println("[remote-diag] wifi: wifi phone <controller_ap_ssid> <home_ssid> <home_password>");
@@ -12926,6 +13161,16 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
 
     if(action == "controller_ota") {
         const bool ok = requestControllerOta(message);
+        return ok;
+    }
+
+    if(action == "controller_ota_check") {
+        const bool ok = requestControllerOtaCheck(message);
+        return ok;
+    }
+
+    if(action == "controller_ota_download") {
+        const bool ok = requestControllerOtaDownload(message);
         return ok;
     }
 
@@ -13497,6 +13742,7 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("audio", sectionStartUs, loopStartUs, input);
     remoteConsolePoll();
     sectionStartUs = traceLoopStep("console_poll", sectionStartUs, loopStartUs, input);
+    serviceControllerOtaUi(now);
 
     const bool hasControlInput =
         input.dialDelta != 0 || input.primaryPressed || input.primaryLongPress || input.primaryShortPress ||
@@ -13514,6 +13760,19 @@ void remote_app_loop() {
         input.secondaryShortPress = false;
         input.secondaryLongPress = false;
         input.touch = {};
+    }
+    if(controllerOtaActionBusy() && hasControlInput) {
+        markUserActivity(now);
+        app.lastControlActivityAt = now;
+        input.dialDelta = 0;
+        input.primaryPressed = false;
+        input.primaryShortPress = false;
+        input.primaryLongPress = false;
+        input.secondaryPressed = false;
+        input.secondaryShortPress = false;
+        input.secondaryLongPress = false;
+        input.touch = {};
+        setToast("Controller OTA running", 900);
     }
     if(hasControlInput) {
         app.lastControlActivityAt = now;
