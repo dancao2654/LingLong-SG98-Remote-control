@@ -1,16 +1,20 @@
 #include "radio_mode.h"
 
+#include "burr_gap.h"
 #include "controller_env.h"
 #include "controller_board.h"
 #include "display.h"
 #include "espnow_control.h"
 #include "main.h"
+#include "remote_ws.h"
 #include "wifi_ui.h"
 
 namespace {
 constexpr unsigned long HEADLESS_ESPNOW_BOOT_RECOVERY_MS = 60000;
 constexpr unsigned long HEADLESS_ESPNOW_REMOTE_LOST_MS = 60000;
+constexpr unsigned long HEADLESS_WEB_RECOVERY_MIN_MS = 120000;
 constexpr unsigned long ESPNOW_LINK_HEALTHY_MS = 5000;
+constexpr unsigned long ESPNOW_RECOVERY_REQUEST_MS = 15000;
 constexpr unsigned long HOME_WIFI_SYNC_GRACE_MS = 120000;
 constexpr unsigned long INTERNET_SYNC_GRACE_MS = 45000;
 constexpr unsigned long WIFI_SESSION_IDLE_TIMEOUT_MS = 600000;
@@ -30,6 +34,7 @@ unsigned long homeWifiOnlineSince = 0;
 unsigned long captiveDoneMarkedAt = 0;
 unsigned long nextInternetSyncAt = 0;
 unsigned long internetSyncStartedAt = 0;
+unsigned long webRecoveryStartedAt = 0;
 
 bool isMenuOrIdleState(States currentState) {
     switch(currentState) {
@@ -56,6 +61,7 @@ void clearEspNowRecoveryWatch() {
 
 void startEspNowRecoveryWatchIfNeeded() {
     webRecoveryActive = false;
+    webRecoveryStartedAt = 0;
     clearEspNowRecoveryWatch();
     if(!controller_board_requires_remote_recovery() || currentMode != RADIO_MODE_ESPNOW) {
         return;
@@ -88,11 +94,13 @@ void switchToWebRecoverySession() {
     espnow_control_stop();
     const bool webOk = wifi_ui_start();
     if(webOk) {
+        const bool espnowOk = espnow_control_start(true);
         currentMode = RADIO_MODE_WEB;
-        Menu1[Menu1Items::RADIOMODE].value = currentMode;
         webRecoveryActive = true;
+        webRecoveryStartedAt = millis();
         disp_updateRequired = true;
-        Serial.println("[radio] headless ESP-NOW silent; Wi-Fi recovery active");
+        Serial.printf("[radio] headless ESP-NOW silent; Wi-Fi recovery active espnow=%s\n",
+                      espnowOk ? "coexist" : "failed");
         return;
     }
 
@@ -129,6 +137,11 @@ bool espNowLinkHealthy() {
     return lastCommandAt != 0 && (millis() - lastCommandAt) <= ESPNOW_LINK_HEALTHY_MS;
 }
 
+bool espNowRecoveryRequested() {
+    const unsigned long requestedAt = espnow_control_last_recovery_request_at();
+    return requestedAt != 0 && (millis() - requestedAt) <= ESPNOW_RECOVERY_REQUEST_MS;
+}
+
 bool localEnvironmentSynced() {
     return controller_env_time_valid() || controller_env_weather_valid();
 }
@@ -148,6 +161,20 @@ bool homeWifiSetupSynced() {
         return localEnvironmentSyncedSince(internetSyncStartedAt);
     }
     return localEnvironmentSynced();
+}
+
+void serviceGaugeStatusPush() {
+    const uint32_t sequence = burr_gap_read_change_sequence();
+    if(sequence == 0) {
+        return;
+    }
+
+    if(radio_mode_is_web() || radio_mode_is_dual() || wifi_ui_is_active()) {
+        remote_ws_broadcast_status_if_due(sequence);
+    }
+    if(radio_mode_is_espnow() || radio_mode_is_dual() || espnow_control_is_active()) {
+        espnow_control_push_status_if_due(sequence);
+    }
 }
 
 bool homeWifiSetupReadyByTimeout() {
@@ -187,6 +214,7 @@ void closeWebBridgeIfReady() {
         captiveDoneMarkedAt = 0;
         internetSyncActive = false;
         internetSyncStartedAt = 0;
+        webRecoveryStartedAt = 0;
         wifi_ui_set_captive_setup_complete(false);
         return;
     }
@@ -195,8 +223,19 @@ void closeWebBridgeIfReady() {
     const bool syncTimedOut = !internetSynced && homeWifiSetupReadyByTimeout();
     const bool setupReady = internetSynced || syncTimedOut;
     const bool idleTimedOut = wifi_ui_web_idle_for(WIFI_SESSION_IDLE_TIMEOUT_MS);
-    const bool shouldAutoPark = webRecoveryActive || internetSyncActive || idleTimedOut;
-    if(!setupReady && !idleTimedOut) {
+    const bool recoveredEspNowReady = controller_board_requires_remote_recovery() &&
+                                      espNowRecoveryRequested() &&
+                                      wifi_ui_ap_station_count() == 0;
+    const bool headlessRecoveryHold = webRecoveryActive &&
+                                      controller_board_requires_remote_recovery() &&
+                                      webRecoveryStartedAt != 0 &&
+                                      !recoveredEspNowReady &&
+                                      (millis() - webRecoveryStartedAt) < HEADLESS_WEB_RECOVERY_MIN_MS;
+    const bool shouldAutoPark = recoveredEspNowReady ||
+                                (webRecoveryActive && !headlessRecoveryHold) ||
+                                internetSyncActive ||
+                                idleTimedOut;
+    if(!setupReady && !idleTimedOut && !recoveredEspNowReady) {
         captiveDoneMarkedAt = 0;
         wifi_ui_set_captive_setup_complete(false);
         return;
@@ -228,6 +267,7 @@ void closeWebBridgeIfReady() {
     if(espnow_control_start()) {
         currentMode = RADIO_MODE_ESPNOW;
         webRecoveryActive = false;
+        webRecoveryStartedAt = 0;
         internetSyncActive = false;
         internetSyncStartedAt = 0;
         internetSyncPending = true;
@@ -236,8 +276,14 @@ void closeWebBridgeIfReady() {
         captiveDoneMarkedAt = 0;
         startEspNowRecoveryWatchIfNeeded();
         disp_updateRequired = true;
+        const char* parkReason = "idle timeout";
+        if(recoveredEspNowReady) {
+            parkReason = "ESP-NOW recovery requested";
+        } else if(setupReady) {
+            parkReason = internetSynced ? "internet sync complete" : "setup grace complete";
+        }
         Serial.printf("[radio] Wi-Fi %s; parked in ESP-NOW\n",
-                      setupReady ? (internetSynced ? "internet sync complete" : "setup grace complete") : "idle timeout");
+                      parkReason);
         return;
     }
 
@@ -245,6 +291,7 @@ void closeWebBridgeIfReady() {
         currentMode = RADIO_MODE_WEB;
         Menu1[Menu1Items::RADIOMODE].value = RADIO_MODE_WEB;
         webRecoveryActive = true;
+        webRecoveryStartedAt = millis();
         internetSyncActive = false;
         internetSyncStartedAt = 0;
         captiveDoneMarkedAt = 0;
@@ -319,6 +366,7 @@ void radio_mode_poll() {
         espnow_control_poll();
         serviceEspNowRecoveryWatch();
     }
+    serviceGaugeStatusPush();
 }
 
 bool radio_mode_apply(bool force) {
@@ -329,6 +377,7 @@ bool radio_mode_apply(bool force) {
             webRecoveryActive = false;
             internetSyncActive = false;
             internetSyncStartedAt = 0;
+            webRecoveryStartedAt = 0;
         }
         return true;
     }
@@ -336,6 +385,7 @@ bool radio_mode_apply(bool force) {
     if(initialized || force) {
         clearEspNowRecoveryWatch();
         webRecoveryActive = false;
+        webRecoveryStartedAt = 0;
         internetSyncActive = false;
         internetSyncStartedAt = 0;
         if(desiredMode == RADIO_MODE_OFF) {
@@ -351,6 +401,11 @@ bool radio_mode_apply(bool force) {
         ok = true;
     } else if(desiredMode == RADIO_MODE_WEB) {
         ok = wifi_ui_start();
+        if(ok && controller_board_requires_remote_recovery()) {
+            const bool espnowOk = espnow_control_start(true);
+            Serial.printf("[radio] Wi-Fi mode ESP-NOW recovery=%s\n",
+                          espnowOk ? "coexist" : "failed");
+        }
     } else if(desiredMode == RADIO_MODE_DUAL) {
         ok = wifi_ui_start() && espnow_control_start(true);
     } else {
@@ -374,6 +429,7 @@ bool radio_mode_apply(bool force) {
             initialized = true;
             disp_updateRequired = true;
             webRecoveryActive = controller_board_requires_remote_recovery();
+            webRecoveryStartedAt = webRecoveryActive ? millis() : 0;
             Serial.println("[radio] esp-now start failed, restored WEB mode");
         }
     } else if(desiredMode == RADIO_MODE_DUAL) {

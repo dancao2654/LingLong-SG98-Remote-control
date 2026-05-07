@@ -56,11 +56,18 @@ const RemoteBoardDriver* const kDrivers[] = {
 const RemoteBoardDriver* const kDrivers[] = {
     remote_board_waveshare_amoled175_driver(),
 };
+#elif defined(REMOTE_BOARD_FORCE_LILYGO_T4_S3_H678)
+const RemoteBoardDriver* const kDrivers[] = {
+    remote_board_lilygo_t4_s3_h678_driver(),
+};
 #else
 const RemoteBoardDriver* const kDrivers[] = {
     // Probe the more specific CrowPanel variants before the generic fallback.
     remote_board_crowpanel_rotary21_driver(),
     remote_board_crowpanel_driver(),
+#if defined(REMOTE_ENABLE_LILYGO_T4_S3_H678)
+    remote_board_lilygo_t4_s3_h678_driver(),
+#endif
     remote_board_waveshare_amoled175_driver(),
 };
 #endif
@@ -76,7 +83,7 @@ bool remote_board_init() {
         }
 
 #if defined(REMOTE_BOARD_FORCE_CROWPANEL_128) || defined(REMOTE_BOARD_FORCE_CROWPANEL_21) || \
-    defined(REMOTE_BOARD_FORCE_WAVESHARE_175)
+    defined(REMOTE_BOARD_FORCE_WAVESHARE_175) || defined(REMOTE_BOARD_FORCE_LILYGO_T4_S3_H678)
         remote_board_console().printf("[remote] forced board: %s\n", driver->key);
         if(driver->init()) {
             g_activeDriver = driver;

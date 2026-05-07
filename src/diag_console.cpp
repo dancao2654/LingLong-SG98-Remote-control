@@ -31,6 +31,8 @@
 namespace {
 bool streamEnabled = false;
 unsigned long lastStreamAt = 0;
+bool pendingApiReboot = false;
+unsigned long pendingApiRebootAt = 0;
 uint8_t lastObservedError = 0xFF;
 uint16_t lastObservedFaultCode = 0xFFFF;
 uint8_t lastObservedCommStatus = 0xFF;
@@ -40,6 +42,7 @@ char serialLineBuffer[384];
 size_t serialLineLen = 0;
 char otaMessageBuffer[160];
 
+constexpr unsigned long kApiRebootDelayMs = 750;
 constexpr uint8_t kGaugeProbeFrameBits = 24;
 constexpr uint32_t kGaugeProbeFrameGapUs = 5000;
 constexpr uint16_t kGaugeProbeDefaultMs = 1000;
@@ -272,8 +275,8 @@ bool defaultGaugeProbeMapping(uint8_t* clkPin, uint8_t* dataPin, const char** he
 GaugeProbeResult runGaugeProbe(uint8_t clkPin, uint8_t dataPin, uint16_t durationMs) {
     GaugeProbeResult result;
 
-    pinMode(clkPin, INPUT);
-    pinMode(dataPin, INPUT);
+    pinMode(clkPin, INPUT_PULLUP);
+    pinMode(dataPin, INPUT_PULLUP);
     delayMicroseconds(100);
 
     uint8_t lastClk = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(clkPin)) != 0);
@@ -338,6 +341,8 @@ GaugeProbeResult runGaugeProbe(uint8_t clkPin, uint8_t dataPin, uint16_t duratio
 
     result.finalClk = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(clkPin)) != 0);
     result.finalData = static_cast<uint8_t>(gpio_get_level(static_cast<gpio_num_t>(dataPin)) != 0);
+    pinMode(clkPin, INPUT_PULLUP);
+    pinMode(dataPin, INPUT_PULLUP);
     return result;
 }
 
@@ -569,6 +574,29 @@ String nextOtaOffsetHex() {
 uint32_t nextOtaSize() {
     const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
     return partition != nullptr ? partition->size : 0;
+}
+
+bool apiCanStartOta() {
+    switch(state) {
+        case IDLE:
+        case IDLE_GBW:
+        case MENU1:
+        case MENU2:
+        case MENU3:
+        case MENU4:
+        case MENU5:
+        case MOTOR_SELECT:
+        case NETWORK_INFO:
+        case ABOUT_INFO:
+            return true;
+        default:
+            return false;
+    }
+}
+
+void scheduleApiReboot() {
+    pendingApiReboot = true;
+    pendingApiRebootAt = millis() + kApiRebootDelayMs;
 }
 
 const esp_partition_t* otaBootPartitionForToken(const char* token) {
@@ -1786,7 +1814,7 @@ void printHelp() {
     Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
     Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm>");
+    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|jmc_baud <baud>|reset_network|reset_defaults confirm|ota_manifest [latest]|ota_manifest_reboot [latest]>");
 }
 
 void printStatus() {
@@ -3032,6 +3060,7 @@ bool diag_api_set_weight(int32_t value, String* message) {
 
 bool diag_api_run_action(const char* action, const char* arg0, const char* arg1, String* message) {
     const char* rawMessage = "unknown action";
+    String dynamicMessage;
     bool ok = false;
 
     if(action == nullptr) {
@@ -3069,6 +3098,41 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
         ok = apiActionAbout(&rawMessage);
     } else if(strcmp(action, "reset_defaults") == 0) {
         ok = apiActionResetDefaults(arg0, &rawMessage);
+    } else if(strcmp(action, "ota_manifest") == 0 ||
+              strcmp(action, "ota_manifest_boot") == 0 ||
+              strcmp(action, "ota_manifest_reboot") == 0) {
+        if(!apiCanStartOta()) {
+            rawMessage = "ota requires idle/menu state";
+        } else if(nextOtaSize() == 0) {
+            rawMessage = "ota partition unavailable";
+        } else {
+            const String source = (arg0 != nullptr && *arg0 != '\0') ? String(arg0) : String("latest");
+            ok = apiDownloadOtaManifest(source.c_str(), &dynamicMessage);
+            if(ok && (strcmp(action, "ota_manifest_boot") == 0 ||
+                      strcmp(action, "ota_manifest_reboot") == 0)) {
+                const char* bootMessage = nullptr;
+                ok = apiSetOtaBootPartition("next", &bootMessage);
+                if(dynamicMessage.length() > 0) {
+                    dynamicMessage += "; ";
+                }
+                dynamicMessage += bootMessage != nullptr ? bootMessage : "";
+                if(ok && strcmp(action, "ota_manifest_reboot") == 0) {
+                    dynamicMessage += "; reboot queued";
+                    scheduleApiReboot();
+                }
+            }
+            rawMessage = dynamicMessage.c_str();
+        }
+    } else if(strcmp(action, "ota_boot_next") == 0) {
+        const char* bootMessage = nullptr;
+        ok = apiSetOtaBootPartition("next", &bootMessage);
+        rawMessage = bootMessage != nullptr ? bootMessage : "";
+    } else if(strcmp(action, "ota_reboot") == 0) {
+        ok = apiCanStartOta();
+        rawMessage = ok ? "reboot queued" : "reboot requires idle/menu state";
+        if(ok) {
+            scheduleApiReboot();
+        }
     } else if(strcmp(action, "stream") == 0) {
         streamEnabled = (arg0 != nullptr && strcmp(arg0, "on") == 0);
         rawMessage = streamEnabled ? "on" : "off";
@@ -3108,6 +3172,13 @@ void diag_console_init() {
 }
 
 void diag_console_poll() {
+    if(pendingApiReboot && static_cast<int32_t>(millis() - pendingApiRebootAt) >= 0) {
+        pendingApiReboot = false;
+        Serial.println("[diag] api reboot now");
+        Serial.flush();
+        ESP.restart();
+    }
+
     while(Serial.available() > 0) {
         const int raw = Serial.read();
         if(raw < 0) {

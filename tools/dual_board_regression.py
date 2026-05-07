@@ -35,12 +35,34 @@ class SerialConsole:
     def __init__(self, label, port, baudrate=115200, timeout=0.2):
         self.label = label
         self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
         self.ser = serial.Serial(port, baudrate, timeout=timeout, dsrdtr=True, rtscts=False)
         self.log = deque(maxlen=200)
         self.timings = []
 
     def close(self):
-        self.ser.close()
+        if self.ser and self.ser.is_open:
+            self.ser.close()
+
+    def reopen(self, timeout=25.0):
+        self.close()
+        end = time.time() + timeout
+        last_error = None
+        while time.time() < end:
+            try:
+                self.ser = serial.Serial(self.port,
+                                         self.baudrate,
+                                         timeout=self.timeout,
+                                         dsrdtr=True,
+                                         rtscts=False)
+                time.sleep(0.8)
+                self.drain(0.8)
+                return
+            except serial.SerialException as exc:
+                last_error = exc
+                time.sleep(0.5)
+        raise TestFailure(f"{self.label}: could not reopen {self.port} after reboot: {last_error}")
 
     def _record(self, line):
         self.log.append(line)
@@ -233,6 +255,50 @@ class DualBoardRegression:
                     f"controller did not stay in ESP-NOW mode: {controller_status}")
         return status
 
+    def wait_controller_mode(self, mode, recovery=None, timeout=20.0):
+        def check():
+            status = self.controller_status()
+            if status["radioMode"] != mode:
+                return None
+            if recovery is not None and bool(status.get("radioRecovery")) != recovery:
+                return None
+            return status
+
+        return self.wait_until(f"controller radio mode {mode}", check, timeout=timeout)
+
+    def wait_controller_websocket_ready(self, timeout=35.0):
+        def check():
+            wifi = self.controller_wifi()
+            if not wifi.get("active") or not wifi.get("wsActive"):
+                return None
+            if wifi.get("staConnected") or wifi.get("apStations", 0) > 0:
+                return wifi
+            return None
+
+        return self.wait_until("controller WebSocket service ready", check, timeout=timeout, interval=0.7)
+
+    def wait_espnow_link_without_forcing_controller(self, timeout=45.0):
+        self.remote_command_ok("transport espnow")
+        self.remote_command_ok("peer scan")
+        status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=timeout)
+        self.expect(status.get("lockedPeer") == self.controller_mac,
+                    f"ESP-NOW recovery locked unexpected peer: expected {self.controller_mac}, got {status}")
+        return status
+
+    def wait_websocket_or_autonomous_espnow_recovery(self, websocket_timeout=40.0, fallback_timeout=70.0):
+        try:
+            ws_status = self.wait_remote_transport("WebSocket", require_online=True, timeout=websocket_timeout)
+            self.expect(ws_status.get("wsConnected") is True,
+                        f"remote reported WebSocket online without wsConnected: {ws_status}")
+            return "websocket", ws_status
+        except TestFailure as exc:
+            print(f"   WebSocket LAN path unavailable; expecting autonomous ESP-NOW recovery ({exc})")
+        espnow_status = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=fallback_timeout)
+        self.expect(espnow_status.get("lockedPeer") == self.controller_mac,
+                    f"autonomous ESP-NOW recovery locked unexpected peer: {espnow_status}")
+        self.wait_controller_mode("ESP-NOW", timeout=45.0)
+        return "espnow", espnow_status
+
     def controller_command_ok(self, command, ack_cmd=None):
         expected_cmd = ack_cmd or command.split()[1]
         payload = self.controller.request_json(command, "ack")
@@ -388,9 +454,55 @@ class DualBoardRegression:
         )
         self.expect(recovered["radioMode"] == "WiFi",
                     f"headless controller did not fall back to Wi-Fi recovery: {recovered}")
-        self.probe_controller_ap("Headless ESP-NOW fallback")
-        self.establish_espnow_link(timeout=35.0)
+        self.wait_espnow_link_without_forcing_controller(timeout=45.0)
+        self.wait_controller_mode("ESP-NOW", recovery=False, timeout=25.0)
         self.load_probe("Headless ESP-NOW fallback")
+
+    def connection_recovery_matrix_suite(self):
+        print("== Connection recovery corner-case matrix ==")
+
+        self.establish_espnow_link(timeout=40.0)
+
+        stale_mac = "02:00:00:00:00:01"
+        self.remote_command_ok("peer lock " + stale_mac)
+        self.remote_command_ok("transport espnow")
+        stale_recovered = self.wait_remote_transport("ESP-NOW", require_online=True, timeout=55.0)
+        self.expect(stale_recovered.get("lockedPeer") == self.controller_mac,
+                    f"stale ESP-NOW peer did not auto-relock controller: {stale_recovered}")
+
+        remote_status = self.remote_status()
+        if remote_status.get("wifi", {}).get("staSaved"):
+            self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_WIFI}")
+            self.wait_controller_mode("WiFi", timeout=20.0)
+            self.wait_controller_websocket_ready(timeout=45.0)
+            self.remote_command_ok("transport ws")
+            self.remote_command_ok("api action ws_scan")
+            path, _ = self.wait_websocket_or_autonomous_espnow_recovery(websocket_timeout=40.0,
+                                                                         fallback_timeout=75.0)
+
+            if path == "websocket":
+                self.remote_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_ESPNOW}")
+                self.wait_remote_transport("ESP-NOW", require_online=True, timeout=50.0)
+                self.wait_controller_mode("ESP-NOW", timeout=30.0)
+        else:
+            print("   WebSocket LAN recovery skipped: remote has no saved Wi-Fi")
+
+        self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_ESPNOW}")
+        self.wait_controller_mode("ESP-NOW", timeout=20.0)
+        self.remote_command_ok("transport ws")
+        time.sleep(6.0)
+        self.remote_command_ok("transport auto")
+        self.wait_remote_transport("ESP-NOW", require_online=True, timeout=55.0)
+
+        self.remote_command_ok("api reboot")
+        self.remote.reopen(timeout=30.0)
+        self.wait_remote_transport("ESP-NOW", require_online=True, timeout=60.0)
+
+        self.controller_command_ok("api reboot", ack_cmd="reboot")
+        self.controller.reopen(timeout=30.0)
+        self.wait_controller_mode("ESP-NOW", timeout=45.0)
+        self.wait_remote_transport("ESP-NOW", require_online=True, timeout=70.0)
+        self.load_probe("Connection recovery matrix")
 
     def wait_remote_transport(self, expected_transport, require_online=False, timeout=20.0):
         def check():
@@ -525,7 +637,11 @@ class DualBoardRegression:
         print("== WebSocket suite ==")
         self.controller_command_ok(f"api set 1 {MENU1_RADIO_MODE} {RADIO_WIFI}")
         self.remote_command_ok("transport ws")
-        self.wait_remote_transport("WebSocket", require_online=True, timeout=40.0)
+        path, _ = self.wait_websocket_or_autonomous_espnow_recovery(websocket_timeout=40.0,
+                                                                     fallback_timeout=75.0)
+        if path == "espnow":
+            self.load_probe("WebSocket unavailable autonomous ESP-NOW fallback")
+            return
         self.wait_remote_status_field("wsConnected", True, timeout=20.0)
         self.wait_remote_menu(1, MENU1_RADIO_MODE, RADIO_WIFI, timeout=20.0)
         self.remote_command_ok("raw GET_MENU=4")
@@ -620,19 +736,28 @@ class DualBoardRegression:
                 self.headless_espnow_fallback_suite()
             self.headless_guard_suite()
             self.espnow_suite()
+            self.connection_recovery_matrix_suite()
             if self.skip_websocket:
                 print("== WebSocket suite skipped: factory/no-info mode has no saved Wi-Fi ==")
             else:
                 self.websocket_suite()
         finally:
-            self.restore_original_state()
-            for console in (self.remote, self.controller):
-                summary = console.timing_summary()
-                print(
-                    f"TIMING_SUMMARY {console.label} "
-                    f"count={summary['count']} avg_ms={summary['avg_ms']:.1f} "
-                    f"p95_ms={summary['p95_ms']:.1f} max_ms={summary['max_ms']:.1f}"
-                )
+            active_failure = sys.exc_info()[0] is not None
+            try:
+                self.restore_original_state()
+            except Exception as exc:
+                if active_failure:
+                    print(f"RESTORE_FAILED {exc}", file=sys.stderr)
+                else:
+                    raise
+            finally:
+                for console in (self.remote, self.controller):
+                    summary = console.timing_summary()
+                    print(
+                        f"TIMING_SUMMARY {console.label} "
+                        f"count={summary['count']} avg_ms={summary['avg_ms']:.1f} "
+                        f"p95_ms={summary['p95_ms']:.1f} max_ms={summary['max_ms']:.1f}"
+                    )
 
 
 def candidate_serial_ports():

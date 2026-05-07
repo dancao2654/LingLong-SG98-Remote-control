@@ -4,6 +4,7 @@
 #include <WebSocketsServer.h>
 #include <WiFi.h>
 
+#include "burr_gap.h"
 #include "remote_link.h"
 #include "wifi_ui.h"
 #include <sg98_remote_protocol.h>
@@ -12,7 +13,8 @@ namespace {
 
 constexpr uint16_t kRemoteWsPort = 81;
 constexpr uint32_t kMdnsRetryMs = 3000;
-constexpr uint32_t kMdnsMinFreeHeap = 24000;
+constexpr uint32_t kMdnsMinFreeHeap = 10000;
+constexpr uint32_t kGaugeStatusPushMinMs = 60;
 
 WebSocketsServer wsServer(kRemoteWsPort);
 bool wsActive = false;
@@ -20,6 +22,9 @@ bool mdnsActive = false;
 String mdnsHostname;
 uint32_t lastMdnsAttemptAt = 0;
 uint32_t mdnsLowHeapSkips = 0;
+uint32_t lastGaugeStatusPushSequence = 0;
+uint32_t gaugeStatusPushCount = 0;
+unsigned long lastGaugeStatusPushAt = 0;
 
 String buildHostname() {
     const uint64_t chipId = ESP.getEfuseMac();
@@ -40,9 +45,6 @@ void stopMdns() {
 
 void startMdnsIfNeeded() {
     if(!wsActive || mdnsActive || WiFi.status() != WL_CONNECTED) {
-        return;
-    }
-    if(wifi_ui_web_activity_recent()) {
         return;
     }
     if(lastMdnsAttemptAt + kMdnsRetryMs > millis()) {
@@ -99,7 +101,10 @@ void handleTextFrame(uint8_t clientNum, const uint8_t* payload, size_t length) {
     }
     if(sendStatus) {
         String frame = remote_link_build_status_frame();
-        wsServer.sendTXT(clientNum, frame);
+        if(wsServer.sendTXT(clientNum, frame)) {
+            lastGaugeStatusPushSequence = burr_gap_read_change_sequence();
+            lastGaugeStatusPushAt = millis();
+        }
     }
     if(menuRefresh != 0) {
         String frame = remote_link_build_menu_frame(static_cast<uint8_t>(menuRefresh));
@@ -157,6 +162,9 @@ bool remote_ws_start() {
     wsServer.onEvent(onWsEvent);
     wsActive = true;
     lastMdnsAttemptAt = 0;
+    gaugeStatusPushCount = 0;
+    lastGaugeStatusPushSequence = 0;
+    lastGaugeStatusPushAt = 0;
     Serial.printf("[remote_ws] server port=%u\n", static_cast<unsigned>(kRemoteWsPort));
     return true;
 }
@@ -179,9 +187,33 @@ void remote_ws_poll() {
 
     wsServer.loop();
     startMdnsIfNeeded();
-    if(mdnsActive && (WiFi.status() != WL_CONNECTED || wifi_ui_web_activity_recent())) {
+    if(mdnsActive && WiFi.status() != WL_CONNECTED) {
         stopMdns();
     }
+}
+
+bool remote_ws_broadcast_status_if_due(uint32_t gaugeReadChangeSequence) {
+    if(!wsActive ||
+       gaugeReadChangeSequence == 0 ||
+       gaugeReadChangeSequence == lastGaugeStatusPushSequence ||
+       wsServer.connectedClients(false) <= 0) {
+        return false;
+    }
+
+    const unsigned long now = millis();
+    if(lastGaugeStatusPushAt != 0 && now - lastGaugeStatusPushAt < kGaugeStatusPushMinMs) {
+        return false;
+    }
+
+    String frame = remote_link_build_status_frame();
+    if(!wsServer.broadcastTXT(frame)) {
+        return false;
+    }
+
+    lastGaugeStatusPushSequence = gaugeReadChangeSequence;
+    lastGaugeStatusPushAt = now;
+    ++gaugeStatusPushCount;
+    return true;
 }
 
 bool remote_ws_is_active() {

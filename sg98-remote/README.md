@@ -22,6 +22,8 @@ environment.
   - Elecrow CrowPanel 1.28 rotary/touch knob display
   - Elecrow CrowPanel 2.1 rotary/touch knob display
   - Waveshare 1.75 AMOLED round touch display
+  - LILYGO T4-S3 H678 2.41 AMOLED touch display
+- `remote-lilygo-t4-s3-h678` = forced LILYGO T4-S3 H678 image
 
 The remote app is shared across boards through a small board HAL:
 
@@ -61,6 +63,8 @@ Vendor hardware references for the supported remote boards are cached under:
   `ACTION` frames
 - encoder-driven navigation on CrowPanel
 - touch-driven dial, taps, and menu scrolling on Waveshare AMOLED
+- touch-driven dial, taps, and menu scrolling on LILYGO T4-S3 H678, with the
+  BOOT button mapped as the primary remote button
 - native USB-C serial debug console exposed through the board HAL
 - idle deep-sleep with RTC state restore on boards whose HAL advertises deep-sleep wake support
 - remote-side Wi-Fi onboarding portal with captive AP, saved STA credentials,
@@ -86,12 +90,14 @@ For `WebSocket` mode:
 
 ```bash
 ~/.platformio/penv/bin/platformio run -d sg98-remote -e remote-universal-s3
+~/.platformio/penv/bin/platformio run -d sg98-remote -e remote-lilygo-t4-s3-h678
 ```
 
 ## Upload
 
 ```bash
 ~/.platformio/penv/bin/platformio run -d sg98-remote -e remote-universal-s3 -t upload
+~/.platformio/penv/bin/platformio run -d sg98-remote -e remote-lilygo-t4-s3-h678 -t upload
 ```
 
 ## Notes
@@ -102,5 +108,9 @@ For `WebSocket` mode:
   `ESP-NOW` pairing/config mode.
 - The Waveshare board is touch-only, so circular drag gestures replace the
   physical encoder.
+- The LILYGO T4-S3 H678 maps CST226 touch, SY6970 PMIC telemetry/IRQ, and the
+  SD-slot SPI pins. Its vendor `BOARD_AMOLED_241` profile exposes BOOT on
+  `GPIO0` as the only physical function button and does not expose an IMU/light
+  sensor block on this 2.41-inch H678 variant.
 - This universal build is currently intended for the supported `ESP32-S3R8N16`
   remote boards above, not arbitrary ESP32 boards.

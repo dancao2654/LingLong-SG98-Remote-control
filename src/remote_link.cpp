@@ -336,6 +336,14 @@ bool remote_link_handle_command(const String& rawPayload, String* message, bool*
         return true;
     }
 
+    sg98_protocol::WifiConfigFrame wifiFrame;
+    if(sg98_protocol::parseWifiConfigFrame(cmd, &wifiFrame)) {
+        const bool ok = wifi_ui_save_network_settings(wifiFrame.ssid, wifiFrame.password);
+        *sendStatus = true;
+        setMessage(message, ok ? "wifi saved" : "wifi not saved");
+        return finishCommand(ok);
+    }
+
     String cmdUpper = cmd;
     cmdUpper.toUpperCase();
 

@@ -18,6 +18,8 @@ int32_t burr_gap_base_um();
 int32_t burr_gap_base_lcd_um();
 int32_t burr_gap_offset_um();
 uint32_t burr_gap_last_frame_ms();
+uint32_t burr_gap_read_change_sequence();
+uint32_t burr_gap_last_read_change_ms();
 
 void burr_gap_set_base_um(int32_t gapUm);
 void burr_gap_set_current_gap_um(int32_t gapUm);

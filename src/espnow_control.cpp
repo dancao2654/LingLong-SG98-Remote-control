@@ -9,6 +9,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 
+#include "burr_gap.h"
 #include "controller_board.h"
 #include "definitions.h"
 #include "comm.h"
@@ -20,6 +21,7 @@
 namespace {
 constexpr size_t ESPNOW_COMMAND_LEN = 64;
 constexpr uint8_t ESPNOW_RX_QUEUE_LEN = 16;
+constexpr uint32_t ESPNOW_GAUGE_STATUS_PUSH_MIN_MS = 60;
 constexpr uint8_t ESPNOW_BROADCAST_MAC[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 struct EspNowEvent {
@@ -39,11 +41,17 @@ bool espnowCoexistActive = false;
 volatile bool espnowWifiClientActive = false;
 uint8_t espnowChannelValue = default_espnow_channel;
 wifi_interface_t espnowInterface = WIFI_IF_STA;
-unsigned long lastRxAt = 0;
-unsigned long lastCommandRxAt = 0;
-uint32_t rxCount = 0;
+    unsigned long lastRxAt = 0;
+    unsigned long lastCommandRxAt = 0;
+    unsigned long lastRecoveryRequestAt = 0;
+    uint32_t rxCount = 0;
 uint32_t dropCount = 0;
+uint32_t gaugeStatusPushCount = 0;
 char lastCommand[ESPNOW_COMMAND_LEN] = "";
+bool lastStatusPeerValid = false;
+uint8_t lastStatusPeerMac[ESP_NOW_ETH_ALEN] = {};
+uint32_t lastGaugeStatusPushSequence = 0;
+unsigned long lastGaugeStatusPushAt = 0;
 LatestEspNowEvent pendingStatusEvent;
 LatestEspNowEvent pendingTargetEvent;
 portMUX_TYPE espnowIngressMux = portMUX_INITIALIZER_UNLOCKED;
@@ -96,6 +104,10 @@ bool isDiscoverCommand(const char* payload) {
     return payload != nullptr && strcmp(payload, sg98_protocol::kCmdDiscover) == 0;
 }
 
+bool isRecoveryRequestCommand(const char* payload) {
+    return payload != nullptr && strcmp(payload, "RECOVER_ESPNOW") == 0;
+}
+
 String controllerDiscoveryName() {
     String out = "SG98 ";
     out += controller_board_target_name();
@@ -119,6 +131,34 @@ String espNowInterfaceMacAddress() {
              mac[4],
              mac[5]);
     return String(out);
+}
+
+bool macAddressUsable(const uint8_t* mac_addr) {
+    if(mac_addr == nullptr) {
+        return false;
+    }
+
+    bool anySet = false;
+    bool allBroadcast = true;
+    for(uint8_t idx = 0; idx < ESP_NOW_ETH_ALEN; ++idx) {
+        anySet = anySet || mac_addr[idx] != 0;
+        allBroadcast = allBroadcast && mac_addr[idx] == 0xFF;
+    }
+    return anySet && !allBroadcast;
+}
+
+void rememberStatusPeer(const uint8_t* mac_addr) {
+    if(!macAddressUsable(mac_addr)) {
+        return;
+    }
+
+    memcpy(lastStatusPeerMac, mac_addr, sizeof(lastStatusPeerMac));
+    lastStatusPeerValid = true;
+}
+
+void noteGaugeStatusDelivered() {
+    lastGaugeStatusPushSequence = burr_gap_read_change_sequence();
+    lastGaugeStatusPushAt = millis();
 }
 
 String controllerDiscoveryFrame() {
@@ -161,8 +201,17 @@ bool takeLatestEvent(LatestEspNowEvent* slot, EspNowEvent* event) {
 void processEvent(const EspNowEvent& event) {
     lastRxAt = millis();
     ++rxCount;
+    rememberStatusPeer(event.mac);
     strncpy(lastCommand, event.payload, sizeof(lastCommand) - 1);
     lastCommand[sizeof(lastCommand) - 1] = '\0';
+
+    if(isRecoveryRequestCommand(event.payload)) {
+        lastCommandRxAt = lastRxAt;
+        lastRecoveryRequestAt = lastRxAt;
+        sendFrame(event.mac, sg98_protocol::ack(true, "recovery requested"));
+        Serial.println("[espnow] recovery requested");
+        return;
+    }
 
     if(isDiscoverCommand(event.payload)) {
         sendFrame(event.mac, controllerDiscoveryFrame());
@@ -189,7 +238,9 @@ void processEvent(const EspNowEvent& event) {
         sendFrame(event.mac, sg98_protocol::ack(ok, message));
     }
     if(sendStatus) {
-        sendFrame(event.mac, remote_link_build_status_frame());
+        if(sendFrame(event.mac, remote_link_build_status_frame())) {
+            noteGaugeStatusDelivered();
+        }
     }
     if(menuRefresh != 0) {
         sendFrame(event.mac, remote_link_build_menu_frame(static_cast<uint8_t>(menuRefresh)));
@@ -354,8 +405,13 @@ bool espnow_control_start(bool coexistWithWifi) {
 
     lastRxAt = 0;
     lastCommandRxAt = 0;
+    lastRecoveryRequestAt = 0;
     rxCount = 0;
+    gaugeStatusPushCount = 0;
     lastCommand[0] = '\0';
+    lastStatusPeerValid = false;
+    lastGaugeStatusPushSequence = 0;
+    lastGaugeStatusPushAt = 0;
     espnowWifiClientActive = false;
     espnowActive = true;
     espnowCoexistActive = coexistWithWifi;
@@ -413,6 +469,31 @@ void espnow_control_poll() {
     }
 }
 
+bool espnow_control_push_status_if_due(uint32_t gaugeReadChangeSequence) {
+    if(!espnowActive ||
+       espnowWifiClientActive ||
+       !lastStatusPeerValid ||
+       gaugeReadChangeSequence == 0 ||
+       gaugeReadChangeSequence == lastGaugeStatusPushSequence) {
+        return false;
+    }
+
+    const unsigned long now = millis();
+    if(lastGaugeStatusPushAt != 0 &&
+       now - lastGaugeStatusPushAt < ESPNOW_GAUGE_STATUS_PUSH_MIN_MS) {
+        return false;
+    }
+
+    if(!sendFrame(lastStatusPeerMac, remote_link_build_status_frame())) {
+        return false;
+    }
+
+    lastGaugeStatusPushSequence = gaugeReadChangeSequence;
+    lastGaugeStatusPushAt = now;
+    ++gaugeStatusPushCount;
+    return true;
+}
+
 bool espnow_control_broadcast_wifi_config(const String& ssid, const String& password) {
     if(!espnowActive || ssid.length() == 0) {
         return false;
@@ -457,6 +538,10 @@ unsigned long espnow_control_last_command_rx_at() {
     return lastCommandRxAt;
 }
 
+unsigned long espnow_control_last_recovery_request_at() {
+    return lastRecoveryRequestAt;
+}
+
 String espnow_control_status_text() {
     if(!espnowActive) {
         return "ESP-NOW off";
@@ -474,6 +559,10 @@ String espnow_control_status_text() {
     if(dropCount > 0) {
         out += " drop ";
         out += String(static_cast<unsigned long>(dropCount));
+    }
+    if(gaugeStatusPushCount > 0) {
+        out += " push ";
+        out += String(static_cast<unsigned long>(gaugeStatusPushCount));
     }
     return out;
 }

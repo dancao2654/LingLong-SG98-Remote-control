@@ -12,8 +12,11 @@ constexpr uint32_t kFrameGapUs = 5000;
 constexpr uint32_t kLiveTimeoutMs = 3000;
 constexpr int32_t kStableFrameToleranceUm = 10;
 constexpr uint8_t kStableFrameCountRequired = 3;
+constexpr uint8_t kLargeJumpStableFrameCountRequired = 12;
+constexpr uint8_t kHugeJumpStableFrameCountRequired = 20;
 constexpr uint32_t kStableFrameWindowMs = 650;
-constexpr int32_t kReconnectSameRawToleranceUm = 20;
+constexpr int32_t kContinuousSmallJumpUm = 120;
+constexpr int32_t kContinuousHugeJumpUm = 2000;
 constexpr int32_t kTareNearZeroUm = 30;
 constexpr int32_t kTarePreviousThresholdUm = 100;
 constexpr int32_t kTareJumpThresholdUm = 200;
@@ -38,6 +41,8 @@ int32_t gRawUm = 0;
 int32_t gBaseUm = 0;
 int32_t gLastPersistedBaseUm = 0;
 uint32_t gLastFrameMs = 0;
+uint32_t gReadChangeSequence = 0;
+uint32_t gLastReadChangeMs = 0;
 uint32_t gTareAtMs = 0;
 uint8_t gClockPin = 0;
 uint8_t gDataPin = 0;
@@ -45,11 +50,6 @@ bool gFilterHavePending = false;
 int32_t gFilterPendingUm = 0;
 uint8_t gFilterPendingCount = 0;
 uint32_t gFilterPendingMs = 0;
-bool gOfflineCandidate = false;
-bool gOfflineBaseCommitted = false;
-int32_t gOfflineOldBaseUm = 0;
-int32_t gOfflineDisplayUm = 0;
-int32_t gOfflineRawUm = 0;
 
 int32_t abs32(int32_t value) {
     return value < 0 ? -value : value;
@@ -57,6 +57,24 @@ int32_t abs32(int32_t value) {
 
 void requestDisplayRefresh() {
     disp_updateRequired = true;
+}
+
+int32_t lcdUmFromDisplayUm(int32_t value) {
+    return (value / 10) * 10;
+}
+
+void noteActiveReadDisplayChange(bool wasKnown, int32_t previousDisplayUm) {
+    const int32_t previousLcdUm = lcdUmFromDisplayUm(previousDisplayUm);
+    const int32_t currentLcdUm = lcdUmFromDisplayUm(gDisplayUm);
+    if(wasKnown && previousLcdUm == currentLcdUm) {
+        return;
+    }
+
+    ++gReadChangeSequence;
+    if(gReadChangeSequence == 0) {
+        ++gReadChangeSequence;
+    }
+    gLastReadChangeMs = millis();
 }
 
 void persistBase(bool force) {
@@ -70,57 +88,6 @@ void persistBase(bool force) {
     pdata_write_burr_gap_offset_um(gBaseUm);
     pdata_write_burr_gap_manual_base(gManualBaseSet);
     gLastPersistedBaseUm = gBaseUm;
-}
-
-void clearOfflineCandidate() {
-    gOfflineCandidate = false;
-    gOfflineBaseCommitted = false;
-    gOfflineOldBaseUm = 0;
-    gOfflineDisplayUm = 0;
-    gOfflineRawUm = 0;
-}
-
-void startOfflineCandidate() {
-    if(gOfflineCandidate || !gHaveRaw || !gKnown) {
-        return;
-    }
-
-    gOfflineCandidate = true;
-    gOfflineBaseCommitted = false;
-    gOfflineOldBaseUm = gBaseUm;
-    gOfflineDisplayUm = gDisplayUm;
-    gOfflineRawUm = gRawUm;
-}
-
-void commitOfflineCandidateBase(bool forcePersist) {
-    if(!gOfflineCandidate || gOfflineBaseCommitted) {
-        return;
-    }
-
-    gBaseUm = gOfflineDisplayUm;
-    gDisplayUm = gOfflineDisplayUm;
-    gKnown = true;
-    gOfflineBaseCommitted = true;
-    persistBase(forcePersist);
-}
-
-void resolveOfflineCandidateForReading(int32_t rawUm) {
-    if(!gOfflineCandidate) {
-        return;
-    }
-
-    const bool sameRaw = abs32(rawUm - gOfflineRawUm) <= kReconnectSameRawToleranceUm;
-    if(sameRaw) {
-        if(gOfflineBaseCommitted && gBaseUm != gOfflineOldBaseUm) {
-            gBaseUm = gOfflineOldBaseUm;
-            persistBase(true);
-        }
-        clearOfflineCandidate();
-        return;
-    }
-
-    commitOfflineCandidateBase(true);
-    clearOfflineCandidate();
 }
 
 bool decodeFrameUm(uint32_t frame, int32_t* outUm) {
@@ -190,8 +157,6 @@ void applyRawReading(int32_t rawUm) {
         abs32(previousRawUm) >= kTarePreviousThresholdUm &&
         abs32(rawUm - previousRawUm) >= kTareJumpThresholdUm;
 
-    resolveOfflineCandidateForReading(rawUm);
-
     gRawUm = rawUm;
     gHaveRaw = true;
     gLive = true;
@@ -206,7 +171,7 @@ void applyRawReading(int32_t rawUm) {
         gKnown = true;
         gRecentlyTared = true;
         gTareAtMs = now;
-        clearOfflineCandidate();
+        noteActiveReadDisplayChange(wasKnown, previousDisplayUm);
         persistBase(true);
         requestDisplayRefresh();
         return;
@@ -217,6 +182,7 @@ void applyRawReading(int32_t rawUm) {
     }
 
     gDisplayUm = gBaseUm + rawUm;
+    noteActiveReadDisplayChange(wasKnown, previousDisplayUm);
 
     if(!wasKnown || !wasLive || abs32(gDisplayUm - previousDisplayUm) >= 10) {
         requestDisplayRefresh();
@@ -230,6 +196,21 @@ void resetFrameFilter() {
     gFilterPendingUm = 0;
     gFilterPendingCount = 0;
     gFilterPendingMs = 0;
+}
+
+uint8_t stableFrameCountRequiredFor(int32_t rawUm) {
+    if(!gHaveRaw || !gLive) {
+        return kStableFrameCountRequired;
+    }
+
+    const int32_t delta = abs32(rawUm - gRawUm);
+    if(delta <= kContinuousSmallJumpUm) {
+        return kStableFrameCountRequired;
+    }
+    if(delta >= kContinuousHugeJumpUm) {
+        return kHugeJumpStableFrameCountRequired;
+    }
+    return kLargeJumpStableFrameCountRequired;
 }
 
 void acceptDecodedReading(int32_t rawUm) {
@@ -246,10 +227,11 @@ void acceptDecodedReading(int32_t rawUm) {
 
     gFilterPendingUm = rawUm;
     gFilterPendingMs = now;
-    if(gFilterPendingCount < kStableFrameCountRequired) {
+    const uint8_t requiredCount = stableFrameCountRequiredFor(rawUm);
+    if(gFilterPendingCount < requiredCount) {
         gFilterPendingCount++;
     }
-    if(gFilterPendingCount >= kStableFrameCountRequired) {
+    if(gFilterPendingCount >= requiredCount) {
         applyRawReading(rawUm);
         resetFrameFilter();
     }
@@ -290,7 +272,6 @@ void IRAM_ATTR onGaugeClockFalling() {
 void burr_gap_init() {
     gEnabled = selectGaugePins();
     if(!gEnabled) {
-        clearOfflineCandidate();
         return;
     }
 
@@ -301,7 +282,6 @@ void burr_gap_init() {
     gManualBaseSet = pdata_has_burr_gap_manual_base()
                          ? pdata_read_burr_gap_manual_base()
                          : gKnown;
-    clearOfflineCandidate();
     resetFrameFilter();
 
     portENTER_CRITICAL(&gFrameMux);
@@ -313,8 +293,8 @@ void burr_gap_init() {
     gIsrOverruns = 0;
     portEXIT_CRITICAL(&gFrameMux);
 
-    pinMode(gDataPin, INPUT);
-    pinMode(gClockPin, INPUT);
+    pinMode(gDataPin, INPUT_PULLUP);
+    pinMode(gClockPin, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(gClockPin), onGaugeClockFalling, FALLING);
 }
 
@@ -332,8 +312,6 @@ void burr_gap_poll() {
     const uint32_t now = millis();
     if(gLive && (now - gLastFrameMs) >= kLiveTimeoutMs) {
         gLive = false;
-        startOfflineCandidate();
-        commitOfflineCandidateBase(true);
         resetFrameFilter();
         requestDisplayRefresh();
     }
@@ -369,7 +347,7 @@ int32_t burr_gap_display_um() {
 }
 
 int32_t burr_gap_display_lcd_um() {
-    return (gDisplayUm / 10) * 10;
+    return lcdUmFromDisplayUm(gDisplayUm);
 }
 
 int32_t burr_gap_raw_um() {
@@ -381,7 +359,7 @@ int32_t burr_gap_base_um() {
 }
 
 int32_t burr_gap_base_lcd_um() {
-    return (gBaseUm / 10) * 10;
+    return lcdUmFromDisplayUm(gBaseUm);
 }
 
 int32_t burr_gap_offset_um() {
@@ -392,10 +370,17 @@ uint32_t burr_gap_last_frame_ms() {
     return gLastFrameMs;
 }
 
+uint32_t burr_gap_read_change_sequence() {
+    return gReadChangeSequence;
+}
+
+uint32_t burr_gap_last_read_change_ms() {
+    return gLastReadChangeMs;
+}
+
 void burr_gap_set_base_um(int32_t gapUm) {
     if(!gEnabled) return;
 
-    clearOfflineCandidate();
     gManualBaseSet = true;
     gBaseUm = gapUm;
     gDisplayUm = (gHaveRaw && gLive) ? (gBaseUm + gRawUm) : gBaseUm;

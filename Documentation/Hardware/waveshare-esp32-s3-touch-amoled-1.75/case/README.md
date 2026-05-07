@@ -19,14 +19,16 @@ than the remote so the two control sides stay exposed.
 - Magnet strip: 10.0 x 60.0 x 1.5 mm
 - Back-cover body: 44.0 x 70.0 mm, intentionally narrower than the 48.96 mm
   remote OD
+- Lower shell height: 16.5 mm, increased from the M5 prototype to clear a
+  GX12-3 pressure connector
 
 ## Print Files
 
 Use these for the new back-cover design:
 
 - `print_files/sg98_remote_backcover_shell.stl`: main lower shell with a deep
-  open-sided round upper socket, rounded lower corners, and side slots for the
-  snap-in bottom lid.
+  open-sided round upper socket, rounded lower corners, side slots for the
+  snap-in bottom lid, and a recessed GX12-3 pressure connector bay.
 - `print_files/sg98_remote_backcover_bottom_lid.stl`: bottom lid with internal
   recessed magnet pocket and four snap tabs.
 - `print_files/sg98_pressure_socket_snap_cover.stl`: optional snap-in cover for
@@ -79,20 +81,24 @@ directly into the remote. The remote/case side should be the recessed female
 side, and the pressure-sensor cable should carry the matching plug.
 
 The pressure connector bay is on the short end of the back-cover shell. It is a
-recessed 22.0 x 10.0 mm rounded pocket with a 5.8 mm center bore for an M5
-panel-mount connector. The connector mounting plane is about 4.0 mm behind the
-outer lip, so the connector sits protected inside the case edge instead of
-sticking out from a flat wall. It should carry only:
+recessed 28.0 x 15.5 mm rounded pocket with a 12.6 mm printable clearance bore
+for a GX12-3 panel-mount aviation connector. The connector mounting plane is
+about 4.8 mm behind the outer lip, and the clamp wall is 1.2 mm thick, so the
+connector sits protected inside the case edge instead of sticking out from a
+flat wall.
 
-- `SUP / +5V`
-- `OUT / pressure signal`
-- `GND`
+Wire the GX12-3 consistently:
 
-Use a keyed or locking connector so the sensor cannot be reversed. The current
-CAD target is a compact 3-pin M5 A-coded pair, with a female panel-mount
-receptacle on the remote/case and the matching male plug on the pressure-sensor
-cable. Measure the exact connector body, nut, and solder-cup clearance before a
-final print and adjust the bay to that connector.
+- `GX12 pin 1 = SUP / +5V`
+- `GX12 pin 2 = OUT / pressure signal`
+- `GX12 pin 3 = GND`
+
+Use the socket-contact half on the remote/case side if the connector pair gives
+you a choice, so the powered remote side does not expose live pins. The current
+CAD target is a cheap GX12-3 pair with a 12 mm mounting thread/body and an
+approximately 15 mm mating shell. Measure the exact connector body, nut, and
+solder-cup clearance before a final print and adjust the bay if your chosen
+Amazon listing differs.
 
 When the sensor cable is not attached, press the printed snap cover into the
 recessed bay as a dust cover. Print the cover in PETG or TPU so the small side

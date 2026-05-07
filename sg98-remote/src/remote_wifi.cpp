@@ -921,6 +921,10 @@ size_t remote_wifi_sta_password_length() {
     return staPassword.length();
 }
 
+String remote_wifi_sta_password() {
+    return staPassword;
+}
+
 void remote_wifi_apply_network_settings(const String& ssid, const String& password, bool connectNow) {
     if(ssid.isEmpty()) {
         return;

@@ -264,7 +264,7 @@ def add_annular_sector(
 def backcover_dimensions() -> dict[str, float]:
     base_w = 44.0
     base_l = 70.0
-    shell_h = 15.0
+    shell_h = 16.5
     wall = 2.0
     deck_thickness = 8.0
     remote_od = 48.96
@@ -295,12 +295,16 @@ def backcover_dimensions() -> dict[str, float]:
         "lid_floor_h": 1.0,
         "lid_h": 2.8,
         "lid_lip_h": 1.2,
-        "pressure_bay_w": 22.0,
-        "pressure_bay_h": 10.0,
-        "pressure_bay_z": 7.1,
-        "pressure_bay_recess_depth": 4.0,
-        "pressure_bay_back_thickness": 0.85,
-        "pressure_connector_hole_d": 5.8,
+        "pressure_bay_w": 28.0,
+        "pressure_bay_h": 15.5,
+        "pressure_bay_z": 8.25,
+        "pressure_bay_recess_depth": 4.8,
+        "pressure_bay_back_thickness": 1.2,
+        "pressure_bay_boss_extra": 1.0,
+        "pressure_bay_top_margin": 0.5,
+        "pressure_connector_hole_d": 12.6,
+        "pressure_connector_dummy_body_d": 12.0,
+        "pressure_connector_dummy_collar_d": 15.0,
     }
 
 
@@ -384,7 +388,13 @@ def build_backcover_shell() -> Mesh:
     ]:
         add_annular_sector(mesh, cx, cy, corner_r, inner_corner_r, start, end, 0, deck_z0, 18)
 
-    end_wall_z1 = max(deck_z0, d["pressure_bay_z"] + d["pressure_bay_h"] / 2 + 1.0)
+    end_wall_z1 = max(
+        deck_z0,
+        min(
+            shell_h,
+            d["pressure_bay_z"] + d["pressure_bay_h"] / 2 + d["pressure_bay_top_margin"],
+        ),
+    )
     end_wall = [
         (xmin + corner_r, 0.0),
         (xmax - corner_r, 0.0),
@@ -402,9 +412,9 @@ def build_backcover_shell() -> Mesh:
     pressure_bay_boss = rounded_rect_loop(
         0,
         d["pressure_bay_z"],
-        d["pressure_bay_w"] + 4.2,
-        d["pressure_bay_h"] + 4.2,
-        (d["pressure_bay_h"] + 4.2) / 2,
+        d["pressure_bay_w"] + d["pressure_bay_boss_extra"],
+        d["pressure_bay_h"] + d["pressure_bay_boss_extra"],
+        (d["pressure_bay_h"] + d["pressure_bay_boss_extra"]) / 2,
         18,
     )
     connector_hole = circle_loop(0, d["pressure_bay_z"], d["pressure_connector_hole_d"] / 2, 48)
@@ -414,6 +424,26 @@ def build_backcover_shell() -> Mesh:
     extrude_xz_polygon_y(mesh, [pressure_bay, connector_hole], bay_back_y, bay_back_y + d["pressure_bay_back_thickness"])
 
     mesh.print_center()
+    return mesh
+
+
+def build_gx12_connector_dummy() -> Mesh:
+    d = backcover_dimensions()
+    mesh = Mesh("dummy_gx12_3_connector")
+    ymax = d["base_l"] / 2
+    bay_back_y = ymax - d["pressure_bay_recess_depth"]
+    z = d["pressure_bay_z"]
+
+    body_r = d["pressure_connector_dummy_body_d"] / 2
+    collar_r = d["pressure_connector_dummy_collar_d"] / 2
+    cable_r = 2.5
+
+    # Preview-only solids for visual fit checking: panel body through the
+    # printable clearance hole, a 15 mm mating collar outside the recess, and a
+    # short cable tail.
+    extrude_xz_polygon_y(mesh, [circle_loop(0, z, body_r, 64)], bay_back_y - 10.0, ymax + 2.0)
+    extrude_xz_polygon_y(mesh, [circle_loop(0, z, collar_r, 64)], ymax - 1.8, ymax + 14.0)
+    extrude_xz_polygon_y(mesh, [circle_loop(0, z, cable_r, 32)], ymax + 14.0, ymax + 30.0)
     return mesh
 
 
@@ -497,6 +527,8 @@ def build_backcover_fit_check_assembly() -> Mesh:
     extrude_polygon(remote, [circle_loop(0, 0, 48.96 / 2, 96)], remote_z0, remote_z0 + 10.4)
     extrude_polygon(remote, [circle_loop(0, 0, 44.16 / 2, 96)], remote_z0 + 10.4, remote_z0 + 11.4)
     assembly.extend(remote)
+    assembly.extend(build_gx12_connector_dummy())
+    assembly.print_center()
     return assembly
 
 

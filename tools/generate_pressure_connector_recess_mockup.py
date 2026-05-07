@@ -65,7 +65,7 @@ def main() -> None:
     height = 1000
 
     s.text(54, 72, "Recessed Pressure Connector Mockup", 30, "#111827", "700")
-    s.text(54, 105, "M5 female socket sits behind the case lip; optional snap cover closes the bay when the sensor is unplugged.", 15, "#64748b")
+    s.text(54, 105, "GX12-3 socket-contact panel half sits behind the case lip; optional snap cover closes the bay when unplugged.", 15, "#64748b")
 
     # Front/end view of the short side of the case.
     fx, fy = 92, 205
@@ -81,7 +81,7 @@ def main() -> None:
     s.text(fx + 305, fy + 235, "connector face is protected inside the recess", 15, "#334155", "700", "middle")
 
     line_arrow(s, fx + 128, fy + 76, fx + 188, fy + 103, "outer case lip")
-    line_arrow(s, fx + 560, fy + 75, fx + 404, fy + 123, "recessed M5 socket")
+    line_arrow(s, fx + 560, fy + 75, fx + 404, fy + 123, "recessed GX12-3 socket")
 
     # Side cutaway.
     sx, sy = 820, 215
@@ -93,7 +93,7 @@ def main() -> None:
     s.rect(sx + 277, sy + 125, 92, 60, "url(#metal)", "#475569", 1.7, 11)
     s.rect(sx + 369, sy + 142, 78, 26, "#111827", "#020617", 1.5, 9)
     s.rect(sx + 447, sy + 147, 180, 16, "#111827", "#020617", 1.2, 8)
-    s.text(sx + 213, sy + 218, "4 mm recess", 14, "#334155", "700", "middle")
+    s.text(sx + 213, sy + 218, "4.8 mm recess", 14, "#334155", "700", "middle")
     s.text(sx + 334, sy + 112, "panel nut / body inside case", 14, "#334155", "700", "middle")
     s.text(sx + 540, sy + 194, "sensor cable plug", 14, "#334155", "700", "middle")
     line_arrow(s, sx + 78, sy + 52, sx + 122, sy + 112, "front lip")
@@ -115,16 +115,16 @@ def main() -> None:
     s.text(wx, wy - 30, "Internal Wiring", 21, "#111827", "700")
     s.rect(wx, wy, 470, 168, "#ffffff", "#cbd5e1", 1.6, 18)
     rows = [
-        ("Pin 1 / Brown", "SUP / +5V", "#dc2626"),
-        ("Pin 3 / Blue", "GND", "#2563eb"),
-        ("Pin 4 / Black", "OUT / pressure signal", "#111827"),
+        ("GX12 pin 1", "SUP / +5V", "#dc2626"),
+        ("GX12 pin 2", "OUT / pressure signal", "#111827"),
+        ("GX12 pin 3", "GND", "#2563eb"),
     ]
     for i, (pin, name, color) in enumerate(rows):
         y = wy + 40 + i * 42
         s.circle(wx + 36, y - 5, 7, color, color, 1)
         s.text(wx + 60, y, pin, 15, "#334155", "700")
         s.text(wx + 210, y, name, 15, color, "700")
-    s.text(wx + 36, wy + 145, "Female connector on case, male plug on sensor cable.", 14, "#64748b", "600")
+    s.text(wx + 36, wy + 145, "Socket-contact half on case, matching plug on sensor cable.", 14, "#64748b", "600")
 
     svg = tag(
         "svg",

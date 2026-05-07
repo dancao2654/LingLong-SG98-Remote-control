@@ -7,3 +7,4 @@
 #include "Arduino_OLED.h"
 #include "databus/Arduino_ESP32QSPI.h"
 #include "display/Arduino_CO5300.h"
+#include "display/Arduino_RM690B0.h"

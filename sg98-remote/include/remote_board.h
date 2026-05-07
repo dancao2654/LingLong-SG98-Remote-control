@@ -12,6 +12,7 @@ enum class RemoteBoardId : uint8_t {
     CrowPanelRotary,
     CrowPanelRotary21,
     WaveshareAmoled175,
+    LilyGoT4S3H678,
 };
 
 enum class RemoteBoardCapability : uint32_t {
@@ -217,6 +218,7 @@ struct RemoteBoardPins {
     int8_t displayData1 = -1;
     int8_t displayData2 = -1;
     int8_t displayData3 = -1;
+    int8_t displayTe = -1;
     int8_t backlight = -1;
     int8_t powerEnable = -1;
     int8_t encoderA = -1;

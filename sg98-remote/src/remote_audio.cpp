@@ -33,7 +33,9 @@ void setDetail(const char* text) {
 }
 
 bool isSupportedBoard() {
-    return remote_board_info().id == RemoteBoardId::WaveshareAmoled175;
+    const RemoteBoardPins& pins = remote_board_pins();
+    return pins.audioBclk >= 0 && pins.audioLrclk >= 0 &&
+           pins.audioDout >= 0 && pins.audioMclk >= 0;
 }
 
 void enableOutputStage() {

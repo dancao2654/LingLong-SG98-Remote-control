@@ -17,6 +17,7 @@ uint8_t remote_wifi_sta_disconnect_reason();
 const char* remote_wifi_sta_disconnect_reason_text();
 const char* remote_wifi_sta_last_event();
 size_t remote_wifi_sta_password_length();
+String remote_wifi_sta_password();
 void remote_wifi_apply_network_settings(const String& ssid, const String& password, bool connectNow);
 String remote_wifi_sta_ssid();
 String remote_wifi_sta_ip();

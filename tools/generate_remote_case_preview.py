@@ -219,10 +219,10 @@ def main() -> None:
     callout(s, rcx + rr + 8, rcy + 14, bx + bw + 108, rcy + 12, "remote side overhang", "#7c3aed", "start")
     callout(s, rcx + 8, rcy + rr + 18, rcx + 92, by + bl + 36, "control side exposed", "#2563eb", "start")
 
-    s.rect(rcx - 70, by - 23, 140, 34, "#fee2e2", "#dc2626", 2, 14)
+    s.rect(rcx - 90, by - 28, 180, 44, "#fee2e2", "#dc2626", 2, 18)
     s.items[-1] = s.items[-1].replace('fill="#fee2e2"', 'fill="#fee2e2" opacity="0.78"')
-    s.circle(rcx, by - 6, 10, "#fff7ed", "#dc2626", 2)
-    s.text(rcx, by - 34, "recessed pressure socket", 13, "#dc2626", "700", "middle")
+    s.circle(rcx, by - 6, 18, "#fff7ed", "#dc2626", 2)
+    s.text(rcx, by - 40, "recessed GX12-3 socket", 13, "#dc2626", "700", "middle")
     s.rect(rcx - 44, by + bl + 10, 88, 18, "#dbeafe", "#2563eb", 2, 6)
     s.text(rcx, by + bl + 48, "USB-C side stays exposed", 13, "#2563eb", "700", "middle")
 
@@ -282,7 +282,7 @@ def main() -> None:
     s.text(sx + 455, sy + 34, "magnet is recessed into snap-in bottom lid", 13, "#7c3aed", "700", "middle")
 
     s.rect(54, 928, 1492, 46, "#ffffff", "#d1d5db", 1.2, 12)
-    s.text(78, 957, "Back-cover print set: 44 mm narrow case, open-sided round remote socket, recessed M5 pressure connector bay, snap-in magnet lid.", 14, "#111827", "600")
+    s.text(78, 957, "Back-cover print set: 44 mm narrow case, open-sided round remote socket, recessed GX12-3 pressure connector bay, snap-in magnet lid.", 14, "#111827", "600")
 
     svg = tag(
         "svg",

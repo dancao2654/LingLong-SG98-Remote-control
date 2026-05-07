@@ -81,7 +81,7 @@ constexpr uint32_t WEB_ACTIVITY_HOLD_MS = 120000;
 constexpr uint32_t STA_CONNECT_AFTER_HTTP_ACK_MS = 1200;
 constexpr uint32_t AP_DHCP_LEASE_WATCHDOG_MS = 8000;
 constexpr uint32_t AP_RESTART_COOLDOWN_MS = 15000;
-constexpr uint32_t REMOTE_WS_MIN_FREE_HEAP = 30000;
+constexpr uint32_t REMOTE_WS_MIN_FREE_HEAP = 10000;
 constexpr uint16_t WIFI_SCAN_MAX_MS_PER_CHANNEL = 160;
 constexpr uint32_t WIFI_SCAN_TIMEOUT_MS = 10000;
 constexpr uint16_t DNS_PORT = 53;
@@ -1185,6 +1185,8 @@ String wifiJson() {
     out += (dnsRunning ? "true" : "false");
     out += ",\"serverStarted\":";
     out += (serverStarted ? "true" : "false");
+    out += ",\"wsActive\":";
+    out += (remote_ws_is_active() ? "true" : "false");
     out += ",\"apStations\":";
     out += String(WiFi.softAPgetStationNum());
     out += ",\"apConnectEvents\":";
@@ -2018,9 +2020,8 @@ void startHttpServices() {
 }
 
 void serviceRemoteWs(bool staConnected) {
-    const bool shouldRun = staConnected &&
-                           WiFi.softAPgetStationNum() == 0 &&
-                           !wifi_ui_web_activity_recent() &&
+    const bool apClientConnected = apRunning && WiFi.softAPgetStationNum() > 0;
+    const bool shouldRun = (staConnected || apClientConnected) &&
                            ESP.getFreeHeap() >= REMOTE_WS_MIN_FREE_HEAP;
     if(!shouldRun) {
         if(remote_ws_is_active()) {

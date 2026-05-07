@@ -25,6 +25,7 @@ For PlatformIO in the repo root `Project Tasks`:
 - `remote-crowpanel-128` = CrowPanel 1.28 handheld remote
 - `remote-crowpanel-21` = CrowPanel 2.1 handheld remote
 - `remote-waveshare-175` = Waveshare 1.75 handheld remote
+- `remote-lilygo-t4-s3-h678` = LILYGO T4-S3 H678 2.41 AMOLED handheld remote
 - `remote-universal-s3` = compatibility alias for the auto-detect remote image
 
 The remote code still lives as a separate project in `sg98-remote/`, but the
@@ -35,6 +36,7 @@ The current universal remote image auto-detects these boards at boot:
 
 - Elecrow CrowPanel 1.28 rotary/touch remote
 - Waveshare 1.75 AMOLED touch remote
+- LILYGO T4-S3 H678 2.41 AMOLED touch remote
 
 The supported remote boards now share:
 
