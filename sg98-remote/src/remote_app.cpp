@@ -744,6 +744,8 @@ void requestControllerEnvironment(bool force);
 bool sendRaw(const String& command);
 void markUserActivity(uint32_t now = millis());
 void showFlashScreen(const String& title, const String& subtitle, uint32_t durationMs, uint16_t accent);
+bool setOtaBootPartition(String target, String* message);
+bool downloadOtaManifest(String url, String* message);
 
 uint32_t currentWebSocketLoopIntervalMs() {
     return app.wsConnected ? remote_config::kWebSocketServiceMs
@@ -7700,6 +7702,10 @@ String aboutRoleLine() {
     return out;
 }
 
+bool remoteOtaUpdateAvailable() {
+    return app.otaUpdate.checked && app.otaUpdate.updateAvailable;
+}
+
 void drawAboutRow(RemoteCanvas& canvas,
                   const Rect& row,
                   const String& label,
@@ -7810,18 +7816,24 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
         rowY = static_cast<int16_t>(rowY + rowH);
     }
 
-    if(controllerOtaReady()) {
+    const bool controllerUpdateReady = controllerOtaReady();
+    const bool remoteUpdateReady = remoteOtaUpdateAvailable() && !controllerUpdateReady;
+    if(controllerUpdateReady || remoteUpdateReady) {
         const int16_t buttonH = useRoundNavigation() ? 40 : 30;
         const int16_t buttonY = max<int16_t>(
             static_cast<int16_t>(rowY + (useRoundNavigation() ? 10 : 6)),
             static_cast<int16_t>(panel.y + panel.h - panelPad - buttonH));
         const Rect button = {innerX, buttonY, innerW, buttonH};
-        const bool armed = dangerIsArmed(Screen::About, 0);
+        const uint8_t dangerSlot = remoteUpdateReady ? 1 : 0;
+        const bool armed = dangerIsArmed(Screen::About, dangerSlot);
         const uint16_t buttonFace = armed ? kColorWarn : blendColor565(kColorGood, kColorPanel, 0.30f);
         const uint16_t buttonText = armed ? kColorBlack : kColorText;
+        const char* label = remoteUpdateReady
+                                ? (armed ? "CONFIRM REMOTE OTA" : "REMOTE UPDATE READY")
+                                : (armed ? "CONFIRM CONTROLLER OTA" : "CONTROLLER OTA READY");
         drawPill(canvas,
                  button,
-                 armed ? "CONFIRM CONTROLLER OTA" : "CONTROLLER OTA READY",
+                 label,
                  buttonFace,
                  buttonText);
     }
@@ -10308,6 +10320,43 @@ void confirmControllerOtaReady() {
     app.redraw = true;
 }
 
+void confirmRemoteOtaUpdate() {
+    if(!remoteOtaUpdateAvailable()) {
+        setToast(app.otaUpdate.checked ? "Remote is current" : "No remote OTA ready", 1400);
+        return;
+    }
+
+    if(!dangerIsArmed(Screen::About, 1)) {
+        armDanger(Screen::About, 1);
+        setToast("Press again to update remote", remote_config::kDangerConfirmMs);
+        app.redraw = true;
+        return;
+    }
+
+    app.dangerArmUntil = 0;
+    showFlashScreen("REMOTE OTA", "Downloading update", 120000, kColorGood);
+    String message;
+    const bool ok = downloadOtaManifest("latest", &message);
+    if(!ok) {
+        setToast(String("OTA ERR: ") + message, 2800);
+        app.redraw = true;
+        return;
+    }
+
+    String bootMessage;
+    const bool bootOk = setOtaBootPartition("next", &bootMessage);
+    if(!bootOk) {
+        setToast(String("OTA BOOT ERR: ") + bootMessage, 2800);
+        app.redraw = true;
+        return;
+    }
+
+    showFlashScreen("REMOTE OTA", "Rebooting update", 1200, kColorGood);
+    delay(150);
+    Serial.flush();
+    ESP.restart();
+}
+
 String actionFeedbackLabel(const SettingItem& item) {
     if(item.action == nullptr) {
         if(isGaugeSetItem(item)) {
@@ -10773,9 +10822,15 @@ void triggerRunAction() {
 }
 
 void handlePrimaryShortPress() {
-    if(app.screen == Screen::About && !app.editing && controllerOtaReady()) {
-        confirmControllerOtaReady();
-        return;
+    if(app.screen == Screen::About && !app.editing) {
+        if(controllerOtaReady()) {
+            confirmControllerOtaReady();
+            return;
+        }
+        if(remoteOtaUpdateAvailable()) {
+            confirmRemoteOtaUpdate();
+            return;
+        }
     }
 
     if(app.screen == Screen::Profiler && !app.editing) {
@@ -11500,9 +11555,15 @@ void handleTouchTap(int16_t x, int16_t y) {
     }
     rememberTouchTap(x, y);
 
-    if(app.screen == Screen::About && !app.editing && controllerOtaReady()) {
-        confirmControllerOtaReady();
-        return;
+    if(app.screen == Screen::About && !app.editing) {
+        if(controllerOtaReady()) {
+            confirmControllerOtaReady();
+            return;
+        }
+        if(remoteOtaUpdateAvailable()) {
+            confirmRemoteOtaUpdate();
+            return;
+        }
     }
 
     if(useRoundNavigation()) {
