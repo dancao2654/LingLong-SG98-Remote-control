@@ -123,6 +123,18 @@ constexpr unsigned long MENU_TRAFFIC_POLL_INTERVAL_MS = 300;
 constexpr unsigned long RADIO_OFF_DEEP_SLEEP_DELAY_MS = 15000;
 constexpr unsigned long MOTOR_START_WATCHDOG_MS = 5000;
 constexpr int16_t MOTOR_START_MIN_OBSERVED_RPM = rpm_scalar / 2;
+constexpr uint16_t PURGE_VIBRATION_MIN_MS = 1000;
+constexpr uint16_t PURGE_VIBRATION_MAX_MS = 2000;
+constexpr uint16_t PURGE_VIBRATION_ON_MS = 220;
+constexpr uint16_t PURGE_VIBRATION_OFF_MS = 180;
+constexpr uint8_t PURGE_VIBRATION_RPM_PERCENT = 55;
+constexpr uint8_t PURGE_PHASE_SETTLE = 1;
+constexpr uint8_t PURGE_PHASE_REVERSE_VIBRATION = 2;
+constexpr uint8_t PURGE_PHASE_REVERSE_SPIN = 3;
+constexpr uint8_t PURGE_PHASE_DIRECTION_SETTLE = 4;
+constexpr uint8_t PURGE_PHASE_FORWARD_VIBRATION = 5;
+constexpr uint8_t PURGE_PHASE_FORWARD_SPIN = 6;
+constexpr uint8_t PURGE_PHASE_COMPLETE = 7;
 
 uint8_t purgeFrameCounter = 0;
 int16_t purgeLastSetRPM = 0;
@@ -203,6 +215,81 @@ uint16_t purgeManualThresholdForRpm(int16_t rpm, uint16_t baselineTorque) {
     return static_cast<uint16_t>((static_cast<uint32_t>(baselineTorque) * scalar) / 100U);
 }
 
+int16_t purgeClampedRpm(int32_t rpm) {
+    if(rpm <= 0) return 0;
+
+    int32_t maxRpm = Menu1[SETMAX].value;
+    if(maxRpm <= 0 || maxRpm > absolute_max_rpm) maxRpm = absolute_max_rpm;
+
+    int32_t minRpm = Menu1[SETMIN].value;
+    if(minRpm < absolute_min_rpm) minRpm = absolute_min_rpm;
+    if(minRpm > maxRpm) minRpm = maxRpm;
+
+    if(rpm > maxRpm) rpm = maxRpm;
+    if(rpm < minRpm) rpm = minRpm;
+    return static_cast<int16_t>(rpm);
+}
+
+uint16_t purgeVibrationDurationMs(uint16_t spinDurationMs) {
+    uint16_t duration = spinDurationMs / 2;
+    if(duration < PURGE_VIBRATION_MIN_MS) duration = PURGE_VIBRATION_MIN_MS;
+    if(duration > PURGE_VIBRATION_MAX_MS) duration = PURGE_VIBRATION_MAX_MS;
+    return duration;
+}
+
+int16_t purgeVibrationRpm(int16_t spinRpm, unsigned long phaseElapsedMs) {
+    if(spinRpm == 0) return 0;
+
+    const uint16_t cycleMs = PURGE_VIBRATION_ON_MS + PURGE_VIBRATION_OFF_MS;
+    if(cycleMs > 0 && (phaseElapsedMs % cycleMs) >= PURGE_VIBRATION_ON_MS) {
+        return 0;
+    }
+
+    int32_t rpmAbs = spinRpm;
+    if(rpmAbs < 0) rpmAbs = -rpmAbs;
+    int16_t rpm = purgeClampedRpm((rpmAbs * PURGE_VIBRATION_RPM_PERCENT) / 100);
+    if(spinRpm < 0) rpm = static_cast<int16_t>(-rpm);
+    return rpm;
+}
+
+bool applyPurgeConstantWindow(unsigned long elapsedMs,
+                              unsigned long& cursorMs,
+                              uint16_t durationMs,
+                              uint8_t phase,
+                              int16_t rpm) {
+    if(durationMs == 0) return false;
+    if(elapsedMs < cursorMs + durationMs) {
+        motor_setRPM = rpm;
+        purgePhase = phase;
+        return true;
+    }
+    cursorMs += durationMs;
+    return false;
+}
+
+bool applyPurgeVibrationWindow(unsigned long elapsedMs,
+                               unsigned long& cursorMs,
+                               uint16_t durationMs,
+                               uint8_t phase,
+                               int16_t spinRpm) {
+    if(durationMs == 0 || spinRpm == 0) return false;
+    if(elapsedMs < cursorMs + durationMs) {
+        motor_setRPM = purgeVibrationRpm(spinRpm, elapsedMs - cursorMs);
+        purgePhase = phase;
+        return true;
+    }
+    cursorMs += durationMs;
+    return false;
+}
+
+void finishPurgeSequence() {
+    motor_setRPM = 0;
+    purge_cancel_pending();
+    state = IDLE;
+    disp_updateRequired = true;
+    purgePhase = PURGE_PHASE_COMPLETE;
+}
+
 void smartPurgeLearnFromMotor(int16_t targetRpm) {
     if(Menu2[AUTO_PURGE_ENABLED].value != true || newData != true || targetRpm == 0) return;
 
@@ -228,6 +315,8 @@ uint8_t motorStartWatchdogRpmSource() {
         case DRIVE_TYPE_RT:
             return ERROR_HISTORY_MOTOR_RPM_SRC_RT_1301;
         case DRIVE_TYPE_KRS_130ST_M07725:
+        case DRIVE_TYPE_KRS_XB130AEA20025_SHL:
+            return ERROR_HISTORY_MOTOR_RPM_SRC_KRS_DN008;
         case DRIVE_TYPE_UNKNOWN:
         default:
             return 0;
@@ -634,7 +723,11 @@ void checkPurge() {
 }
 
 void do_purge() { 
-    uint16_t delayTime = Menu2[SETPURGEOFFTIME].value;
+    const uint16_t settleTime = Menu2[SETPURGEOFFTIME].value;
+    const uint16_t spinTime = Menu2[SETPURGETIME].value;
+    const uint16_t vibrationTime = purgeVibrationDurationMs(spinTime);
+    const int16_t reverseRpm = static_cast<int16_t>(-purgeClampedRpm(Menu2[SETPURGEREVERSE].value));
+    const int16_t forwardRpm = purgeClampedRpm(Menu2[SETPURGERPM].value);
 
     if(purgeSequenceNeedsInit) { 
         purgeRunStartedAt = millis(); 
@@ -650,44 +743,50 @@ void do_purge() {
             return;
         }
     }
-    
-    //started <delayTime ago
-    if(purgeRunStartedAt + delayTime > millis()) { 
-        if(delayTime > 0) motor_setRPM = 0; 
-        purgePhase = 1; 
-    }
 
-    // Time between delayTime and 500 + purgeTime 
-    if(purgeRunStartedAt + delayTime < millis() && purgeRunStartedAt + delayTime + Menu2[SETPURGETIME].value > millis()) {
-        motor_setRPM = Menu2[SETPURGERPM].value > Menu1[SETMAX].value? Menu1[SETMAX].value : Menu2[SETPURGERPM].value; 
-        purgePhase = 2;
-    }
+    const unsigned long elapsed = millis() - purgeRunStartedAt;
+    unsigned long cursor = 0;
+    bool activePhase = false;
 
-    //We're not doing reverse
-    if(Menu2[SETPURGEREVERSE].value == false && purgeRunStartedAt + delayTime + Menu2[SETPURGETIME].value < millis()) {
-        motor_setRPM = 0;
-        purge_cancel_pending();
-        state = IDLE;
-        disp_updateRequired = true;
-        purgePhase = 5;
-    } else { 
-        //were doing reverse, pause for 500ms 
-        if(purgeRunStartedAt + delayTime + Menu2[SETPURGETIME].value < millis() && purgeRunStartedAt + 2*delayTime + Menu2[SETPURGETIME].value > millis()) { 
-            motor_setRPM = 0;
-            purgePhase = 3;
-        }
-        //do another reverse purge for purge time
-        if(purgeRunStartedAt + 2*delayTime + Menu2[SETPURGETIME].value < millis() && purgeRunStartedAt + 2*delayTime + 2*Menu2[SETPURGETIME].value > millis()) {
-            motor_setRPM = (-1) * (Menu2[SETPURGEREVERSE].value > Menu1[SETMAX].value? Menu1[SETMAX].value : Menu2[SETPURGEREVERSE].value);
-            purgePhase = 4;
-        }
-        if(purgeRunStartedAt + 2*delayTime + 2*Menu2[SETPURGETIME].value < millis()) { 
-            purgePhase = 5;
-            motor_setRPM = 0;
-            purge_cancel_pending();
-            state = IDLE;
-            disp_updateRequired = true;
-        }
+    activePhase = applyPurgeConstantWindow(elapsed, cursor, settleTime, PURGE_PHASE_SETTLE, 0);
+
+    if(!activePhase && reverseRpm != 0) {
+        activePhase = applyPurgeVibrationWindow(elapsed,
+                                                cursor,
+                                                vibrationTime,
+                                                PURGE_PHASE_REVERSE_VIBRATION,
+                                                reverseRpm);
+    }
+    if(!activePhase && reverseRpm != 0) {
+        activePhase = applyPurgeConstantWindow(elapsed,
+                                               cursor,
+                                               spinTime,
+                                               PURGE_PHASE_REVERSE_SPIN,
+                                               reverseRpm);
+    }
+    if(!activePhase && reverseRpm != 0 && forwardRpm != 0) {
+        activePhase = applyPurgeConstantWindow(elapsed,
+                                               cursor,
+                                               settleTime,
+                                               PURGE_PHASE_DIRECTION_SETTLE,
+                                               0);
+    }
+    if(!activePhase && forwardRpm != 0) {
+        activePhase = applyPurgeVibrationWindow(elapsed,
+                                                cursor,
+                                                vibrationTime,
+                                                PURGE_PHASE_FORWARD_VIBRATION,
+                                                forwardRpm);
+    }
+    if(!activePhase && forwardRpm != 0) {
+        activePhase = applyPurgeConstantWindow(elapsed,
+                                               cursor,
+                                               spinTime,
+                                               PURGE_PHASE_FORWARD_SPIN,
+                                               forwardRpm);
+    }
+    if(!activePhase) {
+        finishPurgeSequence();
     }
 
     if(purgePhase != purgeLastPhase) { 

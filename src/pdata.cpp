@@ -40,6 +40,7 @@ int16_t sanitize_drive_type(int16_t drive_type) {
         case DRIVE_TYPE_JMC:
         case DRIVE_TYPE_RT:
         case DRIVE_TYPE_KRS_130ST_M07725:
+        case DRIVE_TYPE_KRS_XB130AEA20025_SHL:
             return drive_type;
         default:
             return DEFAULT_DRIVE_TYPE;

@@ -19,6 +19,9 @@ constexpr uint16_t KRS_REG_SPEED_REFERENCE_1 = 0x00A9;   // Pn169
 constexpr uint16_t KRS_REG_MONITOR_DN01 = 0x0171;        // Dn001..Dn008
 
 constexpr uint16_t KRS_MOTOR_CODE_130ST_M07725 = 20;
+// The XB130AEA20025-SHL nameplate prints CODE: 47, but the AASD/KRS
+// driver manual maps its 2 kW / 2500 rpm / 7.7 N.m profile to Pn001 = 20.
+constexpr uint16_t KRS_MOTOR_CODE_XB130AEA20025_SHL = KRS_MOTOR_CODE_130ST_M07725;
 constexpr uint16_t KRS_SPEED_MODE = 1;
 constexpr uint16_t KRS_SPEED_SOURCE_INTERNAL_1_TO_8 = 1;
 constexpr uint16_t KRS_COMM_CONTROL_SON_AND_SP = 0x0701;
@@ -50,17 +53,20 @@ void resetKrsRegisters() {
     reg_speed_reference = -1;
 }
 
-bool probeKrsMotorCode(MotorProbeReport* report) {
+bool probeKrsMotorCode(MotorProbeReport* report, uint16_t expectedCode, bool* matchedFlag) {
     if(report == nullptr) {
         return false;
     }
 
     uint16_t values[1] = {0};
     motor_probe_set_profile(COMM_PROFILE_KRS);
-    report->krs_130st_m07725_motor_code =
+    const bool matched =
         motor_probe_read_register(KRS_REG_MOTOR_CODE, 1, KRS_PROBE_RETRIES, values, 1) &&
-        values[0] == KRS_MOTOR_CODE_130ST_M07725;
-    return report->krs_130st_m07725_motor_code;
+        values[0] == expectedCode;
+    if(matchedFlag != nullptr) {
+        *matchedFlag = matched;
+    }
+    return matched;
 }
 
 void markConnected() {
@@ -138,7 +144,28 @@ bool motor_krs_130st_m07725_probe_backend(MotorProbeReport* report) {
     }
 
     report->krs_130st_m07725_motor_code = false;
-    return probeKrsMotorCode(report);
+    const bool matched = probeKrsMotorCode(report,
+                                           KRS_MOTOR_CODE_130ST_M07725,
+                                           &report->krs_130st_m07725_motor_code);
+    if(matched) {
+        report->krs_xb130aea20025_shl_motor_code = true;
+    }
+    return matched;
+}
+
+bool motor_krs_xb130aea20025_shl_probe_backend(MotorProbeReport* report) {
+    if(report == nullptr) {
+        return false;
+    }
+
+    report->krs_xb130aea20025_shl_motor_code = false;
+    const bool matched = probeKrsMotorCode(report,
+                                           KRS_MOTOR_CODE_XB130AEA20025_SHL,
+                                           &report->krs_xb130aea20025_shl_motor_code);
+    if(matched) {
+        report->krs_130st_m07725_motor_code = true;
+    }
+    return matched;
 }
 
 bool motor_krs_130st_m07725_do_comm_backend() {
@@ -461,6 +488,24 @@ const MotorBackendDefinition MOTOR_BACKEND_KRS_130ST_M07725 = {
     "Read Dn001..Dn008 from 0x0171; Dn002 is average torque percent and Dn008 is current motor speed in rpm.",
     {
         motor_krs_130st_m07725_probe_backend,
+        motor_krs_130st_m07725_init_backend,
+        motor_krs_130st_m07725_do_comm_backend,
+        motor_krs_130st_m07725_off_backend,
+        motor_krs_130st_m07725_calibrate_backend,
+        motor_krs_130st_m07725_sleep_backend,
+        motor_krs_130st_m07725_reset_backend,
+    },
+};
+
+const MotorBackendDefinition MOTOR_BACKEND_KRS_XB130AEA20025_SHL = {
+    "krs-xb130aea20025-shl",
+    "KRS XB130AEA20025-SHL servo backend",
+    "KRS Modbus RTU speed-mode backend for XB130AEA20025-SHL drives using the 130ST-M07725 2 kW profile (Pn001 motor code 20).",
+    "Probe Pn001 at 0x0001 over the KRS default 9600 8O1 Modbus RTU profile and claim only when it equals motor code 20.",
+    "Use Pn002 speed mode, Pn168 internal speed source, Pn169 signed internal speed 1, Pn068 communication-controlled SON/SP inputs, Pn070 SON/SP state, and Pn008/Pn009 torque limits.",
+    "Read Dn001..Dn008 from 0x0171; Dn002 is average torque percent and Dn008 is current motor speed in rpm.",
+    {
+        motor_krs_xb130aea20025_shl_probe_backend,
         motor_krs_130st_m07725_init_backend,
         motor_krs_130st_m07725_do_comm_backend,
         motor_krs_130st_m07725_off_backend,

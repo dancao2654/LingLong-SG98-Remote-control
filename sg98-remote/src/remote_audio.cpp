@@ -241,6 +241,48 @@ bool writeTone(float startHz, float endHz, uint32_t durationMs) {
     return true;
 }
 
+void writePcmWavHeader(uint8_t* out, uint32_t dataSize, uint32_t sampleRate, uint16_t bitsPerSample, uint16_t channels) {
+    if(out == nullptr) {
+        return;
+    }
+
+    const uint32_t riffSize = dataSize + 36;
+    const uint32_t byteRate = sampleRate * channels * (bitsPerSample / 8);
+    const uint16_t blockAlign = channels * (bitsPerSample / 8);
+
+    memcpy(out + 0, "RIFF", 4);
+    out[4] = static_cast<uint8_t>(riffSize & 0xFF);
+    out[5] = static_cast<uint8_t>((riffSize >> 8) & 0xFF);
+    out[6] = static_cast<uint8_t>((riffSize >> 16) & 0xFF);
+    out[7] = static_cast<uint8_t>((riffSize >> 24) & 0xFF);
+    memcpy(out + 8, "WAVEfmt ", 8);
+    out[16] = 16;
+    out[17] = 0;
+    out[18] = 0;
+    out[19] = 0;
+    out[20] = 1;
+    out[21] = 0;
+    out[22] = static_cast<uint8_t>(channels & 0xFF);
+    out[23] = static_cast<uint8_t>((channels >> 8) & 0xFF);
+    out[24] = static_cast<uint8_t>(sampleRate & 0xFF);
+    out[25] = static_cast<uint8_t>((sampleRate >> 8) & 0xFF);
+    out[26] = static_cast<uint8_t>((sampleRate >> 16) & 0xFF);
+    out[27] = static_cast<uint8_t>((sampleRate >> 24) & 0xFF);
+    out[28] = static_cast<uint8_t>(byteRate & 0xFF);
+    out[29] = static_cast<uint8_t>((byteRate >> 8) & 0xFF);
+    out[30] = static_cast<uint8_t>((byteRate >> 16) & 0xFF);
+    out[31] = static_cast<uint8_t>((byteRate >> 24) & 0xFF);
+    out[32] = static_cast<uint8_t>(blockAlign & 0xFF);
+    out[33] = static_cast<uint8_t>((blockAlign >> 8) & 0xFF);
+    out[34] = static_cast<uint8_t>(bitsPerSample & 0xFF);
+    out[35] = static_cast<uint8_t>((bitsPerSample >> 8) & 0xFF);
+    memcpy(out + 36, "data", 4);
+    out[40] = static_cast<uint8_t>(dataSize & 0xFF);
+    out[41] = static_cast<uint8_t>((dataSize >> 8) & 0xFF);
+    out[42] = static_cast<uint8_t>((dataSize >> 16) & 0xFF);
+    out[43] = static_cast<uint8_t>((dataSize >> 24) & 0xFF);
+}
+
 bool prepareAudio(bool forceRetry) {
     g_status.supported = isSupportedBoard();
     if(!g_status.supported) {
@@ -336,6 +378,64 @@ bool remote_audio_play(RemoteAudioTone tone) {
         ++g_status.failedPlays;
     }
     return ok;
+}
+
+bool remote_audio_record_wav(uint32_t durationMs, uint8_t** outBuffer, size_t* outSize) {
+    if(outBuffer != nullptr) {
+        *outBuffer = nullptr;
+    }
+    if(outSize != nullptr) {
+        *outSize = 0;
+    }
+    if(outBuffer == nullptr || outSize == nullptr) {
+        setDetail("record output missing");
+        return false;
+    }
+    if(!g_initialized) {
+        remote_audio_init();
+    }
+    if(!g_status.supported) {
+        setDetail("board has no audio input");
+        return false;
+    }
+    if(!prepareAudio(false)) {
+        return false;
+    }
+
+    if(!g_audioI2s.configureRX(kSampleRate,
+                               I2S_DATA_BIT_WIDTH_16BIT,
+                               I2S_SLOT_MODE_STEREO,
+                               I2S_RX_TRANSFORM_16_STEREO_TO_MONO)) {
+        setDetail("I2S RX config failed");
+        return false;
+    }
+
+    constexpr size_t kWavHeaderSize = 44;
+    const uint32_t boundedDurationMs = durationMs < 500 ? 500 : (durationMs > 5000 ? 5000 : durationMs);
+    const uint32_t pcmBytes = ((kSampleRate * boundedDurationMs) / 1000UL) * sizeof(int16_t);
+    const size_t totalBytes = kWavHeaderSize + pcmBytes;
+    uint8_t* wav = static_cast<uint8_t*>(malloc(totalBytes));
+    if(wav == nullptr) {
+        setDetail("record malloc failed");
+        return false;
+    }
+
+    writePcmWavHeader(wav, pcmBytes, kSampleRate, 16, 1);
+    const size_t recorded = g_audioI2s.readBytes(reinterpret_cast<char*>(wav + kWavHeaderSize), pcmBytes);
+    if(recorded != pcmBytes) {
+        free(wav);
+        setDetail("I2S short record");
+        return false;
+    }
+
+    *outBuffer = wav;
+    *outSize = totalBytes;
+    setDetail("recorded wav");
+    return true;
+}
+
+void remote_audio_free_recording(uint8_t* buffer) {
+    free(buffer);
 }
 
 RemoteAudioStatus remote_audio_status() {

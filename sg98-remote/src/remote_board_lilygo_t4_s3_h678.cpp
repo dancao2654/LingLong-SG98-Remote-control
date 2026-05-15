@@ -51,6 +51,23 @@ constexpr bool kDisplayAutoRotateDebug = true;
 constexpr uint32_t kDisplayAutoRotateDebugMs = 1000;
 constexpr uint8_t kDefaultBrightness = 210;
 constexpr uint8_t kBootButtonPin = 0;
+constexpr int8_t kSdCardMisoPin = 4;
+constexpr int8_t kSdCardMosiPin = 2;
+constexpr int8_t kSdCardSclkPin = 3;
+constexpr int8_t kSdCardCsPin = 1;
+
+#ifndef REMOTE_LILYGO_SECONDARY_BUTTON_GPIO
+#define REMOTE_LILYGO_SECONDARY_BUTTON_GPIO 1
+#endif
+
+constexpr int8_t kSecondaryButtonPin =
+    static_cast<int8_t>(REMOTE_LILYGO_SECONDARY_BUTTON_GPIO);
+constexpr bool kSecondaryButtonEnabled =
+    kSecondaryButtonPin >= 0 && kSecondaryButtonPin != static_cast<int8_t>(kBootButtonPin);
+constexpr bool kSecondaryButtonUsesExpansionSpiPin =
+    kSecondaryButtonEnabled &&
+    (kSecondaryButtonPin == kSdCardMisoPin || kSecondaryButtonPin == kSdCardMosiPin ||
+     kSecondaryButtonPin == kSdCardSclkPin || kSecondaryButtonPin == kSdCardCsPin);
 
 const RemoteBoardPins kBoardPins = [] {
     RemoteBoardPins pins = {};
@@ -69,10 +86,13 @@ const RemoteBoardPins kBoardPins = [] {
     pins.pmicInt = 5;
     pins.powerEnable = 9;
     pins.primaryButton = kBootButtonPin;
-    pins.expansionSpiMiso = 4;
-    pins.expansionSpiMosi = 2;
-    pins.expansionSpiSclk = 3;
-    pins.expansionSpiCs = 1;
+    pins.secondaryButton = kSecondaryButtonEnabled ? kSecondaryButtonPin : -1;
+    if(!kSecondaryButtonUsesExpansionSpiPin) {
+        pins.expansionSpiMiso = kSdCardMisoPin;
+        pins.expansionSpiMosi = kSdCardMosiPin;
+        pins.expansionSpiSclk = kSdCardSclkPin;
+        pins.expansionSpiCs = kSdCardCsPin;
+    }
     return pins;
 }();
 
@@ -82,11 +102,13 @@ RemoteBoardServices makeBoardServices() {
     services.console = &Serial;
     services.i2cSda = kBoardPins.touchSda;
     services.i2cScl = kBoardPins.touchScl;
-    services.expansionSpi = &SPI;
-    services.expansionSpiSclk = kBoardPins.expansionSpiSclk;
-    services.expansionSpiMosi = kBoardPins.expansionSpiMosi;
-    services.expansionSpiMiso = kBoardPins.expansionSpiMiso;
-    services.expansionSpiCs = kBoardPins.expansionSpiCs;
+    if(!kSecondaryButtonUsesExpansionSpiPin) {
+        services.expansionSpi = &SPI;
+        services.expansionSpiSclk = kBoardPins.expansionSpiSclk;
+        services.expansionSpiMosi = kBoardPins.expansionSpiMosi;
+        services.expansionSpiMiso = kBoardPins.expansionSpiMiso;
+        services.expansionSpiCs = kBoardPins.expansionSpiCs;
+    }
     services.consoleIsUsb = true;
     return services;
 }
@@ -458,8 +480,10 @@ class LilyGoCanvas : public RemoteCanvas {
 LilyGoCanvas g_canvas;
 RemoteTouchState g_touchState;
 ButtonTracker g_bootButton;
+ButtonTracker g_secondaryButton;
 RemoteBoardServices g_boardServices = makeBoardServices();
 volatile bool g_bootButtonInterruptPending = true;
+volatile bool g_secondaryButtonInterruptPending = true;
 volatile bool g_touchInterruptPending = true;
 volatile bool g_pmicInterruptPending = true;
 uint32_t g_lastButtonPollAt = 0;
@@ -495,7 +519,9 @@ const RemoteBoardInfo kBoardInfo = {
         static_cast<uint32_t>(RemoteBoardCapability::Pmic) |
         static_cast<uint32_t>(RemoteBoardCapability::DeepSleep) |
         static_cast<uint32_t>(RemoteBoardCapability::WakeSource) |
-        static_cast<uint32_t>(RemoteBoardCapability::ExpansionSpi) |
+        (kSecondaryButtonUsesExpansionSpiPin
+             ? 0
+             : static_cast<uint32_t>(RemoteBoardCapability::ExpansionSpi)) |
         static_cast<uint32_t>(RemoteBoardCapability::UsbDetect) |
         static_cast<uint32_t>(RemoteBoardCapability::ChargeState) |
         static_cast<uint32_t>(RemoteBoardCapability::UsbConsole),
@@ -508,7 +534,9 @@ RemoteBoardFeatureMap g_boardFeatureMap = {
         RemoteBoardSupportLevel::Mapped,
         RemoteBoardSupportLevel::Implemented,
         static_cast<uint32_t>(RemoteWakeSource::Touch) |
-            static_cast<uint32_t>(RemoteWakeSource::PrimaryButton),
+            static_cast<uint32_t>(RemoteWakeSource::PrimaryButton) |
+            (kSecondaryButtonEnabled ? static_cast<uint32_t>(RemoteWakeSource::SecondaryButton)
+                                     : 0),
     },
     {
         RemoteBoardSupportLevel::Mapped,
@@ -520,7 +548,8 @@ RemoteBoardFeatureMap g_boardFeatureMap = {
     {},
     {
         RemoteBoardSupportLevel::None,
-        RemoteBoardSupportLevel::Mapped,
+        kSecondaryButtonUsesExpansionSpiPin ? RemoteBoardSupportLevel::None
+                                            : RemoteBoardSupportLevel::Mapped,
         RemoteBoardSupportLevel::None,
         0,
     },
@@ -532,7 +561,8 @@ RemoteBoardFeatureMap g_boardFeatureMap = {
         RemoteBoardSupportLevel::Mapped,
         RemoteBoardSupportLevel::None,
         RemoteBoardSupportLevel::Implemented,
-        RemoteBoardSupportLevel::None,
+        kSecondaryButtonEnabled ? RemoteBoardSupportLevel::Implemented
+                                : RemoteBoardSupportLevel::None,
         true,
         true,
     },
@@ -540,6 +570,11 @@ RemoteBoardFeatureMap g_boardFeatureMap = {
 
 void IRAM_ATTR bootButtonInterruptHandler() {
     g_bootButtonInterruptPending = true;
+    remote_runtime_notify_input_from_isr();
+}
+
+void IRAM_ATTR secondaryButtonInterruptHandler() {
+    g_secondaryButtonInterruptPending = true;
     remote_runtime_notify_input_from_isr();
 }
 
@@ -655,6 +690,51 @@ void updateButtonTracker(ButtonTracker* tracker,
         }
         tracker->longLatched = false;
     }
+}
+
+bool secondaryButtonConfigured() {
+    return kBoardPins.secondaryButton >= 0 && kBoardPins.secondaryButton != kBoardPins.primaryButton;
+}
+
+bool pollGpioButton(const char* label,
+                    int8_t pin,
+                    ButtonTracker* tracker,
+                    volatile bool* interruptPending,
+                    bool pollDue,
+                    bool* shortPress,
+                    bool* longPress) {
+    if(shortPress != nullptr) {
+        *shortPress = false;
+    }
+    if(longPress != nullptr) {
+        *longPress = false;
+    }
+    if(pin < 0 || tracker == nullptr || interruptPending == nullptr) {
+        return false;
+    }
+
+    if(*interruptPending || pollDue || !tracker->initialized || tracker->stablePressed) {
+        const bool wasPressed = tracker->stablePressed;
+        updateButtonTracker(tracker, digitalRead(pin) == LOW, shortPress, longPress);
+        if(tracker->initialized && wasPressed != tracker->stablePressed) {
+            Serial.printf("[remote][input] %s gpio%d %s\n",
+                          label != nullptr ? label : "button",
+                          static_cast<int>(pin),
+                          tracker->stablePressed ? "down" : "up");
+        }
+    }
+    if(tracker->initialized &&
+       tracker->lastSamplePressed == tracker->stablePressed &&
+       !tracker->stablePressed) {
+        *interruptPending = false;
+    }
+    if((shortPress != nullptr && *shortPress) || (longPress != nullptr && *longPress)) {
+        Serial.printf("[remote][input] %s gpio%d %s\n",
+                      label != nullptr ? label : "button",
+                      static_cast<int>(pin),
+                      longPress != nullptr && *longPress ? "long" : "short");
+    }
+    return tracker->stablePressed;
 }
 
 uint16_t currentTouchWidth() {
@@ -979,7 +1059,10 @@ void updateFeatureMapAfterInit() {
     const RemoteBoardSupportLevel pmicLevel =
         g_pmicReady ? RemoteBoardSupportLevel::Implemented : RemoteBoardSupportLevel::Mapped;
     const RemoteBoardSupportLevel spiLevel =
-        g_expansionSpiReady ? RemoteBoardSupportLevel::Implemented : RemoteBoardSupportLevel::Mapped;
+        g_expansionSpiReady ? RemoteBoardSupportLevel::Implemented
+                            : (kSecondaryButtonUsesExpansionSpiPin
+                                   ? RemoteBoardSupportLevel::None
+                                   : RemoteBoardSupportLevel::Mapped);
     const RemoteBoardSupportLevel imuLevel =
         g_imuReady ? RemoteBoardSupportLevel::Implemented : RemoteBoardSupportLevel::None;
 
@@ -993,6 +1076,11 @@ void updateFeatureMapAfterInit() {
 }
 
 bool initExpansionSpiSlot() {
+    if(kSecondaryButtonUsesExpansionSpiPin) {
+        Serial.printf("[remote] lilygo expansion spi disabled; secondary button uses gpio%d\n",
+                      static_cast<int>(kSecondaryButtonPin));
+        return false;
+    }
     if(kBoardPins.expansionSpiSclk < 0 || kBoardPins.expansionSpiMiso < 0 ||
        kBoardPins.expansionSpiMosi < 0 || kBoardPins.expansionSpiCs < 0) {
         return false;
@@ -1195,6 +1283,9 @@ bool lilygo_probe() {
 
 bool lilygo_init() {
     pinMode(kBoardPins.primaryButton, INPUT_PULLUP);
+    if(secondaryButtonConfigured()) {
+        pinMode(kBoardPins.secondaryButton, INPUT_PULLUP);
+    }
     pinMode(kBoardPins.touchInt, INPUT_PULLUP);
     pinMode(kBoardPins.pmicInt, INPUT_PULLUP);
     beginSharedI2cBus();
@@ -1246,17 +1337,26 @@ bool lilygo_init() {
     }
 
     attachInterrupt(kBoardPins.primaryButton, bootButtonInterruptHandler, CHANGE);
+    if(secondaryButtonConfigured()) {
+        attachInterrupt(kBoardPins.secondaryButton, secondaryButtonInterruptHandler, CHANGE);
+    }
     if(g_touchReady) {
         attachInterrupt(kBoardPins.touchInt, touchInterruptHandler, FALLING);
     }
     initButtonTracker(&g_bootButton, digitalRead(kBoardPins.primaryButton) == LOW);
+    if(secondaryButtonConfigured()) {
+        initButtonTracker(&g_secondaryButton, digitalRead(kBoardPins.secondaryButton) == LOW);
+    } else {
+        g_secondaryButton = {};
+    }
     g_bootButtonInterruptPending = true;
+    g_secondaryButtonInterruptPending = secondaryButtonConfigured();
     g_lastButtonPollAt = millis();
     g_touchInterruptPending = g_touchReady;
     g_pmicInterruptPending = false;
     g_touchState = {};
     updateFeatureMapAfterInit();
-    Serial.printf("[remote] lilygo ready %ux%u rotation=%u psram=%d touch=%d pmic=%d imu=%d spi=%d button0=gpio%d\n",
+    Serial.printf("[remote] lilygo ready %ux%u rotation=%u psram=%d touch=%d pmic=%d imu=%d spi=%d button0=gpio%d button1=gpio%d\n",
                   static_cast<unsigned>(g_framebuffer.width()),
                   static_cast<unsigned>(g_framebuffer.height()),
                   static_cast<unsigned>(g_displayRotation),
@@ -1265,7 +1365,8 @@ bool lilygo_init() {
                   g_pmicReady ? 1 : 0,
                   g_imuReady ? 1 : 0,
                   g_expansionSpiReady ? 1 : 0,
-                  static_cast<int>(kBoardPins.primaryButton));
+                  static_cast<int>(kBoardPins.primaryButton),
+                  static_cast<int>(kBoardPins.secondaryButton));
     return true;
 }
 
@@ -1280,33 +1381,37 @@ void lilygo_poll_input(RemoteInputState* input) {
     const bool buttonPollDue = (now - g_lastButtonPollAt) >= kButtonPollMs;
     bool primaryShortPress = false;
     bool primaryLongPress = false;
-    if(g_bootButtonInterruptPending || buttonPollDue || !g_bootButton.initialized ||
-       g_bootButton.stablePressed) {
+    bool secondaryShortPress = false;
+    bool secondaryLongPress = false;
+    const bool needsButtonPoll =
+        buttonPollDue || g_bootButtonInterruptPending || !g_bootButton.initialized ||
+        g_bootButton.stablePressed ||
+        (secondaryButtonConfigured() &&
+         (g_secondaryButtonInterruptPending || !g_secondaryButton.initialized ||
+          g_secondaryButton.stablePressed));
+    if(needsButtonPoll) {
         g_lastButtonPollAt = now;
-        const bool wasPressed = g_bootButton.stablePressed;
-        updateButtonTracker(&g_bootButton,
-                            digitalRead(kBoardPins.primaryButton) == LOW,
-                            &primaryShortPress,
-                            &primaryLongPress);
-        if(g_bootButton.initialized && wasPressed != g_bootButton.stablePressed) {
-            Serial.printf("[remote][input] boot gpio%d %s\n",
-                          static_cast<int>(kBoardPins.primaryButton),
-                          g_bootButton.stablePressed ? "down" : "up");
-        }
-    }
-    if(g_bootButton.initialized &&
-       g_bootButton.lastSamplePressed == g_bootButton.stablePressed &&
-       !g_bootButton.stablePressed) {
-        g_bootButtonInterruptPending = false;
     }
 
-    input->primaryPressed = g_bootButton.stablePressed;
+    input->primaryPressed = pollGpioButton("boot",
+                                           kBoardPins.primaryButton,
+                                           &g_bootButton,
+                                           &g_bootButtonInterruptPending,
+                                           buttonPollDue,
+                                           &primaryShortPress,
+                                           &primaryLongPress);
     input->primaryShortPress = primaryShortPress;
     input->primaryLongPress = primaryLongPress;
-    if(primaryShortPress || primaryLongPress) {
-        Serial.printf("[remote][input] boot gpio%d %s\n",
-                      static_cast<int>(kBoardPins.primaryButton),
-                      primaryLongPress ? "long" : "short");
+    if(secondaryButtonConfigured()) {
+        input->secondaryPressed = pollGpioButton("secondary",
+                                                 kBoardPins.secondaryButton,
+                                                 &g_secondaryButton,
+                                                 &g_secondaryButtonInterruptPending,
+                                                 buttonPollDue,
+                                                 &secondaryShortPress,
+                                                 &secondaryLongPress);
+        input->secondaryShortPress = secondaryShortPress;
+        input->secondaryLongPress = secondaryLongPress;
     }
     pollTouch(input);
     serviceDisplayAutoRotate(input);
@@ -1357,7 +1462,10 @@ bool lilygo_input_pending() {
     const bool imuPollDue = g_imuReady &&
                             ((millis() - g_displayAutoRotateLastSampleAt) >=
                              remote_config::kDisplayAutoRotateSampleMs);
-    return buttonPollDue || g_bootButtonInterruptPending || g_touchInterruptPending ||
+    return buttonPollDue || g_bootButtonInterruptPending ||
+           (secondaryButtonConfigured() &&
+            (g_secondaryButtonInterruptPending || g_secondaryButton.stablePressed)) ||
+           g_touchInterruptPending ||
            g_touchState.pressed || touchPollDue ||
            (g_touchReady && digitalRead(kBoardPins.touchInt) == LOW) || imuPollDue;
 }

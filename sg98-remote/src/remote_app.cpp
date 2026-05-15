@@ -24,6 +24,7 @@
 #include "remote_config.h"
 #include "remote_pressure_ble.h"
 #include "remote_runtime.h"
+#include "remote_voice.h"
 #include "remote_wifi.h"
 #include "sg98_remote_defs.h"
 #include "sg98_ota_download.h"
@@ -99,7 +100,10 @@ constexpr uint32_t kAutoOtaRetryAfterFailureMs = 15UL * 60UL * 1000UL;
 constexpr uint32_t kAutoOtaRetryAfterNoSavedWifiMs = 60UL * 60UL * 1000UL;
 constexpr uint32_t kControllerOtaCheckBusyMs = 75000UL;
 constexpr uint32_t kControllerOtaDownloadBusyMs = 8UL * 60UL * 1000UL;
+constexpr uint32_t kControllerOtaApplyBusyMs = 30000UL;
+constexpr uint32_t kControllerOtaRebootFlashMs = 10000UL;
 constexpr uint32_t kControllerOtaDownloadConfirmMs = 15000UL;
+constexpr uint32_t kControllerOtaProgressRedrawMs = 1000UL;
 constexpr uint32_t kControllerEnvironmentRetryMs = 60000;
 constexpr uint32_t kEnvironmentShareRetryMs = 30000;
 constexpr uint32_t kAutoEspNowReturnFlashMs = 5200;
@@ -120,6 +124,10 @@ constexpr uint32_t kWebSocketCandidateRetryMs = 6500;
 constexpr const char* kEspNowRecoveryHintCommand = "RECOVER_ESPNOW";
 constexpr char kPersistentStateNamespace[] = "remote-app";
 constexpr char kPersistentStateKey[] = "snapshot";
+
+#ifndef REMOTE_VOICE_ALLOW_START
+#define REMOTE_VOICE_ALLOW_START 0
+#endif
 
 enum class Screen : uint8_t {
     Home = 0,
@@ -477,8 +485,10 @@ struct AppState {
     uint32_t lastControllerEnvironmentRequestAt = 0;
     uint32_t lastEnvironmentShareAt = 0;
     uint32_t nextAutoOtaCheckAt = 0;
+    uint32_t controllerOtaActionStartedAt = 0;
     uint32_t controllerOtaActionUntil = 0;
     uint32_t controllerOtaDownloadArmUntil = 0;
+    uint32_t lastControllerOtaProgressAt = 0;
     uint32_t homeWheelAnimatedAt = 0;
     uint32_t homeWheelFrameAt = 0;
     int16_t menuEncoderRemainder = 0;
@@ -505,6 +515,7 @@ struct AppState {
     uint32_t networkCurveHoldUntil = 0;
     String flashTitle;
     String flashSubtitle;
+    String controllerOtaProgressLabel;
     uint16_t flashAccent = kColorAccent;
 };
 
@@ -648,6 +659,7 @@ constexpr SettingItem kNetworkItems[] = {
 
 constexpr SettingItem kAudioItems[] = {
     {"UI sounds", ItemKind::Toggle, 0, 0, 0, 1, 1, "", "ui_sounds", nullptr},
+    {"Voice command", ItemKind::Action, 0, 0, 0, 0, 0, "", "voice", nullptr},
     {"Probe codec", ItemKind::Action, 0, 0, 0, 0, 0, "", "audio_probe", nullptr},
     {"Play click", ItemKind::Action, 0, 0, 0, 0, 0, "", "audio_click", nullptr},
     {"Play swipe", ItemKind::Action, 0, 0, 0, 0, 0, "", "audio_swipe", nullptr},
@@ -746,6 +758,7 @@ void markUserActivity(uint32_t now = millis());
 void showFlashScreen(const String& title, const String& subtitle, uint32_t durationMs, uint16_t accent);
 bool setOtaBootPartition(String target, String* message);
 bool downloadOtaManifest(String url, String* message);
+bool runVoiceCommand(String* message, bool showToast);
 
 uint32_t currentWebSocketLoopIntervalMs() {
     return app.wsConnected ? remote_config::kWebSocketServiceMs
@@ -1173,6 +1186,19 @@ bool useWaveshareRoundUi() {
             return true;
         default:
             return false;
+    }
+}
+
+int16_t menuTouchScrollDelta(int16_t dy) {
+    if(!useRoundNavigation() || !useWaveshareRoundUi()) {
+        return dy;
+    }
+
+    switch(remote_board_info().id) {
+        case RemoteBoardId::WaveshareAmoled175:
+            return dy;
+        default:
+            return static_cast<int16_t>(-dy);
     }
 }
 
@@ -3459,6 +3485,7 @@ uint64_t deepSleepWakeMask() {
     uint64_t mask = 0;
     addDeepSleepWakePin(&mask, pins.touchInt, RemoteWakeSource::Touch);
     addDeepSleepWakePin(&mask, pins.primaryButton, RemoteWakeSource::PrimaryButton);
+    addDeepSleepWakePin(&mask, pins.secondaryButton, RemoteWakeSource::SecondaryButton);
     addDeepSleepWakePin(&mask, pins.encoderSwitch, RemoteWakeSource::EncoderSwitch);
     addDeepSleepWakePin(&mask, pins.imuInt, RemoteWakeSource::Motion);
     return mask;
@@ -3659,7 +3686,10 @@ bool controllerOtaDownloadArmed() {
 
 void clearControllerOtaBusy() {
     app.controllerOtaActionBusy = false;
+    app.controllerOtaActionStartedAt = 0;
     app.controllerOtaActionUntil = 0;
+    app.lastControllerOtaProgressAt = 0;
+    app.controllerOtaProgressLabel = "";
     if(app.flashTitle.startsWith("CONTROLLER OTA")) {
         app.flashUntil = 0;
         app.flashTitle = "";
@@ -3854,11 +3884,52 @@ void showFlashScreen(const String& title, const String& subtitle, uint32_t durat
     app.redraw = true;
 }
 
+String shortElapsedLabel(uint32_t elapsedMs) {
+    const uint32_t elapsedSeconds = elapsedMs / 1000UL;
+    String out = String(elapsedSeconds / 60UL);
+    out += ':';
+    const uint32_t seconds = elapsedSeconds % 60UL;
+    if(seconds < 10UL) {
+        out += '0';
+    }
+    out += String(seconds);
+    return out;
+}
+
+String controllerOtaProgressSubtitle(uint32_t now) {
+    String label = app.controllerOtaProgressLabel.length() > 0
+                       ? app.controllerOtaProgressLabel
+                       : app.flashSubtitle;
+    if(label.length() == 0) {
+        label = "Waiting for controller";
+    }
+    label += " ";
+    label += shortElapsedLabel(app.controllerOtaActionStartedAt == 0
+                                   ? 0
+                                   : now - app.controllerOtaActionStartedAt);
+    return label;
+}
+
+void updateControllerOtaProgressLabel(const String& label, uint32_t now = millis()) {
+    app.controllerOtaProgressLabel = label;
+    if(app.controllerOtaActionBusy) {
+        app.flashSubtitle = controllerOtaProgressSubtitle(now);
+        app.lastControllerOtaProgressAt = now;
+        app.redraw = true;
+    }
+}
+
 void serviceControllerOtaUi(uint32_t now) {
     if(app.controllerOtaActionBusy && msUntilDeadline(now, app.controllerOtaActionUntil) == 0) {
         clearControllerOtaBusy();
         clearControllerOtaDownloadArm();
         setToast("Controller OTA timeout", 1800);
+    } else if(app.controllerOtaActionBusy &&
+              (app.lastControllerOtaProgressAt == 0 ||
+               now - app.lastControllerOtaProgressAt >= kControllerOtaProgressRedrawMs)) {
+        app.flashSubtitle = controllerOtaProgressSubtitle(now);
+        app.lastControllerOtaProgressAt = now;
+        app.redraw = true;
     }
     if(app.controllerOtaDownloadArmed && msUntilDeadline(now, app.controllerOtaDownloadArmUntil) == 0) {
         clearControllerOtaDownloadArm();
@@ -7729,6 +7800,79 @@ void drawAboutRow(RemoteCanvas& canvas,
                             face);
 }
 
+void drawAboutUpdateBanner(RemoteCanvas& canvas,
+                           const Rect& rect,
+                           bool remoteUpdateReady,
+                           bool armed,
+                           uint16_t fill,
+                           uint16_t textColor) {
+    const String top = remoteUpdateReady
+                           ? (armed ? "PRESS AGAIN" : "REMOTE")
+                           : (armed ? "PRESS AGAIN" : "CONTROLLER");
+    const String bottom = remoteUpdateReady
+                              ? (armed ? "UPDATE" : "UPDATE READY")
+                              : (armed ? "UPDATE" : "OTA READY");
+
+    if(useRoundNavigation()) {
+        const uint16_t face = blendColor565(kColorPanel, fill, 0.34f);
+        const uint16_t border = blendColor565(face, kColorBg, 0.05f);
+        drawNestCard(canvas, rect, face, border, true);
+        const RemoteTextStyle topStyle =
+            textFitsWidth(top, rect.w, RemoteTextStyle::Small, 16)
+                ? RemoteTextStyle::Small
+                : RemoteTextStyle::Tiny;
+        const RemoteTextStyle bottomStyle =
+            textFitsWidth(bottom, rect.w, RemoteTextStyle::Medium, 16)
+                ? RemoteTextStyle::Medium
+                : RemoteTextStyle::Small;
+        const int16_t centerX = static_cast<int16_t>(rect.x + rect.w / 2);
+        const uint16_t topTextColor = armed
+                                          ? textColor
+                                          : blendColor565(textColor, face, 0.18f);
+        drawSoftCenteredText(canvas,
+                             fitTextToWidth(top, rect.w, topStyle, 16),
+                             centerX,
+                             static_cast<int16_t>(rect.y + rect.h / 2 - 11),
+                             topStyle,
+                             topTextColor,
+                             face,
+                             fill,
+                             !armed);
+        drawSoftCenteredText(canvas,
+                             fitTextToWidth(bottom, rect.w, bottomStyle, 16),
+                             centerX,
+                             static_cast<int16_t>(rect.y + rect.h / 2 + 11),
+                             bottomStyle,
+                             textColor,
+                             face,
+                             fill,
+                             false);
+        return;
+    }
+
+    const int16_t radius = rect.h / 2;
+    canvas.fillRoundRect(rect.x, rect.y, rect.w, rect.h, radius, fill);
+    canvas.drawRoundRect(rect.x, rect.y, rect.w, rect.h, radius, kColorPanelHi);
+    const RemoteTextStyle topStyle = tinyTextStyle();
+    const RemoteTextStyle bottomStyle =
+        textFitsWidth(bottom, rect.w, RemoteTextStyle::Small, 12)
+            ? RemoteTextStyle::Small
+            : tinyTextStyle();
+    const int16_t centerX = static_cast<int16_t>(rect.x + rect.w / 2);
+    canvas.drawCenteredText(fitTextToWidth(top, rect.w, topStyle, 12),
+                            centerX,
+                            static_cast<int16_t>(rect.y + rect.h / 2 - 7),
+                            topStyle,
+                            textColor,
+                            fill);
+    canvas.drawCenteredText(fitTextToWidth(bottom, rect.w, bottomStyle, 12),
+                            centerX,
+                            static_cast<int16_t>(rect.y + rect.h / 2 + 7),
+                            bottomStyle,
+                            textColor,
+                            fill);
+}
+
 void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
     canvas.fillScreen(kColorBg);
     drawPill(canvas, layout.modeBadge, "ABOUT", kColorPanel, kColorText);
@@ -7819,7 +7963,7 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
     const bool controllerUpdateReady = controllerOtaReady();
     const bool remoteUpdateReady = remoteOtaUpdateAvailable() && !controllerUpdateReady;
     if(controllerUpdateReady || remoteUpdateReady) {
-        const int16_t buttonH = useRoundNavigation() ? 40 : 30;
+        const int16_t buttonH = useRoundNavigation() ? 48 : 34;
         const int16_t buttonY = max<int16_t>(
             static_cast<int16_t>(rowY + (useRoundNavigation() ? 10 : 6)),
             static_cast<int16_t>(panel.y + panel.h - panelPad - buttonH));
@@ -7827,15 +7971,8 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
         const uint8_t dangerSlot = remoteUpdateReady ? 1 : 0;
         const bool armed = dangerIsArmed(Screen::About, dangerSlot);
         const uint16_t buttonFace = armed ? kColorWarn : blendColor565(kColorGood, kColorPanel, 0.30f);
-        const uint16_t buttonText = armed ? kColorBlack : kColorText;
-        const char* label = remoteUpdateReady
-                                ? (armed ? "CONFIRM REMOTE OTA" : "REMOTE UPDATE READY")
-                                : (armed ? "CONFIRM CONTROLLER OTA" : "CONTROLLER OTA READY");
-        drawPill(canvas,
-                 button,
-                 label,
-                 buttonFace,
-                 buttonText);
+        const uint16_t buttonText = kColorText;
+        drawAboutUpdateBanner(canvas, button, remoteUpdateReady, armed, buttonFace, buttonText);
     }
 
     if(!useRoundNavigation()) {
@@ -9372,6 +9509,9 @@ void notifyAutoEspNowReturn(bool synced, const String& fallbackDetail = String()
 void serviceEspNowFirstPolicy() {
     if(app.currentTransport == LinkTransport::WebSocket) {
         const bool websocketOverride = app.transportOverrideActive;
+        if(websocketOverride) {
+            return;
+        }
         if(app.wsConnected && app.radioModeKnown) {
             const int32_t mode = app.controllerMenuSynced[1]
                                      ? sanitizeControllerRadioMode(app.controllerMenuValues[1][RADIOMODE])
@@ -9401,9 +9541,6 @@ void serviceEspNowFirstPolicy() {
             requestEspNowDiscovery(true);
             requestEspNowRecoveryHint(true);
             requestFullControllerRefresh();
-        }
-        if(websocketOverride) {
-            return;
         }
         return;
     }
@@ -9580,9 +9717,11 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
         previous.burrGapKnown != displayStatus.burrGapKnown ||
         previous.burrGapLive != displayStatus.burrGapLive ||
         previous.burrGapUm != displayStatus.burrGapUm;
-    const bool controllerOtaBecameReady =
+    const bool controllerOtaReadyReported =
         displayStatus.controllerOtaReadyFieldsPresent &&
-        displayStatus.controllerOtaReady &&
+        displayStatus.controllerOtaReady;
+    const bool controllerOtaBecameReady =
+        controllerOtaReadyReported &&
         (!hadStatus || !previous.controllerOtaReady);
     app.status = displayStatus;
     app.hasStatus = true;
@@ -9612,7 +9751,11 @@ void consumeStatusFrame(const sg98_protocol::StatusFrame& status) {
     } else if(valuesChanged && useRoundNavigation() && app.screen == Screen::Home && roundUiInteractionActive()) {
         app.deferredHomeStatusRedraw = true;
     }
-    if(controllerOtaBecameReady) {
+    if(controllerOtaReadyReported && app.controllerOtaActionBusy) {
+        clearControllerOtaBusy();
+        clearControllerOtaDownloadArm();
+        setToast("Controller OTA ready", 2200);
+    } else if(controllerOtaBecameReady) {
         setToast("Controller OTA ready", 2200);
     }
     requestFullControllerRefreshOnLinkOnline(wasOnline);
@@ -9772,7 +9915,16 @@ bool handleControllerOtaAck(const sg98_protocol::AckFrame& ackFrame) {
     String message = ackFrame.message;
     String lower = message;
     lower.toLowerCase();
-    if(lower == "wifi saved" || lower == "wifi not saved" || lower == "env synced" || lower == "env ok") {
+    if(lower == "wifi saved") {
+        updateControllerOtaProgressLabel("Wi-Fi saved");
+        return true;
+    }
+    if(lower == "wifi not saved") {
+        updateControllerOtaProgressLabel("Wi-Fi not saved");
+        return true;
+    }
+    if(lower == "env synced" || lower == "env ok") {
+        updateControllerOtaProgressLabel("Environment synced");
         return true;
     }
 
@@ -9799,6 +9951,17 @@ bool handleControllerOtaAck(const sg98_protocol::AckFrame& ackFrame) {
     if(lower == "current" || lower.startsWith("current ")) {
         clearControllerOtaDownloadArm();
         setToast("Controller is current", 1800);
+        return true;
+    }
+
+    if(lower.startsWith("boot=") || lower.indexOf("reboot queued") >= 0) {
+        clearControllerOtaDownloadArm();
+        showFlashScreen("CONTROLLER OTA",
+                        "Controller rebooting",
+                        kControllerOtaRebootFlashMs,
+                        kColorWarn);
+        app.lastStatusPollAt = 0;
+        setToast("Controller rebooting", 2400);
         return true;
     }
 
@@ -10177,10 +10340,16 @@ bool applyMenuValue(const SettingItem& item, int32_t value, bool allowGaugeSetWr
     applyLocalMenuPreview(item, normalizedValue);
     if(item.menuNum == 1 && item.itemIdx == RADIOMODE) {
         app.radioModeKnown = true;
-        if(transportFromRadioMode(normalizedValue) == LinkTransport::WebSocket) {
+        const LinkTransport requestedTransport = transportFromRadioMode(normalizedValue);
+        app.transportOverrideActive = requestedTransport == LinkTransport::WebSocket;
+        if(requestedTransport == LinkTransport::WebSocket) {
             app.autoEspNowReturnNotified = false;
+            app.webFallbackEspNowUntil = 0;
+            app.lastWebFallbackRecoveryHintAt = 0;
+            app.webFallbackWifiReleaseAt = 0;
+            app.preserveWifiForEspNowRecovery = false;
         }
-        scheduleTransportSwitch(transportFromRadioMode(normalizedValue), remote_config::kTransportSwitchDelayMs);
+        scheduleTransportSwitch(requestedTransport, remote_config::kTransportSwitchDelayMs);
     }
     PendingMenuWrite* pending = stagePendingMenuWrite(item.menuNum, item.itemIdx, normalizedValue);
     if(pending == nullptr) {
@@ -10237,9 +10406,13 @@ bool sendControllerWifiConfigIfAvailable() {
 }
 
 void beginControllerOtaBusy(const String& title, const String& subtitle, uint32_t durationMs) {
+    const uint32_t now = millis();
     app.controllerOtaActionBusy = true;
-    app.controllerOtaActionUntil = millis() + durationMs;
-    showFlashScreen(title, subtitle, durationMs, kColorAccent2);
+    app.controllerOtaActionStartedAt = now;
+    app.controllerOtaActionUntil = now + durationMs;
+    app.lastControllerOtaProgressAt = now;
+    app.controllerOtaProgressLabel = subtitle;
+    showFlashScreen(title, controllerOtaProgressSubtitle(now), durationMs, kColorAccent2);
 }
 
 bool requestControllerOtaCheck(String* message) {
@@ -10315,6 +10488,9 @@ void confirmControllerOtaReady() {
 
     app.dangerArmUntil = 0;
     const bool sent = sendAction("ota_apply_ready_reboot");
+    if(sent) {
+        beginControllerOtaBusy("CONTROLLER OTA", "Applying update", kControllerOtaApplyBusyMs);
+    }
     app.lastStatusPollAt = 0;
     setToast(sent ? "Controller OTA applying" : "OTA apply send failed", 1800);
     app.redraw = true;
@@ -10367,6 +10543,7 @@ String actionFeedbackLabel(const SettingItem& item) {
     if(strcmp(item.action, "reset_network") == 0) return "Network reset";
     if(strcmp(item.action, "reset_defaults") == 0) return "Defaults reset";
     if(strcmp(item.action, "about") == 0) return sg98_version::aboutVersionLine();
+    if(strcmp(item.action, "voice") == 0) return "Voice command";
     if(strcmp(item.action, "calibrate") == 0) return "Calibration started";
     if(strcmp(item.action, "controller_ota") == 0) {
         return controllerOtaDownloadArmed() ? "OTA download requested" : "OTA check requested";
@@ -10572,6 +10749,13 @@ void activateSelectedItem() {
         remote_audio_init();
         const RemoteAudioStatus status = remote_audio_status();
         setToast(status.codecDetected ? "Audio codec detected" : String("Audio: ") + remote_audio_detail(), 1400);
+        app.redraw = true;
+        return;
+    }
+
+    if(item.action != nullptr && strcmp(item.action, "voice") == 0) {
+        String message;
+        (void)runVoiceCommand(&message, true);
         app.redraw = true;
         return;
     }
@@ -10968,6 +11152,9 @@ void enterIdleLightSleep(LinkTransport resumeTransport) {
     if(remote_board_wake_supported(RemoteWakeSource::PrimaryButton)) {
         wakeConfigured = configureWakePin(pins.primaryButton) || wakeConfigured;
     }
+    if(remote_board_wake_supported(RemoteWakeSource::SecondaryButton)) {
+        wakeConfigured = configureWakePin(pins.secondaryButton) || wakeConfigured;
+    }
     if(remote_board_wake_supported(RemoteWakeSource::EncoderSwitch)) {
         wakeConfigured = configureWakePin(pins.encoderSwitch) || wakeConfigured;
     }
@@ -10987,6 +11174,7 @@ void enterIdleLightSleep(LinkTransport resumeTransport) {
 
     clearWakePin(pins.touchInt);
     clearWakePin(pins.primaryButton);
+    clearWakePin(pins.secondaryButton);
     clearWakePin(pins.encoderSwitch);
     clearWakePin(pins.imuInt);
 
@@ -11006,6 +11194,10 @@ bool enterIdleDeepSleep(uint64_t wakeMask) {
     if(pins.primaryButton >= 0 &&
        (wakeMask & (uint64_t{1} << static_cast<unsigned>(pins.primaryButton))) != 0) {
         pinMode(pins.primaryButton, INPUT_PULLUP);
+    }
+    if(pins.secondaryButton >= 0 &&
+       (wakeMask & (uint64_t{1} << static_cast<unsigned>(pins.secondaryButton))) != 0) {
+        pinMode(pins.secondaryButton, INPUT_PULLUP);
     }
     if(pins.encoderSwitch >= 0 &&
        (wakeMask & (uint64_t{1} << static_cast<unsigned>(pins.encoderSwitch))) != 0) {
@@ -11320,9 +11512,7 @@ void updateMenuScrollTouch(int16_t x, int16_t y) {
     const int16_t threshold = useRoundNavigation() ? roundMenuScrollThreshold(layout)
                                                    : static_cast<int16_t>(layout.rowH / 2);
     const int16_t dy = static_cast<int16_t>(y - touchTracker.lastY);
-    touchTracker.scrollAccum += (useRoundNavigation() && useWaveshareRoundUi())
-                                    ? static_cast<int16_t>(-dy)
-                                    : dy;
+    touchTracker.scrollAccum += menuTouchScrollDelta(dy);
     touchTracker.lastY = y;
 
     if(useRoundNavigation() && useWaveshareRoundUi()) {
@@ -13052,8 +13242,9 @@ void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
-    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep>");
+    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep|voice>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
+    Serial.println("[remote-diag] voice: voice status | voice url <http://host:port/command> | voice clear | voice test");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
     Serial.println("[remote-diag] wifi: wifi phone <controller_ap_ssid> <home_ssid> <home_password>");
     Serial.println("[remote-diag] wifi: wifi probe <ssid> [host] [path]");
@@ -13100,6 +13291,211 @@ bool remoteConsoleSetMenuValue(uint8_t menuNum, uint8_t itemIdx, int32_t value, 
         *message = ok ? "queued" : "send failed";
     }
     return ok;
+}
+
+bool applyVoiceIntent(const RemoteVoiceResult& result, String* message) {
+    String command = result.command;
+    command.trim();
+    command.toLowerCase();
+    command.replace('-', '_');
+    command.replace(' ', '_');
+
+    if(command == "stop" || command == "halt" || command == "cancel") {
+        if(!isRunningState()) {
+            if(message != nullptr) {
+                *message = "already stopped";
+            }
+            return true;
+        }
+        const char* expectedState =
+            (app.hasStatus && app.status.state == "GRINDING" && app.menuValues[2][SETBUTTONPURGE] != 0)
+                ? "PURGING"
+                : (isGbwState() ? "IDLE_GBW" : "IDLE");
+        const bool ok = queuePendingAction(PendingActionKind::Stop,
+                                           PendingActionReflection::State,
+                                           nullptr,
+                                           expectedState,
+                                           0);
+        if(message != nullptr) {
+            *message = ok ? "stop queued" : "stop send failed";
+        }
+        return ok;
+    }
+
+    if(command == "manual" || command == "manual_mode") {
+        if(!stateAllowsModeToggle()) {
+            if(message != nullptr) {
+                *message = "stop first";
+            }
+            return false;
+        }
+        app.preferGbw = false;
+        if(app.hasStatus && (app.status.state == "IDLE" || app.status.state == "IDLE_GBW")) {
+            app.status.state = "IDLE";
+        }
+        const bool ok = queuePendingAction(PendingActionKind::Idle,
+                                           PendingActionReflection::State,
+                                           nullptr,
+                                           "IDLE",
+                                           0);
+        if(message != nullptr) {
+            *message = ok ? "manual mode" : "manual send failed";
+        }
+        return ok;
+    }
+
+    if(command == "gbw" || command == "weight" || command == "weight_mode" || command == "grind_by_weight") {
+        if(!stateAllowsModeToggle()) {
+            if(message != nullptr) {
+                *message = "stop first";
+            }
+            return false;
+        }
+        app.preferGbw = true;
+        if(app.hasStatus && (app.status.state == "IDLE" || app.status.state == "IDLE_GBW")) {
+            app.status.state = "IDLE_GBW";
+        }
+        const bool ok = queuePendingAction(PendingActionKind::IdleGbw,
+                                           PendingActionReflection::State,
+                                           nullptr,
+                                           "IDLE_GBW",
+                                           0);
+        if(message != nullptr) {
+            *message = ok ? "gbw mode" : "gbw send failed";
+        }
+        return ok;
+    }
+
+    if(command == "set_rpm" || command == "rpm") {
+        if(!result.hasValue) {
+            if(message != nullptr) {
+                *message = "rpm value missing";
+            }
+            return false;
+        }
+        return remoteConsoleSetTarget(result.value, false, message);
+    }
+
+    if(command == "set_weight" || command == "set_dose" || command == "dose") {
+        if(!result.hasValue) {
+            if(message != nullptr) {
+                *message = "weight value missing";
+            }
+            return false;
+        }
+        return remoteConsoleSetTarget(result.value, true, message);
+    }
+
+    if(command == "home") {
+        setScreen(Screen::Home);
+        if(message != nullptr) {
+            *message = "home";
+        }
+        return true;
+    }
+
+    if(command == "menu" || command == "settings") {
+        setScreen(Screen::Main);
+        if(message != nullptr) {
+            *message = "menu";
+        }
+        return true;
+    }
+
+    if(command == "start") {
+#if REMOTE_VOICE_ALLOW_START
+        if(!isRunActionAvailable()) {
+            if(message != nullptr) {
+                *message = "controller offline";
+            }
+            return false;
+        }
+        if(isRunningState()) {
+            if(message != nullptr) {
+                *message = "already running";
+            }
+            return true;
+        }
+        const bool gbwMode = isGbwState();
+        const bool ok = queuePendingAction(PendingActionKind::Start,
+                                           PendingActionReflection::State,
+                                           nullptr,
+                                           gbwMode ? "GRINDING_GBW" : "GRINDING",
+                                           0);
+        if(message != nullptr) {
+            *message = ok ? "start queued" : "start send failed";
+        }
+        return ok;
+#else
+        if(message != nullptr) {
+            *message = "voice start disabled";
+        }
+        return false;
+#endif
+    }
+
+    if(message != nullptr) {
+        *message = String("unknown voice command: ") + command;
+    }
+    return false;
+}
+
+bool runVoiceCommand(String* message, bool showToast) {
+    if(remote_voice_endpoint().length() == 0) {
+        if(message != nullptr) {
+            *message = "set voice url first";
+        }
+        if(showToast) {
+            setToast("Set voice URL first", 1800);
+        }
+        return false;
+    }
+
+    RemoteOtaWifiGuard guard;
+    String wifiMessage;
+    if(!ensureOtaWifi(&guard, &wifiMessage)) {
+        if(message != nullptr) {
+            *message = wifiMessage;
+        }
+        if(showToast) {
+            setToast(wifiMessage, 1600);
+        }
+        return false;
+    }
+
+    if(showToast) {
+        setToast("Listening...", 1200);
+        app.redraw = true;
+    }
+
+    RemoteVoiceResult result;
+    const bool recognized = remote_voice_recognize(&result);
+    restoreOtaWifi(guard);
+
+    if(!recognized) {
+        const String errorMessage = result.message[0] != '\0' ? String(result.message) : String(remote_voice_detail());
+        if(message != nullptr) {
+            *message = errorMessage;
+        }
+        if(showToast) {
+            setToast(errorMessage, 2200);
+        }
+        return false;
+    }
+
+    String actionMessage;
+    const bool applied = applyVoiceIntent(result, &actionMessage);
+    if(message != nullptr) {
+        *message = result.transcript[0] != '\0'
+                       ? String(result.transcript) + " -> " + actionMessage
+                       : actionMessage;
+    }
+    if(showToast) {
+        setToast(actionMessage, 1800);
+    }
+    app.lastStatusPollAt = 0;
+    app.redraw = true;
+    return applied;
 }
 
 bool remoteConsoleRunAction(String commandLine, String* message) {
@@ -13339,6 +13735,10 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
         return ok;
     }
 
+    if(action == "voice") {
+        return runVoiceCommand(message, false);
+    }
+
     if(message != nullptr) {
         *message = "unknown action";
     }
@@ -13505,6 +13905,38 @@ void handleRemoteConsoleLine(const char* rawLine) {
             message = "usage: transport ws|espnow|auto";
         }
         printRemoteConsoleAck(line, ok, message);
+        return;
+    }
+
+    if(cmd == "voice") {
+        String sub = takeToken(&tail);
+        sub.toLowerCase();
+        if(sub.length() == 0 || sub == "status") {
+            const String endpoint = remote_voice_endpoint();
+            printRemoteConsoleAck(line,
+                                  endpoint.length() > 0,
+                                  endpoint.length() > 0 ? endpoint : String("voice url not set"));
+            return;
+        }
+        if(sub == "url") {
+            String url = tail;
+            url.trim();
+            const bool ok = remote_voice_set_endpoint(url);
+            printRemoteConsoleAck(line, ok, ok ? String("saved") : String(remote_voice_detail()));
+            return;
+        }
+        if(sub == "clear") {
+            remote_voice_clear_endpoint();
+            printRemoteConsoleAck(line, true, "cleared");
+            return;
+        }
+        if(sub == "test") {
+            String message;
+            const bool ok = runVoiceCommand(&message, true);
+            printRemoteConsoleAck(line, ok, message);
+            return;
+        }
+        printRemoteConsoleAck(line, false, "usage: voice status|url <http://host:port/command>|clear|test");
         return;
     }
 
@@ -13752,6 +14184,7 @@ void remote_app_setup() {
     }
     if(!kDisableTransportPerfTest) {
         remote_wifi_init();
+        remote_voice_init();
         wsClient.onEvent(onWsEvent);
     } else {
         stopAllTransportStacks();

@@ -7,6 +7,7 @@ enum class ControllerBoardId : uint8_t {
     Unknown = 0,
     AdafruitFeather,
     WaveshareRs485Can,
+    LilyGoT4S3H678,
 };
 
 struct ControllerBoardFeatures {

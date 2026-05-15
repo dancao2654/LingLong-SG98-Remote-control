@@ -1529,6 +1529,7 @@ static const char* getMotorSelectLabel(int idx) {
         case MOTOR_SELECT_JMC: return "JMC";
         case MOTOR_SELECT_RT: return "RT";
         case MOTOR_SELECT_KRS_130ST_M07725: return "KRS";
+        case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "XB130";
         default: return "";
     }
 }
@@ -1539,6 +1540,7 @@ static const char* getMotorSelectHint(int idx) {
         case MOTOR_SELECT_JMC: return "Force JMC backend";
         case MOTOR_SELECT_RT: return "Force RT backend";
         case MOTOR_SELECT_KRS_130ST_M07725: return "Force KRS 130ST backend";
+        case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "Force XB130 backend";
         default: return "";
     }
 }
@@ -1683,14 +1685,14 @@ void drawMotorSelectScreen() {
         return;
     }
 
-    tft->fillRect(16, 126, SCREEN_WIDTH - 32, 96, ST77XX_BLACK);
+    tft->fillRect(16, 122, SCREEN_WIDTH - 32, 118, ST77XX_BLACK);
 
     for(int i = 0; i < NUM_MOTOR_SELECT_ITEMS; ++i) {
         const bool selected = i == motorSelectSelected;
         const int boxX = 26;
-        const int boxY = 132 + i * 30;
+        const int boxY = 124 + i * 22;
         const int boxW = SCREEN_WIDTH - 52;
-        const int boxH = 24;
+        const int boxH = 20;
 
         tft->drawRoundRect(boxX, boxY, boxW, boxH, 8, selected ? COLOR_GREEN : COLOR_NAVY);
 

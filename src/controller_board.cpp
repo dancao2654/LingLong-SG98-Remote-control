@@ -116,6 +116,53 @@ constexpr ControllerBoardInfo kWaveshareBoard = {
     kWaveshareBurrGapInput,
 };
 
+constexpr ControllerBoardFeatures kLilyGoFeatures = {
+    false,
+    true,
+    false,
+    true,
+    true,
+};
+
+constexpr ControllerBoardPins kLilyGoPins = {
+    4,
+    2,
+    -1,
+    -1,
+    21,
+    -1,
+    38,
+    47,
+    48,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    GPIO_NUM_21,
+    GPIO_NUM_NC,
+    GPIO_NUM_NC,
+    GPIO_NUM_NC,
+    GPIO_NUM_NC,
+    GPIO_NUM_NC,
+};
+
+constexpr ControllerBoardBurrGapInput kLilyGoBurrGapInput = {
+    -1,
+    -1,
+    "lilygo T4-S3 controller: burr gap input not mapped",
+};
+
+constexpr ControllerBoardInfo kLilyGoBoard = {
+    ControllerBoardId::LilyGoT4S3H678,
+    "lilygo_t4_s3_h678",
+    "LILYGO T4-S3 H678 Controller",
+    kLilyGoFeatures,
+    kLilyGoPins,
+    kLilyGoBurrGapInput,
+};
+
 constexpr uint32_t kControllerBoxFlashBytes = 8U * 1024U * 1024U;
 
 const ControllerBoardInfo* g_activeBoard = nullptr;
@@ -145,6 +192,8 @@ const ControllerBoardInfo* detectBoard() {
     return &kAdafruitBoard;
 #elif defined(SG98_CONTROLLER_FORCE_WAVESHARE_RS485_CAN)
     return &kWaveshareBoard;
+#elif defined(SG98_CONTROLLER_FORCE_LILYGO_T4_S3_H678)
+    return &kLilyGoBoard;
 #else
     g_detectedFlashSizeBytes = detectFlashSizeBytes();
     if(g_detectedFlashSizeBytes > kControllerBoxFlashBytes) {

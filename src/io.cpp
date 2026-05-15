@@ -287,6 +287,9 @@ void openDriveSelector(States returnState) {
         case DRIVE_TYPE_KRS_130ST_M07725:
             motorSelectSelected = MOTOR_SELECT_KRS_130ST_M07725;
             break;
+        case DRIVE_TYPE_KRS_XB130AEA20025_SHL:
+            motorSelectSelected = MOTOR_SELECT_KRS_XB130AEA20025_SHL;
+            break;
         case DRIVE_TYPE_UNKNOWN:
         default:
             motorSelectSelected = MOTOR_SELECT_AUTO;
@@ -308,6 +311,9 @@ void applyDriveSelection() {
             break;
         case MOTOR_SELECT_KRS_130ST_M07725:
             motor_force_drive_type(DRIVE_TYPE_KRS_130ST_M07725, true);
+            break;
+        case MOTOR_SELECT_KRS_XB130AEA20025_SHL:
+            motor_force_drive_type(DRIVE_TYPE_KRS_XB130AEA20025_SHL, true);
             break;
         case MOTOR_SELECT_AUTO:
         default:
@@ -416,7 +422,7 @@ void io_init() {
 
     bool encoderIdleLevel = true;
     if(controller_board_has_encoder_button() && controller_board_pin_valid(pins.encoderButton)) {
-        pinMode(pins.encoderButton, INPUT);
+        pinMode(pins.encoderButton, INPUT_PULLUP);
         encoderIdleLevel = digitalRead(pins.encoderButton);
     }
     portENTER_CRITICAL(&buttonMux);

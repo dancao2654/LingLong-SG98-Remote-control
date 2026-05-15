@@ -55,6 +55,7 @@ enum class RemoteWakeSource : uint32_t {
     Timer = 1u << 3,
     Motion = 1u << 4,
     Usb = 1u << 5,
+    SecondaryButton = 1u << 6,
 };
 
 struct RemoteTouchState {

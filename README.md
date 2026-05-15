@@ -22,10 +22,11 @@ For PlatformIO in the repo root `Project Tasks`:
 
 - `adafruit_feather_esp32s3` = controller box on Adafruit hardware
 - `waveshare_esp32_s3_rs485_can` = controller box on Waveshare hardware
+- `controller-lilygo-t4-s3-h678` = controller firmware on LILYGO T4-S3 H678 with external RS-485 transceiver
 - `remote-crowpanel-128` = CrowPanel 1.28 handheld remote
 - `remote-crowpanel-21` = CrowPanel 2.1 handheld remote
 - `remote-waveshare-175` = Waveshare 1.75 handheld remote
-- `remote-lilygo-t4-s3-h678` = LILYGO T4-S3 H678 2.41 AMOLED handheld remote
+- `remote-lilygo-t4-s3-h678` = LILYGO T4-S3 H678 2.41 AMOLED two-button handheld remote
 - `remote-universal-s3` = compatibility alias for the auto-detect remote image
 
 The remote code still lives as a separate project in `sg98-remote/`, but the
@@ -36,7 +37,7 @@ The current universal remote image auto-detects these boards at boot:
 
 - Elecrow CrowPanel 1.28 rotary/touch remote
 - Waveshare 1.75 AMOLED touch remote
-- LILYGO T4-S3 H678 2.41 AMOLED touch remote
+- LILYGO T4-S3 H678 2.41 AMOLED touch/two-button remote
 
 The supported remote boards now share:
 
@@ -57,6 +58,10 @@ Those aggregate/default project builds now target only:
 
 The board-specific environments remain available for forced hardware debugging,
 but they are no longer part of the normal aggregate build flow.
+
+The LilyGO controller target currently treats the board as a controller carrier:
+RS-485 UART is on `GPIO2` TX and `GPIO4` RX, the start button is on `GPIO21`,
+and the rotary encoder uses `GPIO47`/`GPIO48` plus button `GPIO38`.
 
 #### Versioning and upgrades
 

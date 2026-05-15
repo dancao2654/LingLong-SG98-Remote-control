@@ -58,8 +58,8 @@ const MotorCommandDescriptor RT_COMMANDS[] = {
     {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the command sign."},
 };
 
-const MotorCommandDescriptor KRS_130ST_M07725_COMMANDS[] = {
-    {MOTOR_COMMAND_SET_RPM, MOTOR_MENU_NONE, MOTOR_MENU_NONE, 1, true, "Set RPM", "rpm", "Internal speed-1 target for the KRS 130ST-M07725 profile.", "Keep the target at or below the 2500 rpm rated speed unless the drive setup explicitly allows more."},
+const MotorCommandDescriptor KRS_2KW_2500RPM_COMMANDS[] = {
+    {MOTOR_COMMAND_SET_RPM, MOTOR_MENU_NONE, MOTOR_MENU_NONE, 1, true, "Set RPM", "rpm", "Internal speed-1 target for the KRS 2 kW 2500 rpm profile.", "Keep the target at or below the 2500 rpm rated speed unless the drive setup explicitly allows more."},
     {MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 1, true, "Motor torque", "%", "Forward and reverse internal torque limits for the KRS drive.", "Higher values push harder but increase stall load."},
     {MOTOR_COMMAND_RAMP_LEVEL, 1, static_cast<uint8_t>(SETMOTORRAMP), 1, false, "Motor ramp", "lvl", "KRS speed-ramp mapping is not enabled in this backend.", "Use drive parameters directly until the acceleration/deceleration registers are validated on hardware."},
     {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the command sign."},
@@ -118,9 +118,23 @@ const MotorDescriptor MOTOR_DESCRIPTORS[] = {
         2500,
         100,
         30,
-        KRS_130ST_M07725_COMMANDS,
-        static_cast<uint8_t>(sizeof(KRS_130ST_M07725_COMMANDS) / sizeof(KRS_130ST_M07725_COMMANDS[0])),
+        KRS_2KW_2500RPM_COMMANDS,
+        static_cast<uint8_t>(sizeof(KRS_2KW_2500RPM_COMMANDS) / sizeof(KRS_2KW_2500RPM_COMMANDS[0])),
         &MOTOR_BACKEND_KRS_130ST_M07725,
+    },
+    {
+        DRIVE_TYPE_KRS_XB130AEA20025_SHL,
+        "krs-xb130aea20025-shl",
+        "XB130",
+        "KRS servo drive configured for XB130AEA20025-SHL using 130ST-M07725 motor code 20.",
+        "Uses 9600 8O1 Modbus RTU, signed internal speed-1 command, and communication-controlled SON/SP inputs.",
+        COMM_PROFILE_KRS,
+        2500,
+        100,
+        31,
+        KRS_2KW_2500RPM_COMMANDS,
+        static_cast<uint8_t>(sizeof(KRS_2KW_2500RPM_COMMANDS) / sizeof(KRS_2KW_2500RPM_COMMANDS[0])),
+        &MOTOR_BACKEND_KRS_XB130AEA20025_SHL,
     },
 };
 
@@ -378,6 +392,7 @@ uint32_t packProbeLogValue(const MotorProbeReport& report, DriveType detectedTyp
     if(report.jmc_control_word) value |= (1UL << 2);
     if(report.rt_status_block) value |= (1UL << 3);
     if(report.krs_130st_m07725_motor_code) value |= (1UL << 4);
+    if(report.krs_xb130aea20025_shl_motor_code) value |= (1UL << 5);
     value |= (static_cast<uint32_t>(detectedType) & 0xFFUL) << 8;
     if(report.jmc_baud == 9600) value |= (1UL << 16);
     if(report.jmc_baud == 19200) value |= (1UL << 17);

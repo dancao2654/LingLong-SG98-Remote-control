@@ -22,7 +22,7 @@ environment.
   - Elecrow CrowPanel 1.28 rotary/touch knob display
   - Elecrow CrowPanel 2.1 rotary/touch knob display
   - Waveshare 1.75 AMOLED round touch display
-  - LILYGO T4-S3 H678 2.41 AMOLED touch display
+  - LILYGO T4-S3 H678 2.41 AMOLED touch display with two GPIO buttons
 - `remote-lilygo-t4-s3-h678` = forced LILYGO T4-S3 H678 image
 
 The remote app is shared across boards through a small board HAL:
@@ -63,8 +63,9 @@ Vendor hardware references for the supported remote boards are cached under:
   `ACTION` frames
 - encoder-driven navigation on CrowPanel
 - touch-driven dial, taps, and menu scrolling on Waveshare AMOLED
-- touch-driven dial, taps, and menu scrolling on LILYGO T4-S3 H678, with the
-  BOOT button mapped as the primary remote button
+- touch-driven dial, taps, and menu scrolling on LILYGO T4-S3 H678, with
+  BOOT/`GPIO0` mapped as the primary button and an active-low `GPIO1`
+  secondary/back button
 - native USB-C serial debug console exposed through the board HAL
 - idle deep-sleep with RTC state restore on boards whose HAL advertises deep-sleep wake support
 - remote-side Wi-Fi onboarding portal with captive AP, saved STA credentials,
@@ -85,6 +86,30 @@ For `WebSocket` mode:
 - save the same home Wi-Fi SSID/password used by the controller
 - once both devices are on the same LAN, the remote discovers the controller
   with mDNS and switches to `WebSocket` automatically
+
+### Voice commands
+
+The Waveshare AMOLED remote can capture a short WAV from its onboard microphone
+and send it to a local speech-recognition endpoint. Recognition runs off-device;
+the remote only executes an allowlisted intent returned by the endpoint.
+
+Start the sample endpoint from the repo root on a LAN machine:
+
+```bash
+export OPENAI_API_KEY=...
+python3 tools/voice_command_server.py --host 0.0.0.0 --port 8765
+```
+
+Configure the remote over USB-C serial:
+
+```text
+voice url http://<server-ip>:8765/command
+voice test
+```
+
+Supported returned commands are `stop`, `manual`, `gbw`, `set_rpm`,
+`set_weight`, `home`, `menu`, and `start`. Voice start is compiled disabled by
+default; build with `-DREMOTE_VOICE_ALLOW_START=1` only after bench testing.
 
 ## Build
 
@@ -108,9 +133,14 @@ For `WebSocket` mode:
   `ESP-NOW` pairing/config mode.
 - The Waveshare board is touch-only, so circular drag gestures replace the
   physical encoder.
-- The LILYGO T4-S3 H678 maps CST226 touch, SY6970 PMIC telemetry/IRQ, and the
-  SD-slot SPI pins. Its vendor `BOARD_AMOLED_241` profile exposes BOOT on
-  `GPIO0` as the only physical function button and does not expose an IMU/light
-  sensor block on this 2.41-inch H678 variant.
+- The LILYGO T4-S3 H678 vendor `BOARD_AMOLED_241` profile exposes BOOT on
+  `GPIO0` as its only onboard function button. The remote firmware requires a
+  second physical control, so it maps `REMOTE_LILYGO_SECONDARY_BUTTON_GPIO`
+  to `GPIO1` by default. Wire that secondary momentary switch active-low to
+  `GND`; short press is back/cancel and long press toggles mode from Home.
+- The default LILYGO secondary button uses the SD-slot `CS` pin, so the HAL
+  disables SD/expansion SPI while `GPIO1` is assigned as a button. Move
+  `REMOTE_LILYGO_SECONDARY_BUTTON_GPIO` to another safe GPIO if that SPI slot
+  is needed.
 - This universal build is currently intended for the supported `ESP32-S3R8N16`
   remote boards above, not arbitrary ESP32 boards.
