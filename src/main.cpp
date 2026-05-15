@@ -125,9 +125,6 @@ constexpr unsigned long MOTOR_START_WATCHDOG_MS = 5000;
 constexpr int16_t MOTOR_START_MIN_OBSERVED_RPM = rpm_scalar / 2;
 constexpr uint16_t PURGE_VIBRATION_MIN_MS = 1000;
 constexpr uint16_t PURGE_VIBRATION_MAX_MS = 2000;
-constexpr uint16_t PURGE_VIBRATION_ON_MS = 220;
-constexpr uint16_t PURGE_VIBRATION_OFF_MS = 180;
-constexpr uint8_t PURGE_VIBRATION_RPM_PERCENT = 55;
 constexpr uint8_t PURGE_PHASE_SETTLE = 1;
 constexpr uint8_t PURGE_PHASE_REVERSE_VIBRATION = 2;
 constexpr uint8_t PURGE_PHASE_REVERSE_SPIN = 3;
@@ -135,6 +132,19 @@ constexpr uint8_t PURGE_PHASE_DIRECTION_SETTLE = 4;
 constexpr uint8_t PURGE_PHASE_FORWARD_VIBRATION = 5;
 constexpr uint8_t PURGE_PHASE_FORWARD_SPIN = 6;
 constexpr uint8_t PURGE_PHASE_COMPLETE = 7;
+
+struct PurgeVibrationStep {
+    uint16_t onMs;
+    uint16_t offMs;
+    uint8_t rpmPercent;
+};
+
+constexpr PurgeVibrationStep PURGE_VIBRATION_STEPS[] = {
+    {260, 240, 45},
+    {210, 170, 55},
+    {160, 130, 65},
+    {120, 120, 70},
+};
 
 uint8_t purgeFrameCounter = 0;
 int16_t purgeLastSetRPM = 0;
@@ -237,17 +247,28 @@ uint16_t purgeVibrationDurationMs(uint16_t spinDurationMs) {
     return duration;
 }
 
-int16_t purgeVibrationRpm(int16_t spinRpm, unsigned long phaseElapsedMs) {
+const PurgeVibrationStep& purgeVibrationStepFor(unsigned long phaseElapsedMs, uint16_t durationMs) {
+    constexpr uint8_t stepCount = sizeof(PURGE_VIBRATION_STEPS) / sizeof(PURGE_VIBRATION_STEPS[0]);
+    uint8_t stepIndex = 0;
+    if(durationMs > 0) {
+        stepIndex = static_cast<uint8_t>((phaseElapsedMs * stepCount) / durationMs);
+        if(stepIndex >= stepCount) stepIndex = stepCount - 1;
+    }
+    return PURGE_VIBRATION_STEPS[stepIndex];
+}
+
+int16_t purgeVibrationRpm(int16_t spinRpm, unsigned long phaseElapsedMs, uint16_t durationMs) {
     if(spinRpm == 0) return 0;
 
-    const uint16_t cycleMs = PURGE_VIBRATION_ON_MS + PURGE_VIBRATION_OFF_MS;
-    if(cycleMs > 0 && (phaseElapsedMs % cycleMs) >= PURGE_VIBRATION_ON_MS) {
+    const PurgeVibrationStep& step = purgeVibrationStepFor(phaseElapsedMs, durationMs);
+    const uint16_t cycleMs = step.onMs + step.offMs;
+    if(cycleMs > 0 && (phaseElapsedMs % cycleMs) >= step.onMs) {
         return 0;
     }
 
     int32_t rpmAbs = spinRpm;
     if(rpmAbs < 0) rpmAbs = -rpmAbs;
-    int16_t rpm = purgeClampedRpm((rpmAbs * PURGE_VIBRATION_RPM_PERCENT) / 100);
+    int16_t rpm = purgeClampedRpm((rpmAbs * step.rpmPercent) / 100);
     if(spinRpm < 0) rpm = static_cast<int16_t>(-rpm);
     return rpm;
 }
@@ -274,7 +295,7 @@ bool applyPurgeVibrationWindow(unsigned long elapsedMs,
                                int16_t spinRpm) {
     if(durationMs == 0 || spinRpm == 0) return false;
     if(elapsedMs < cursorMs + durationMs) {
-        motor_setRPM = purgeVibrationRpm(spinRpm, elapsedMs - cursorMs);
+        motor_setRPM = purgeVibrationRpm(spinRpm, elapsedMs - cursorMs, durationMs);
         purgePhase = phase;
         return true;
     }
