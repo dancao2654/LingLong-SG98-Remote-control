@@ -12,6 +12,7 @@ enum DriveType {
     DRIVE_TYPE_RT,
     DRIVE_TYPE_KRS_130ST_M07725,
     DRIVE_TYPE_KRS_XB130AEA20025_SHL,
+    DRIVE_TYPE_SEW_MOVILINK,
 };
 enum MotorCommandId {
     MOTOR_COMMAND_SET_RPM,
@@ -37,6 +38,8 @@ struct MotorProbeReport {
     bool rt_status_block;
     bool krs_130st_m07725_motor_code;
     bool krs_xb130aea20025_shl_motor_code;
+    bool sew_movilink_3pd;
+    uint8_t sew_movilink_address;
     uint32_t jmc_baud;
 };
 

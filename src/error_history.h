@@ -49,6 +49,7 @@ enum ErrorHistoryMotorRpmSource : uint8_t {
     ERROR_HISTORY_MOTOR_RPM_SRC_JMC_606C = 2,
     ERROR_HISTORY_MOTOR_RPM_SRC_RT_1301 = 3,
     ERROR_HISTORY_MOTOR_RPM_SRC_KRS_DN008 = 4,
+    ERROR_HISTORY_MOTOR_RPM_SRC_SEW_PI2 = 5,
 };
 
 enum ErrorHistoryMotorDiagSubtype : uint8_t {

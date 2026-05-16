@@ -327,6 +327,9 @@ enum class PendingActionKind : uint8_t {
     DriveAuto,
     DriveJmc,
     DriveRt,
+    DriveKrs,
+    DriveXb130,
+    DriveSew,
     JmcBaud,
     ResetDefaults,
 };
@@ -670,6 +673,9 @@ constexpr SettingItem kDriveItems[] = {
     {"Auto detect", ItemKind::Action, 0, 0, 0, 0, 0, "", "redetect", nullptr},
     {"Force JMC", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "jmc"},
     {"Force RT", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "rt"},
+    {"Force KRS", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "krs"},
+    {"Force XB130", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "xb130"},
+    {"Force SEW", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "sew"},
     {"JMC 9600", ItemKind::Action, 0, 0, 0, 0, 0, "", "jmc_baud", "9600"},
     {"JMC 19200", ItemKind::Action, 0, 0, 0, 0, 0, "", "jmc_baud", "19200"},
     {"JMC 38400", ItemKind::Action, 0, 0, 0, 0, 0, "", "jmc_baud", "38400"},
@@ -736,6 +742,9 @@ enum LocalDriveSelection : int32_t {
     LOCAL_DRIVE_AUTO = 0,
     LOCAL_DRIVE_JMC = 1,
     LOCAL_DRIVE_RT = 2,
+    LOCAL_DRIVE_KRS = 3,
+    LOCAL_DRIVE_XB130 = 4,
+    LOCAL_DRIVE_SEW = 5,
 };
 
 bool useRoundNavigation();
@@ -2794,6 +2803,9 @@ LocalDriveSelection sanitizeLocalDriveSelection(int32_t value) {
     switch(value) {
         case LOCAL_DRIVE_JMC: return LOCAL_DRIVE_JMC;
         case LOCAL_DRIVE_RT: return LOCAL_DRIVE_RT;
+        case LOCAL_DRIVE_KRS: return LOCAL_DRIVE_KRS;
+        case LOCAL_DRIVE_XB130: return LOCAL_DRIVE_XB130;
+        case LOCAL_DRIVE_SEW: return LOCAL_DRIVE_SEW;
         case LOCAL_DRIVE_AUTO:
         default:
             return LOCAL_DRIVE_AUTO;
@@ -2812,10 +2824,53 @@ String localDriveSelectionLabel(LocalDriveSelection selection) {
     switch(selection) {
         case LOCAL_DRIVE_JMC: return "JMC";
         case LOCAL_DRIVE_RT: return "RT";
+        case LOCAL_DRIVE_KRS: return "KRS130ST";
+        case LOCAL_DRIVE_XB130: return "XB130";
+        case LOCAL_DRIVE_SEW: return "SEW";
         case LOCAL_DRIVE_AUTO:
         default:
             return "AUTO";
     }
+}
+
+bool forcedDriveForArg(const char* arg,
+                       LocalDriveSelection* selection,
+                       PendingActionKind* pendingKind,
+                       const char** expectedLabel) {
+    if(arg == nullptr) {
+        return false;
+    }
+    if(strcmp(arg, "jmc") == 0) {
+        if(selection != nullptr) *selection = LOCAL_DRIVE_JMC;
+        if(pendingKind != nullptr) *pendingKind = PendingActionKind::DriveJmc;
+        if(expectedLabel != nullptr) *expectedLabel = "JMC";
+        return true;
+    }
+    if(strcmp(arg, "rt") == 0) {
+        if(selection != nullptr) *selection = LOCAL_DRIVE_RT;
+        if(pendingKind != nullptr) *pendingKind = PendingActionKind::DriveRt;
+        if(expectedLabel != nullptr) *expectedLabel = "RT";
+        return true;
+    }
+    if(strcmp(arg, "krs") == 0 || strcmp(arg, "krs130st") == 0 || strcmp(arg, "krs130st-m07725") == 0) {
+        if(selection != nullptr) *selection = LOCAL_DRIVE_KRS;
+        if(pendingKind != nullptr) *pendingKind = PendingActionKind::DriveKrs;
+        if(expectedLabel != nullptr) *expectedLabel = "KRS130ST";
+        return true;
+    }
+    if(strcmp(arg, "xb130") == 0 || strcmp(arg, "krs-xb130aea20025-shl") == 0) {
+        if(selection != nullptr) *selection = LOCAL_DRIVE_XB130;
+        if(pendingKind != nullptr) *pendingKind = PendingActionKind::DriveXb130;
+        if(expectedLabel != nullptr) *expectedLabel = "XB130";
+        return true;
+    }
+    if(strcmp(arg, "sew") == 0 || strcmp(arg, "sew-movilink") == 0 || strcmp(arg, "movilink") == 0) {
+        if(selection != nullptr) *selection = LOCAL_DRIVE_SEW;
+        if(pendingKind != nullptr) *pendingKind = PendingActionKind::DriveSew;
+        if(expectedLabel != nullptr) *expectedLabel = "SEW";
+        return true;
+    }
+    return false;
 }
 
 bool isRadioModeItem(const SettingItem& item) {
@@ -4157,10 +4212,9 @@ String formatSettingValue(const SettingItem& item) {
         }
         if(item.action != nullptr && strcmp(item.action, "drive") == 0) {
             if(item.actionArg != nullptr) {
-                if(currentLocalDriveSelection() == LOCAL_DRIVE_JMC && strcmp(item.actionArg, "jmc") == 0) {
-                    return "ACTIVE";
-                }
-                if(currentLocalDriveSelection() == LOCAL_DRIVE_RT && strcmp(item.actionArg, "rt") == 0) {
+                LocalDriveSelection selection = LOCAL_DRIVE_AUTO;
+                if(forcedDriveForArg(item.actionArg, &selection, nullptr, nullptr) &&
+                   currentLocalDriveSelection() == selection) {
                     return "ACTIVE";
                 }
             }
@@ -9188,7 +9242,10 @@ const char* pendingActionName(PendingActionKind kind) {
         case PendingActionKind::Calibrate: return "calibrate";
         case PendingActionKind::DriveAuto:
         case PendingActionKind::DriveJmc:
-        case PendingActionKind::DriveRt: return "drive";
+        case PendingActionKind::DriveRt:
+        case PendingActionKind::DriveKrs:
+        case PendingActionKind::DriveXb130:
+        case PendingActionKind::DriveSew: return "drive";
         case PendingActionKind::JmcBaud: return "jmc_baud";
         case PendingActionKind::ResetDefaults: return "reset_defaults";
         case PendingActionKind::None:
@@ -10599,17 +10656,13 @@ void runConfirmAction(const SettingItem& item) {
                                     nullptr,
                                     0);
     } else if(strcmp(item.action, "drive") == 0 && item.actionArg != nullptr) {
-        if(strcmp(item.actionArg, "jmc") == 0) {
-            queued = queuePendingAction(PendingActionKind::DriveJmc,
+        PendingActionKind pendingKind = PendingActionKind::None;
+        const char* expectedLabel = nullptr;
+        if(forcedDriveForArg(item.actionArg, nullptr, &pendingKind, &expectedLabel)) {
+            queued = queuePendingAction(pendingKind,
                                         PendingActionReflection::Drive,
-                                        "jmc",
-                                        "JMC",
-                                        0);
-        } else if(strcmp(item.actionArg, "rt") == 0) {
-            queued = queuePendingAction(PendingActionKind::DriveRt,
-                                        PendingActionReflection::Drive,
-                                        "rt",
-                                        "RT",
+                                        item.actionArg,
+                                        expectedLabel,
                                         0);
         }
     } else if(strcmp(item.action, "jmc_baud") == 0 && item.actionArg != nullptr) {
@@ -10812,11 +10865,9 @@ void activateSelectedItem() {
         setLocalDriveSelection(LOCAL_DRIVE_AUTO);
         markPersistentStateDirty();
     } else if(item.action != nullptr && strcmp(item.action, "drive") == 0 && item.actionArg != nullptr) {
-        if(strcmp(item.actionArg, "jmc") == 0) {
-            setLocalDriveSelection(LOCAL_DRIVE_JMC);
-            markPersistentStateDirty();
-        } else if(strcmp(item.actionArg, "rt") == 0) {
-            setLocalDriveSelection(LOCAL_DRIVE_RT);
+        LocalDriveSelection selection = LOCAL_DRIVE_AUTO;
+        if(forcedDriveForArg(item.actionArg, &selection, nullptr, nullptr)) {
+            setLocalDriveSelection(selection);
             markPersistentStateDirty();
         }
     }
@@ -13242,7 +13293,7 @@ void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
-    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep|voice>");
+    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep|voice>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] voice: voice status | voice url <http://host:port/command> | voice clear | voice test");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
@@ -13560,13 +13611,16 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
             }
             return ok;
         }
-        if(arg0 == "jmc" || arg0 == "rt") {
-            setLocalDriveSelection(arg0 == "jmc" ? LOCAL_DRIVE_JMC : LOCAL_DRIVE_RT);
+        LocalDriveSelection selection = LOCAL_DRIVE_AUTO;
+        PendingActionKind pendingKind = PendingActionKind::None;
+        const char* expectedLabel = nullptr;
+        if(forcedDriveForArg(arg0.c_str(), &selection, &pendingKind, &expectedLabel)) {
+            setLocalDriveSelection(selection);
             markPersistentStateDirty();
-            const bool ok = queuePendingAction(arg0 == "jmc" ? PendingActionKind::DriveJmc : PendingActionKind::DriveRt,
+            const bool ok = queuePendingAction(pendingKind,
                                                PendingActionReflection::Drive,
                                                arg0.c_str(),
-                                               arg0 == "jmc" ? "JMC" : "RT",
+                                               expectedLabel,
                                                0);
             if(message != nullptr) {
                 *message = ok ? "queued" : "send failed";
@@ -13574,7 +13628,7 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
             return ok;
         }
         if(message != nullptr) {
-            *message = "usage: drive auto|jmc|rt";
+            *message = "usage: drive auto|jmc|rt|krs|xb130|sew";
         }
         return false;
     }

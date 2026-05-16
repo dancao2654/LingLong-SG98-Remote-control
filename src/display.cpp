@@ -295,6 +295,8 @@ uint32_t getActiveMotorCommBaud() {
       return comm_get_jmc_baud();
     case COMM_PROFILE_KRS:
       return COMM_BAUD_RATE_KRS;
+    case COMM_PROFILE_SEW_MOVILINK:
+      return COMM_BAUD_RATE_SEW_MOVILINK;
     case COMM_PROFILE_RT:
     default:
       return COMM_BAUD_RATE_RT;
@@ -1530,6 +1532,7 @@ static const char* getMotorSelectLabel(int idx) {
         case MOTOR_SELECT_RT: return "RT";
         case MOTOR_SELECT_KRS_130ST_M07725: return "KRS";
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "XB130";
+        case MOTOR_SELECT_SEW_MOVILINK: return "SEW";
         default: return "";
     }
 }
@@ -1541,6 +1544,7 @@ static const char* getMotorSelectHint(int idx) {
         case MOTOR_SELECT_RT: return "Force RT backend";
         case MOTOR_SELECT_KRS_130ST_M07725: return "Force KRS 130ST backend";
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "Force XB130 backend";
+        case MOTOR_SELECT_SEW_MOVILINK: return "Force SEW MOVILINK backend";
         default: return "";
     }
 }
@@ -2144,7 +2148,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
                   if(i == 0) {
                     tft->setFont(&FreeSans9pt7b);
                     const char* msg1 = "Normal keeps stock grind polarity.";
-                    const char* msg2 = "Reversed flips JMC, RT, and KRS.";
+                    const char* msg2 = "Reversed flips JMC, RT, KRS, and SEW.";
                     tft->setCursor(10, 184);
                     tft->print(msg1);
                     tft->setCursor(10, 204);

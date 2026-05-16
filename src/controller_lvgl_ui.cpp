@@ -149,8 +149,8 @@ struct UiRefs {
     lv_obj_t* splashMotor = nullptr;
     lv_obj_t* splashProgress = nullptr;
     lv_obj_t* splashStep = nullptr;
-    lv_obj_t* splashSteps[5] = {};
-    lv_obj_t* splashStepLabels[5] = {};
+    lv_obj_t* splashSteps[6] = {};
+    lv_obj_t* splashStepLabels[6] = {};
     lv_obj_t* splashFooter = nullptr;
 } ui;
 
@@ -567,6 +567,7 @@ lv_color_t headerMotorColor() {
         case DRIVE_TYPE_RT: return lvColor(kColorGood);
         case DRIVE_TYPE_KRS_130ST_M07725: return lvColor(kColorWarn);
         case DRIVE_TYPE_KRS_XB130AEA20025_SHL: return lvColor(kColorWarn);
+        case DRIVE_TYPE_SEW_MOVILINK: return lvColor(kColorAccent);
         case DRIVE_TYPE_UNKNOWN:
         default:
             return lvColor(kColorMuted);
@@ -582,6 +583,8 @@ uint32_t headerMotorFillColor() {
         case DRIVE_TYPE_KRS_130ST_M07725:
         case DRIVE_TYPE_KRS_XB130AEA20025_SHL:
             return blendRgb(kColorPanelHi, kColorWarn, 0.54f);
+        case DRIVE_TYPE_SEW_MOVILINK:
+            return blendRgb(kColorPanelHi, kColorAccent, 0.56f);
         case DRIVE_TYPE_UNKNOWN:
         default:
             return blendRgb(kColorPanelHi, kColorAccent, 0.50f);
@@ -825,6 +828,7 @@ const char* motorSelectTitle(int idx) {
         case MOTOR_SELECT_RT: return "RT";
         case MOTOR_SELECT_KRS_130ST_M07725: return "KRS";
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "XB130";
+        case MOTOR_SELECT_SEW_MOVILINK: return "SEW";
         default: return "";
     }
 }
@@ -836,6 +840,7 @@ const char* motorSelectHint(int idx) {
         case MOTOR_SELECT_RT: return "Force RT";
         case MOTOR_SELECT_KRS_130ST_M07725: return "Force KRS 130ST";
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "Force XB130";
+        case MOTOR_SELECT_SEW_MOVILINK: return "Force SEW";
         default: return "";
     }
 }
@@ -1389,12 +1394,12 @@ void createSplashUi() {
     lv_label_set_long_mode(ui.splashStep, LV_LABEL_LONG_DOT);
     lv_obj_set_pos(ui.splashStep, 146, 144);
 
-    const char* stepLabels[5] = {"BUS", "JMC", "RT", "KRS", "XB"};
-    for(uint8_t i = 0; i < 5; ++i) {
+    const char* stepLabels[6] = {"BUS", "JMC", "RT", "KRS", "XB", "SEW"};
+    for(uint8_t i = 0; i < 6; ++i) {
         ui.splashSteps[i] = lv_obj_create(ui.splashView);
         styleSolid(ui.splashSteps[i], 0x203A55, 0, LV_RADIUS_CIRCLE);
         lv_obj_set_size(ui.splashSteps[i], 8, 8);
-        lv_obj_set_pos(ui.splashSteps[i], 136 + static_cast<int16_t>(i) * 28, 169);
+        lv_obj_set_pos(ui.splashSteps[i], 122 + static_cast<int16_t>(i) * 26, 169);
 
         ui.splashStepLabels[i] = lv_label_create(ui.splashView);
         lv_obj_set_width(ui.splashStepLabels[i], 26);
@@ -1402,7 +1407,7 @@ void createSplashUi() {
         lv_obj_set_style_text_color(ui.splashStepLabels[i], lvColor(kColorMuted), 0);
         lv_obj_set_style_text_align(ui.splashStepLabels[i], LV_TEXT_ALIGN_CENTER, 0);
         lv_label_set_text(ui.splashStepLabels[i], stepLabels[i]);
-        lv_obj_set_pos(ui.splashStepLabels[i], 127 + static_cast<int16_t>(i) * 28, 181);
+        lv_obj_set_pos(ui.splashStepLabels[i], 113 + static_cast<int16_t>(i) * 26, 181);
     }
 
     ui.splashFooter = lv_label_create(ui.splashView);
@@ -1957,8 +1962,8 @@ void syncSplash() {
     lv_label_set_text(ui.splashStep, stepText.c_str());
 
     int activeDot = gSplashComplete ? static_cast<int>(gSplashTotal) : static_cast<int>(gSplashStep);
-    if(activeDot > 4) activeDot = 4;
-    for(uint8_t i = 0; i < 5; ++i) {
+    if(activeDot > 5) activeDot = 5;
+    for(uint8_t i = 0; i < 6; ++i) {
         const bool active = static_cast<int>(i) <= activeDot;
         lv_obj_set_style_bg_color(ui.splashSteps[i], lvColor(active ? accent : 0x203A55), 0);
         lv_obj_set_style_bg_opa(ui.splashSteps[i], active ? LV_OPA_COVER : LV_OPA_60, 0);

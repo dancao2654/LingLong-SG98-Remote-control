@@ -10,6 +10,7 @@
 #include "JMC/motorcontrol_jmc.h"
 #include "RT/motorcontrol_rt.h"
 #include "KRS/motorcontrol_krs_130st_m07725.h"
+#include "SEW/motorcontrol_sew_movilink.h"
 #include "pdata.h"
 
 int16_t motor_setRPM = 0;
@@ -63,6 +64,13 @@ const MotorCommandDescriptor KRS_2KW_2500RPM_COMMANDS[] = {
     {MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 1, true, "Motor torque", "%", "Forward and reverse internal torque limits for the KRS drive.", "Higher values push harder but increase stall load."},
     {MOTOR_COMMAND_RAMP_LEVEL, 1, static_cast<uint8_t>(SETMOTORRAMP), 1, false, "Motor ramp", "lvl", "KRS speed-ramp mapping is not enabled in this backend.", "Use drive parameters directly until the acceleration/deceleration registers are validated on hardware."},
     {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the command sign."},
+};
+
+const MotorCommandDescriptor SEW_MOVILINK_COMMANDS[] = {
+    {MOTOR_COMMAND_SET_RPM, MOTOR_MENU_NONE, MOTOR_MENU_NONE, 1, true, "Set RPM", "rpm", "MOVILINK process-data speed setpoint.", "Requires PO2 configured as SPEED on the SEW drive."},
+    {MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 10, true, "Motor torque", "%", "MOVILINK process-data current limit.", "Requires PO3 configured as MAX. CURRENT or equivalent current-limit process data."},
+    {MOTOR_COMMAND_RAMP_LEVEL, 1, static_cast<uint8_t>(SETMOTORRAMP), 1, false, "Motor ramp", "lvl", "SEW MOVILINK ramp process-data mapping is not enabled in this backend.", "Use MOVITOOLS or drive parameters for ramp setup until the process ramp mapping is validated on hardware."},
+    {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the signed MOVILINK speed setpoint."},
 };
 
 const MotorDescriptor MOTOR_DESCRIPTORS[] = {
@@ -135,6 +143,20 @@ const MotorDescriptor MOTOR_DESCRIPTORS[] = {
         KRS_2KW_2500RPM_COMMANDS,
         static_cast<uint8_t>(sizeof(KRS_2KW_2500RPM_COMMANDS) / sizeof(KRS_2KW_2500RPM_COMMANDS[0])),
         &MOTOR_BACKEND_KRS_XB130AEA20025_SHL,
+    },
+    {
+        DRIVE_TYPE_SEW_MOVILINK,
+        "sew-movilink",
+        "SEW",
+        "SEW MOVITRAC/MOVIDRIVE using MOVILINK 3PD over RS-485.",
+        "Uses 9600 8E1 MOVILINK frames and expects drive-side PO/PI process-data mapping.",
+        COMM_PROFILE_SEW_MOVILINK,
+        MOTOR_MAX_RPM_RT,
+        10,
+        40,
+        SEW_MOVILINK_COMMANDS,
+        static_cast<uint8_t>(sizeof(SEW_MOVILINK_COMMANDS) / sizeof(SEW_MOVILINK_COMMANDS[0])),
+        &MOTOR_BACKEND_SEW_MOVILINK,
     },
 };
 
@@ -393,7 +415,9 @@ uint32_t packProbeLogValue(const MotorProbeReport& report, DriveType detectedTyp
     if(report.rt_status_block) value |= (1UL << 3);
     if(report.krs_130st_m07725_motor_code) value |= (1UL << 4);
     if(report.krs_xb130aea20025_shl_motor_code) value |= (1UL << 5);
+    if(report.sew_movilink_3pd) value |= (1UL << 6);
     value |= (static_cast<uint32_t>(detectedType) & 0xFFUL) << 8;
+    value |= (static_cast<uint32_t>(report.sew_movilink_address) & 0xFFUL) << 24;
     if(report.jmc_baud == 9600) value |= (1UL << 16);
     if(report.jmc_baud == 19200) value |= (1UL << 17);
     if(report.jmc_baud == 38400) value |= (1UL << 18);

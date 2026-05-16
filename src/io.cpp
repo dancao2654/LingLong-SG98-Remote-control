@@ -290,6 +290,9 @@ void openDriveSelector(States returnState) {
         case DRIVE_TYPE_KRS_XB130AEA20025_SHL:
             motorSelectSelected = MOTOR_SELECT_KRS_XB130AEA20025_SHL;
             break;
+        case DRIVE_TYPE_SEW_MOVILINK:
+            motorSelectSelected = MOTOR_SELECT_SEW_MOVILINK;
+            break;
         case DRIVE_TYPE_UNKNOWN:
         default:
             motorSelectSelected = MOTOR_SELECT_AUTO;
@@ -314,6 +317,9 @@ void applyDriveSelection() {
             break;
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL:
             motor_force_drive_type(DRIVE_TYPE_KRS_XB130AEA20025_SHL, true);
+            break;
+        case MOTOR_SELECT_SEW_MOVILINK:
+            motor_force_drive_type(DRIVE_TYPE_SEW_MOVILINK, true);
             break;
         case MOTOR_SELECT_AUTO:
         default:

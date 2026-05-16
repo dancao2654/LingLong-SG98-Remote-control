@@ -338,6 +338,8 @@ uint8_t motorStartWatchdogRpmSource() {
         case DRIVE_TYPE_KRS_130ST_M07725:
         case DRIVE_TYPE_KRS_XB130AEA20025_SHL:
             return ERROR_HISTORY_MOTOR_RPM_SRC_KRS_DN008;
+        case DRIVE_TYPE_SEW_MOVILINK:
+            return ERROR_HISTORY_MOTOR_RPM_SRC_SEW_PI2;
         case DRIVE_TYPE_UNKNOWN:
         default:
             return 0;

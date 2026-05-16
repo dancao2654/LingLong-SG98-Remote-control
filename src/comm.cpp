@@ -45,6 +45,8 @@ uint32_t baudRateForProfile(CommProfile profile) {
   switch (profile) {
     case COMM_PROFILE_JMC:
       return baudRateForJmcRate(activeJmcRate);
+    case COMM_PROFILE_SEW_MOVILINK:
+      return COMM_BAUD_RATE_SEW_MOVILINK;
     case COMM_PROFILE_KRS:
       return COMM_BAUD_RATE_KRS;
     case COMM_PROFILE_RT:
@@ -57,6 +59,8 @@ uint32_t serialConfigForProfile(CommProfile profile) {
   switch (profile) {
     case COMM_PROFILE_JMC:
       return SERIAL_8N1;
+    case COMM_PROFILE_SEW_MOVILINK:
+      return SERIAL_8E1;
     case COMM_PROFILE_KRS:
       return SERIAL_8O1;
     case COMM_PROFILE_RT:
@@ -113,6 +117,7 @@ bool isJmcProfile() {
 }
 
 uint16_t sendDelayForProfile(CommProfile profile) {
+  if (profile == COMM_PROFILE_SEW_MOVILINK) return 8;
   if (profile != COMM_PROFILE_JMC) return COMM_DELAY_SEND;
 
   switch (activeJmcRate) {
@@ -127,6 +132,7 @@ uint16_t sendDelayForProfile(CommProfile profile) {
 }
 
 uint16_t receiveDelayForProfile(CommProfile profile) {
+  if (profile == COMM_PROFILE_SEW_MOVILINK) return 4;
   if (profile != COMM_PROFILE_JMC) return COMM_DELAY_RECEIVE;
 
   switch (activeJmcRate) {
@@ -141,6 +147,7 @@ uint16_t receiveDelayForProfile(CommProfile profile) {
 }
 
 uint16_t idleDelayForProfile(CommProfile profile) {
+  if (profile == COMM_PROFILE_SEW_MOVILINK) return 250;
   if (profile != COMM_PROFILE_JMC) return COMM_DELAY_IDLE;
 
   switch (activeJmcRate) {
@@ -160,6 +167,7 @@ uint16_t menuDelayForProfile(CommProfile profile) {
 }
 
 uint16_t activeIntervalForProfile(CommProfile profile) {
+  if (profile == COMM_PROFILE_SEW_MOVILINK) return 45;
   if (profile != COMM_PROFILE_JMC) return COMMINTERVAL;
 
   switch (activeJmcRate) {
@@ -494,6 +502,8 @@ const char* comm_get_profile_label() {
       }
     case COMM_PROFILE_KRS:
       return "9600-8O1";
+    case COMM_PROFILE_SEW_MOVILINK:
+      return "9600-8E1";
     case COMM_PROFILE_RT:
     default:
       return "9600-8N1";

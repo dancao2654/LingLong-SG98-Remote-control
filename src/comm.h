@@ -5,6 +5,7 @@
 #define COMM_BAUD_RATE_JMC 9600
 #define COMM_BAUD_RATE_RT 9600
 #define COMM_BAUD_RATE_KRS 9600
+#define COMM_BAUD_RATE_SEW_MOVILINK 9600
 
 #define comm_h
 #define SLAVE_ID 0x01
@@ -16,6 +17,7 @@ enum CommProfile {
   COMM_PROFILE_RT,
   COMM_PROFILE_JMC,
   COMM_PROFILE_KRS,
+  COMM_PROFILE_SEW_MOVILINK,
 };
 
 enum JmcCommRate {
