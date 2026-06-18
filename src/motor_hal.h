@@ -118,6 +118,7 @@ int16_t motor_get_command_menu_value(MotorCommandId commandId);
 int16_t motor_format_command_value(MotorCommandId commandId, int16_t uiValue, int8_t sign = 1);
 int16_t motor_get_formatted_command_value(MotorCommandId commandId, int8_t sign = 1);
 void motor_force_drive_type(DriveType driveType, bool persist = false);
+bool motor_ensure_drive_detected(bool force = false);
 void motor_redetect_drive(bool persist = false);
 MotorProbeReport motor_run_probe_report();
 uint32_t motor_get_preferred_jmc_baud();

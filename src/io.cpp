@@ -478,6 +478,9 @@ void do_io() {
         
         //START BUTTON
         if(START_BUTTON() == true && dimmed == false) {
+            if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
+                motor_ensure_drive_detected(true);
+            }
             if(shouldOpenDriveSelector()) openDriveSelector(IDLE);
             else if(!showStartBlockedIfNeeded()) {
                 purge_prepare_for_grinding();
@@ -518,6 +521,9 @@ void do_io() {
         if(setWeight < default_min_weight) setWeight = default_min_weight;
         
         if(START_BUTTON() == true) {
+            if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
+                motor_ensure_drive_detected(true);
+            }
             if(shouldOpenDriveSelector()) openDriveSelector(IDLE_GBW);
             else if(!showStartBlockedIfNeeded()) state = GRINDING_GBW;
         }

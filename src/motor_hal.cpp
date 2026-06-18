@@ -598,7 +598,7 @@ void selectDriveType(DriveType detectedType, bool persist) {
 
 void detectDriveTypeIfNeeded(bool force) {
     if (!force) {
-        if(autoProbeDone) return;
+        if(autoProbeDone && motorDriveType != DRIVE_TYPE_UNKNOWN) return;
         if(lastProbeAt + MOTOR_PROBE_INTERVAL > millis()) return;
     }
 
@@ -626,11 +626,16 @@ void motor_init() {
     }
 
     selectDriveType(DRIVE_TYPE_UNKNOWN, false);
-    detectDriveTypeIfNeeded(true);
+    lastProbeAt = millis();
 }
 
 bool do_comm() {
     const MotorDescriptor* descriptor = motor_get_current_descriptor();
+    if((descriptor == nullptr || descriptor->backend == nullptr || descriptor->backend->api.tick == nullptr) &&
+       motorDriveType == DRIVE_TYPE_UNKNOWN) {
+        detectDriveTypeIfNeeded(false);
+        descriptor = motor_get_current_descriptor();
+    }
     if(descriptor == nullptr || descriptor->backend == nullptr || descriptor->backend->api.tick == nullptr) {
         return false;
     }
@@ -846,6 +851,14 @@ void motor_force_drive_type(DriveType driveType, bool persist) {
     selectDriveType(driveType, persist);
     lastProbeAt = millis();
     autoProbeDone = true;
+}
+
+bool motor_ensure_drive_detected(bool force) {
+    if(motorDriveType != DRIVE_TYPE_UNKNOWN) {
+        return true;
+    }
+    detectDriveTypeIfNeeded(force);
+    return motorDriveType != DRIVE_TYPE_UNKNOWN;
 }
 
 void motor_redetect_drive(bool persist) {

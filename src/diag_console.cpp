@@ -1484,9 +1484,22 @@ bool apiSetWeightValue(int32_t requestedValue, const char** message) {
 }
 
 bool apiActionStart(const char** message) {
+    if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
+        motor_ensure_drive_detected(true);
+    }
+
     if(shouldOpenDriveSelectorApi()) {
         *message = "drive selection required";
         return false;
+    }
+
+    if(commStatus != COMM_CONNECTED || currentStatus == MOTOR_NOT_CONNECTED) {
+        const uint32_t connectDeadline = millis() + 1200UL;
+        while((commStatus != COMM_CONNECTED || currentStatus == MOTOR_NOT_CONNECTED) &&
+              static_cast<int32_t>(connectDeadline - millis()) > 0) {
+            do_comm();
+            delay(5);
+        }
     }
 
     if(commStatus != COMM_CONNECTED || currentStatus == MOTOR_NOT_CONNECTED) {
