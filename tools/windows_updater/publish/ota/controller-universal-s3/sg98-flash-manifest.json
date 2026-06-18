@@ -1,13 +1,13 @@
 {
   "schema": "sg98-flash-manifest-v2",
   "version": "2026.04.28",
-  "gitSha": "46bc72ba",
+  "gitSha": "fe1b744f",
   "gitDirty": false,
   "role": "controller",
   "envName": "controller-universal-s3",
   "boardName": "controller-universal-s3",
   "applicationOffset": "0x10000",
-  "generatedAtUtc": "2026-05-16T19:00:06Z",
+  "generatedAtUtc": "2026-06-18T08:13:42Z",
   "updatePolicy": {
     "schema": "sg98-update-policy-v1",
     "defaultMode": "application",
@@ -20,8 +20,8 @@
   "application": {
     "offset": "0x10000",
     "fileName": "flash-03-0x10000-firmware.bin",
-    "sha256": "0f6b4832f4dd1803323ce5c25b69f9383bf832f29bb5e811bdadbea7aa65df00",
-    "size": 2059968
+    "sha256": "9ef739fcedde630c2772d091e3c8dc282eb82a47e39db696d274832281f2d555",
+    "size": 2063184
   },
   "segments": [
     {
@@ -53,8 +53,8 @@
       "fileName": "flash-03-0x10000-firmware.bin",
       "sourceName": "firmware.bin",
       "kind": "application",
-      "sha256": "0f6b4832f4dd1803323ce5c25b69f9383bf832f29bb5e811bdadbea7aa65df00",
-      "size": 2059968
+      "sha256": "9ef739fcedde630c2772d091e3c8dc282eb82a47e39db696d274832281f2d555",
+      "size": 2063184
     }
   ]
 }
