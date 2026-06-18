@@ -352,6 +352,31 @@ How it works:
 
 This means the code only manually toggles the RS-485 transceiver direction pins. The UART hardware handles the data bits.
 
+### Emergency `EX_I2C` RS-485 Workaround
+
+Current firmware can also probe an external auto-direction UART-to-RS-485 daughter board on the `EX_I2C` header. This is intended as a repair path when the onboard `MAX3485ESA+` path is damaged.
+
+Workaround UART mapping:
+
+| `EX_I2C` signal | Replacement board signal |
+|---|---|
+| `3V3` | `VCC` |
+| `GND` | `GND` |
+| `GPIO9` | `RXD` on the daughter board |
+| `GPIO8` | `TXD` on the daughter board |
+
+Motor bus wiring moves to the replacement board:
+
+| Replacement board RS-485 side | Motor drive side |
+|---|---|
+| `A+` | motor RS-485 `A` / `+` |
+| `B-` | motor RS-485 `B` / `-` |
+| `Earth` / `G` / `SG` | optional signal ground/shield if the drive exposes one |
+
+This workaround requires an auto-direction board because `EX_I2C` only provides two GPIOs. Boards that require separate `DE` and `/RE` pins need an additional GPIO from another header or a different firmware pin map.
+
+At startup and during drive redetect, firmware tries the saved working RS-485 path first, then falls back to the other supported path. A valid motor probe response saves the working path for the next boot. A failed probe does not permanently switch paths.
+
 ### Display
 
 GPIOs used:

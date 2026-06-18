@@ -1105,6 +1105,8 @@ void apiPrintStatus() {
     jsonPrintQuoted(motor_get_type_label());
     Serial.print(",\"uart\":");
     jsonPrintQuoted(comm_get_profile_label());
+    Serial.print(",\"rs485Port\":");
+    jsonPrintQuoted(comm_get_rs485_port_label(comm_get_rs485_port()));
     Serial.print(",\"jmcBaud\":");
     Serial.print(static_cast<unsigned long>(comm_get_jmc_baud()));
     Serial.print(",\"jmcPreferredBaud\":");
@@ -1872,6 +1874,8 @@ void printHelp() {
     Serial.println("[diag] commands: ?=status, h=help, v=toggle stream, g=force IDLE_GBW, i=force IDLE, a=redetect, j=force JMC, r=force RT, k=force KRS, x=force XB130, s=force SEW, p=probe, l=dump log");
     Serial.println("[diag] jmc: jbaud <9600|19200|38400|57600|115200> (write drive profile and store same baud for next boot; reboot required)");
     Serial.println("[diag] config: jb <9600|19200|38400|57600|115200> (set preferred JMC boot baud, takes effect on redetect/reboot)");
+    Serial.println("[diag] rs485: rs485 <onboard|ex_i2c> [save] (force active RS-485 port for raw tests/probe)");
+    Serial.println("[diag] gpio: gpio ui | gpio ui float (raw front-panel button GPIO levels / GPIO42 bias test)");
     Serial.println("[diag] raw: mr <j|r> <slave> <reg> <count> | mw <j|r> <slave> <reg> <value>");
     Serial.println("[diag] raw-uart: mru <baud> <8N1|8N2|8E1|8E2|8O1|8O2> <slave> <reg> <count> | mwu <baud> <mode> <slave> <reg> <value>");
     Serial.println("[diag] dbg: dbg status | dbg wifi <on|off|reset|scan> | dbg espnow <on|off|coexist> | dbg ws <on|off> | dbg all off");
@@ -1934,7 +1938,7 @@ void forceIdleMode(States nextState) {
 void printProbeReport() {
     const MotorProbeReport report = motor_run_probe_report();
     Serial.printf(
-        "[diag] probe jmc_6041=%s jmc_1010=%s jmc_6040w=%s jmc_baud=%lu rt_1300=%s krs20=%s xb130_20=%s sew_3pd=%s sew_addr=%u active_drive=%s active_uart=%s\n",
+        "[diag] probe jmc_6041=%s jmc_1010=%s jmc_6040w=%s jmc_baud=%lu rt_1300=%s krs20=%s xb130_20=%s sew_3pd=%s sew_addr=%u active_drive=%s active_uart=%s rs485_port=%s\n",
         report.jmc_status_word ? "ok" : "no",
         report.jmc_magic_word ? "ok" : "no",
         report.jmc_control_word ? "ok" : "no",
@@ -1945,7 +1949,8 @@ void printProbeReport() {
         report.sew_movilink_3pd ? "ok" : "no",
         static_cast<unsigned>(report.sew_movilink_address),
         motor_get_type_label(),
-        comm_get_profile_label()
+        comm_get_profile_label(),
+        comm_get_rs485_port_label(comm_get_rs485_port())
     );
 }
 
@@ -2361,6 +2366,29 @@ bool parseProfileToken(const char* token, CommProfile* profile) {
 
     if(strcmp(token, "k") == 0 || strcmp(token, "K") == 0 || strcmp(token, "krs") == 0 || strcmp(token, "KRS") == 0) {
         *profile = COMM_PROFILE_KRS;
+        return true;
+    }
+
+    return false;
+}
+
+bool parseRs485PortToken(const char* token, CommRs485Port* port) {
+    if(token == nullptr || port == nullptr) {
+        return false;
+    }
+
+    if(strcmp(token, "onboard") == 0 ||
+       strcmp(token, "o") == 0 ||
+       strcmp(token, "internal") == 0) {
+        *port = COMM_RS485_PORT_ONBOARD;
+        return true;
+    }
+
+    if(strcmp(token, "ex_i2c") == 0 ||
+       strcmp(token, "ex") == 0 ||
+       strcmp(token, "ext") == 0 ||
+       strcmp(token, "external") == 0) {
+        *port = COMM_RS485_PORT_EX_I2C_WORKAROUND;
         return true;
     }
 
@@ -2801,6 +2829,100 @@ void handleLineCommand(char* line) {
 
     if(strcmp(cmd, "dbg") == 0 || strcmp(cmd, "DBG") == 0) {
         handleDebugCommand(savePtr, line);
+        return;
+    }
+
+    if(strcmp(cmd, "gpio") == 0 || strcmp(cmd, "GPIO") == 0) {
+        char* subcmd = strtok_r(nullptr, " \t", &savePtr);
+        if(subcmd == nullptr || strcmp(subcmd, "ui") == 0 || strcmp(subcmd, "UI") == 0) {
+            char* mode = strtok_r(nullptr, " \t", &savePtr);
+            const ControllerBoardPins& pins = controller_board_pins();
+            const bool hasStart = controller_board_has_start_button() &&
+                                  controller_board_pin_valid(pins.startButton);
+            const bool hasEncoder = controller_board_has_encoder_button() &&
+                                    controller_board_pin_valid(pins.encoderButton);
+            const int startRaw = hasStart ? digitalRead(pins.startButton) : -1;
+            const int encoderRaw = hasEncoder ? digitalRead(pins.encoderButton) : -1;
+            if(mode != nullptr && (strcmp(mode, "float") == 0 || strcmp(mode, "FLOAT") == 0)) {
+                int floatingHigh = 0;
+                int floatingLow = 0;
+                int pulldownHigh = 0;
+                int pulldownLow = 0;
+                int restoredRaw = -1;
+                if(hasEncoder) {
+                    pinMode(pins.encoderButton, INPUT);
+                    delayMicroseconds(1500);
+                    for(uint8_t i = 0; i < 24; ++i) {
+                        if(digitalRead(pins.encoderButton) == HIGH) {
+                            ++floatingHigh;
+                        } else {
+                            ++floatingLow;
+                        }
+                        delayMicroseconds(100);
+                    }
+                    pinMode(pins.encoderButton, INPUT_PULLDOWN);
+                    delayMicroseconds(1500);
+                    for(uint8_t i = 0; i < 24; ++i) {
+                        if(digitalRead(pins.encoderButton) == HIGH) {
+                            ++pulldownHigh;
+                        } else {
+                            ++pulldownLow;
+                        }
+                        delayMicroseconds(100);
+                    }
+                    pinMode(pins.encoderButton, INPUT_PULLUP);
+                    delayMicroseconds(500);
+                    restoredRaw = digitalRead(pins.encoderButton);
+                }
+                Serial.printf("[diag] gpio ui float board=%s enc_pin=%d pullup_raw=%s floating_high=%d floating_low=%d pulldown_high=%d pulldown_low=%d restored_raw=%s\n",
+                              controller_board_target_name(),
+                              static_cast<int>(pins.encoderButton),
+                              encoderRaw < 0 ? "NA" : (encoderRaw == HIGH ? "HIGH" : "LOW"),
+                              floatingHigh,
+                              floatingLow,
+                              pulldownHigh,
+                              pulldownLow,
+                              restoredRaw < 0 ? "NA" : (restoredRaw == HIGH ? "HIGH" : "LOW"));
+                return;
+            }
+            Serial.printf("[diag] gpio ui board=%s start_pin=%d start_raw=%s start_pressed_low=%s enc_pin=%d enc_raw=%s enc_pressed_low=%s\n",
+                          controller_board_target_name(),
+                          static_cast<int>(pins.startButton),
+                          startRaw < 0 ? "NA" : (startRaw == HIGH ? "HIGH" : "LOW"),
+                          startRaw == LOW ? "yes" : "no",
+                          static_cast<int>(pins.encoderButton),
+                          encoderRaw < 0 ? "NA" : (encoderRaw == HIGH ? "HIGH" : "LOW"),
+                          encoderRaw == LOW ? "yes" : "no");
+            return;
+        }
+
+        Serial.println("[diag] usage: gpio ui [float]");
+        return;
+    }
+
+    if(strcmp(cmd, "rs485") == 0 || strcmp(cmd, "RS485") == 0) {
+        CommRs485Port port = COMM_RS485_PORT_ONBOARD;
+        char* portToken = strtok_r(nullptr, " \t", &savePtr);
+        char* saveToken = strtok_r(nullptr, " \t", &savePtr);
+        if(!parseRs485PortToken(portToken, &port)) {
+            Serial.println("[diag] usage: rs485 <onboard|ex_i2c> [save]");
+            Serial.printf("[diag] rs485 current=%s supported_onboard=%s supported_ex_i2c=%s\n",
+                          comm_get_rs485_port_label(comm_get_rs485_port()),
+                          comm_rs485_port_supported(COMM_RS485_PORT_ONBOARD) ? "yes" : "no",
+                          comm_rs485_port_supported(COMM_RS485_PORT_EX_I2C_WORKAROUND) ? "yes" : "no");
+            return;
+        }
+
+        const bool ok = comm_set_rs485_port(port, true) || comm_get_rs485_port() == port;
+        if(ok && saveToken != nullptr && strcmp(saveToken, "save") == 0) {
+            pdata_write_rs485_port(static_cast<int16_t>(port));
+        }
+        Serial.printf("[diag] rs485 set=%s ok=%s saved=%s supported=%s\n",
+                      comm_get_rs485_port_label(port),
+                      ok ? "yes" : "no",
+                      (ok && saveToken != nullptr && strcmp(saveToken, "save") == 0) ? "yes" : "no",
+                      comm_rs485_port_supported(port) ? "yes" : "no");
+        printStatus();
         return;
     }
 

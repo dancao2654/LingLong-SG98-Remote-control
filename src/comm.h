@@ -28,6 +28,11 @@ enum JmcCommRate {
   JMC_COMM_RATE_115200,
 };
 
+enum CommRs485Port : uint8_t {
+  COMM_RS485_PORT_ONBOARD,
+  COMM_RS485_PORT_EX_I2C_WORKAROUND,
+};
+
 struct CommDebugTransaction {
   uint8_t request[20];
   uint8_t response[32];
@@ -44,6 +49,14 @@ void comm_init(); //init RS485 communication
 bool comm_set_profile(CommProfile profile, bool force = false);
 CommProfile comm_get_profile();
 const char* comm_get_profile_label();
+bool comm_set_rs485_port(CommRs485Port port, bool force = false);
+CommRs485Port comm_get_rs485_port();
+bool comm_rs485_port_supported(CommRs485Port port);
+const char* comm_get_rs485_port_key(CommRs485Port port);
+const char* comm_get_rs485_port_label(CommRs485Port port);
+uint8_t comm_build_rs485_port_probe_order(CommRs485Port preferredPort,
+                                          CommRs485Port* ports,
+                                          uint8_t maxCount);
 bool comm_set_jmc_rate(JmcCommRate rate, bool reapply_active = false);
 JmcCommRate comm_get_jmc_rate();
 uint32_t comm_get_jmc_baud();

@@ -13,6 +13,7 @@ Preferences preferences;
 namespace {
 constexpr uint32_t DEFAULT_JMC_BAUD = 9600;
 constexpr int16_t DEFAULT_DRIVE_TYPE = DRIVE_TYPE_UNKNOWN;
+constexpr int16_t DEFAULT_RS485_PORT = COMM_RS485_PORT_ONBOARD;
 
 bool clamp_menu_entry(menuEntry& entry) {
     int16_t original = entry.value;
@@ -41,15 +42,27 @@ int16_t sanitize_drive_type(int16_t drive_type) {
         case DRIVE_TYPE_RT:
         case DRIVE_TYPE_KRS_130ST_M07725:
         case DRIVE_TYPE_KRS_XB130AEA20025_SHL:
+        case DRIVE_TYPE_SEW_MOVILINK:
             return drive_type;
         default:
             return DEFAULT_DRIVE_TYPE;
     }
 }
 
+int16_t sanitize_rs485_port(int16_t port) {
+    switch(port) {
+        case COMM_RS485_PORT_ONBOARD:
+        case COMM_RS485_PORT_EX_I2C_WORKAROUND:
+            return port;
+        default:
+            return DEFAULT_RS485_PORT;
+    }
+}
+
 constexpr const char* SMART_PURGE_LOAD_KEY = "SPLOAD";
 constexpr const char* SMART_PURGE_CONF_KEY = "SPCONF";
 constexpr const char* DRIVE_FORCE_KEY = "driveForce";
+constexpr const char* RS485_PORT_KEY = "rs485Port";
 constexpr const char* BURR_GAP_SEEN_KEY = "BGAPSEEN";
 constexpr const char* BURR_GAP_LAST_KEY = "BGAPLAST";
 constexpr const char* BURR_GAP_OFFSET_KEY = "BGAPOFF";
@@ -206,6 +219,7 @@ void pdata_write(uint8_t what) { // 0 = ALL SETTIGNS , 1 = Calibration array, 2 
         preferences.putULong("jmcBaud", DEFAULT_JMC_BAUD);
         preferences.putShort("driveType", DEFAULT_DRIVE_TYPE);
         preferences.putBool(DRIVE_FORCE_KEY, false);
+        preferences.putShort(RS485_PORT_KEY, DEFAULT_RS485_PORT);
 
         preferences.putString("SCALE_NAME", "");
         preferences.putString("SCALE_MAC", "");
@@ -301,6 +315,14 @@ uint32_t pdata_read_jmc_baud() {
 
 void pdata_write_jmc_baud(uint32_t baud_rate) {
     preferences.putULong("jmcBaud", sanitize_jmc_baud(baud_rate));
+}
+
+int16_t pdata_read_rs485_port() {
+    return sanitize_rs485_port(preferences.getShort(RS485_PORT_KEY, DEFAULT_RS485_PORT));
+}
+
+void pdata_write_rs485_port(int16_t port) {
+    preferences.putShort(RS485_PORT_KEY, sanitize_rs485_port(port));
 }
 
 int16_t pdata_read_drive_type() {

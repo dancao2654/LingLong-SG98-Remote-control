@@ -163,6 +163,7 @@ const MotorDescriptor MOTOR_DESCRIPTORS[] = {
 struct ProbeCycleResult {
     MotorProbeReport report;
     DriveType detectedType;
+    CommRs485Port rs485Port;
 };
 
 uint8_t probeBackendCount() {
@@ -407,7 +408,14 @@ void resetMotorState() {
     currentStatus = MOTOR_NOT_CONNECTED;
 }
 
-uint32_t packProbeLogValue(const MotorProbeReport& report, DriveType detectedType) {
+CommRs485Port storedRs485Port() {
+    const CommRs485Port storedPort = static_cast<CommRs485Port>(pdata_read_rs485_port());
+    return comm_rs485_port_supported(storedPort) ? storedPort : COMM_RS485_PORT_ONBOARD;
+}
+
+uint32_t packProbeLogValue(const MotorProbeReport& report,
+                           DriveType detectedType,
+                           CommRs485Port rs485Port) {
     uint32_t value = 0;
     if(report.jmc_status_word) value |= (1UL << 0);
     if(report.jmc_magic_word) value |= (1UL << 1);
@@ -423,21 +431,19 @@ uint32_t packProbeLogValue(const MotorProbeReport& report, DriveType detectedTyp
     if(report.jmc_baud == 38400) value |= (1UL << 18);
     if(report.jmc_baud == 57600) value |= (1UL << 19);
     if(report.jmc_baud == 115200) value |= (1UL << 20);
+    if(rs485Port == COMM_RS485_PORT_EX_I2C_WORKAROUND) value |= (1UL << 21);
     return value;
 }
 
-ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
+ProbeCycleResult runProbeCycleOnCurrentPort(bool logResult,
+                                            bool persistDetectedJmcRate,
+                                            uint8_t& probeStep,
+                                            uint8_t probeTotal) {
     ProbeCycleResult cycle = {};
-    const uint8_t savedError = error;
-    const uint16_t savedErrorCode = errorCode;
+    cycle.detectedType = DRIVE_TYPE_UNKNOWN;
+    cycle.rs485Port = comm_get_rs485_port();
     const JmcCommRate initialPreferredJmcRate = preferredJmcRate;
     int bestPriority = -1;
-    const uint8_t probeTotal = probeBackendCount();
-    uint8_t probeStep = 0;
-
-    if(logResult) {
-        display_show_motor_probe_progress("RS-485", 0, probeTotal, false);
-    }
 
     for(const MotorDescriptor& descriptor : MOTOR_DESCRIPTORS) {
         if(descriptor.backend == nullptr || descriptor.backend->api.probe == nullptr) {
@@ -481,8 +487,60 @@ ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
         cycle.detectedType = DRIVE_TYPE_UNKNOWN;
     }
 
+    return cycle;
+}
+
+ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
+    ProbeCycleResult cycle = {};
+    cycle.detectedType = DRIVE_TYPE_UNKNOWN;
+    cycle.rs485Port = comm_get_rs485_port();
+    const uint8_t savedError = error;
+    const uint16_t savedErrorCode = errorCode;
+    const CommRs485Port originalPort = comm_get_rs485_port();
+    CommRs485Port probePorts[2] = {};
+    const uint8_t portCount = comm_build_rs485_port_probe_order(storedRs485Port(), probePorts, 2);
+    const uint8_t probeTotal = probeBackendCount() * (portCount > 0 ? portCount : 1);
+    uint8_t probeStep = 0;
+
     if(logResult) {
-        const uint32_t probeValue = packProbeLogValue(cycle.report, cycle.detectedType);
+        display_show_motor_probe_progress("RS-485", 0, probeTotal, false);
+    }
+
+    for(uint8_t portIndex = 0; portIndex < portCount; ++portIndex) {
+        if(!comm_set_rs485_port(probePorts[portIndex], true) &&
+           comm_get_rs485_port() != probePorts[portIndex]) {
+            continue;
+        }
+
+        if(logResult) {
+            display_show_motor_probe_progress(comm_get_rs485_port_label(probePorts[portIndex]),
+                                              probeStep,
+                                              probeTotal,
+                                              false);
+        }
+
+        const ProbeCycleResult portCycle =
+            runProbeCycleOnCurrentPort(logResult, persistDetectedJmcRate, probeStep, probeTotal);
+        if(cycle.detectedType == DRIVE_TYPE_UNKNOWN) {
+            cycle = portCycle;
+        }
+        if(portCycle.detectedType != DRIVE_TYPE_UNKNOWN) {
+            cycle = portCycle;
+            break;
+        }
+    }
+
+    if(cycle.detectedType != DRIVE_TYPE_UNKNOWN) {
+        if(persistDetectedJmcRate) {
+            pdata_write_rs485_port(static_cast<int16_t>(cycle.rs485Port));
+        }
+        comm_set_rs485_port(cycle.rs485Port, true);
+    } else {
+        comm_set_rs485_port(originalPort, true);
+    }
+
+    if(logResult) {
+        const uint32_t probeValue = packProbeLogValue(cycle.report, cycle.detectedType, cycle.rs485Port);
         if(probeValue != lastProbeLogValue) {
             error_history_log(ERROR_HISTORY_SOURCE_MOTOR,
                               cycle.detectedType == DRIVE_TYPE_UNKNOWN
@@ -557,6 +615,7 @@ void detectDriveTypeIfNeeded(bool force) {
 void motor_init() {
     resetMotorState();
     rememberPreferredJmcRate(jmcRateFromBaud(pdata_read_jmc_baud()), false, false);
+    comm_set_rs485_port(storedRs485Port(), true);
     autoProbeDone = false;
     const DriveType savedDriveType = static_cast<DriveType>(pdata_read_drive_type());
     if(savedDriveType != DRIVE_TYPE_UNKNOWN) {
@@ -801,8 +860,10 @@ void motor_redetect_drive(bool persist) {
 MotorProbeReport motor_run_probe_report() {
     const CommProfile originalProfile = comm_get_profile();
     const JmcCommRate originalJmcRate = comm_get_jmc_rate();
+    const CommRs485Port originalPort = comm_get_rs485_port();
     const ProbeCycleResult cycle = runProbeCycle(false, false);
     comm_set_jmc_rate(originalJmcRate, false);
+    comm_set_rs485_port(originalPort, true);
     comm_set_profile(originalProfile, true);
     return cycle.report;
 }

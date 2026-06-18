@@ -20,10 +20,66 @@ JmcCommRate activeJmcRate = JMC_COMM_RATE_9600;
 
 namespace {
 constexpr uint32_t RS485_TURNAROUND_US = 50;
+
+struct Rs485PortPins {
+  int8_t rxd;
+  int8_t txd;
+  int8_t re;
+  int8_t de;
+};
+
+CommRs485Port activeRs485Port = COMM_RS485_PORT_ONBOARD;
+bool commInitialized = false;
+
 uint16_t sendDelayForProfile(CommProfile profile);
 uint16_t receiveDelayForProfile(CommProfile profile);
 uint16_t idleDelayForProfile(CommProfile profile);
 uint16_t activeIntervalForProfile(CommProfile profile);
+
+Rs485PortPins pinsForPort(CommRs485Port port) {
+  const ControllerBoardPins& pins = controller_board_pins();
+  if(port == COMM_RS485_PORT_EX_I2C_WORKAROUND) {
+    return {EXSDA, EXSCL, -1, -1};
+  }
+  return {pins.rs485Rxd, pins.rs485Txd, pins.rs485Re, pins.rs485De};
+}
+
+Rs485PortPins activeRs485Pins() {
+  return pinsForPort(activeRs485Port);
+}
+
+void parkDirectionPins(const Rs485PortPins& pins) {
+  if(controller_board_pin_valid(pins.de)) {
+    pinMode(pins.de, OUTPUT);
+    digitalWrite(pins.de, LOW);
+  }
+  if(controller_board_pin_valid(pins.re)) {
+    pinMode(pins.re, OUTPUT);
+    digitalWrite(pins.re, HIGH);
+  }
+}
+
+void configureDirectionPins(const Rs485PortPins& pins) {
+  if(controller_board_pin_valid(pins.de)) {
+    pinMode(pins.de, OUTPUT);
+  }
+  if(controller_board_pin_valid(pins.re)) {
+    pinMode(pins.re, OUTPUT);
+  }
+}
+
+bool appendUniquePort(CommRs485Port port, CommRs485Port* ports, uint8_t* count, uint8_t maxCount) {
+  if(ports == nullptr || count == nullptr || *count >= maxCount || !comm_rs485_port_supported(port)) {
+    return false;
+  }
+  for(uint8_t i = 0; i < *count; ++i) {
+    if(ports[i] == port) {
+      return false;
+    }
+  }
+  ports[(*count)++] = port;
+  return true;
+}
 
 uint32_t baudRateForJmcRate(JmcCommRate rate) {
   switch (rate) {
@@ -356,45 +412,40 @@ bool debugFinalizeWriteSingle(uint8_t slave,
 }
 
 void debugApplyUart(uint32_t baudRate, uint32_t serialConfig) {
-  const ControllerBoardPins& pins = controller_board_pins();
+  const Rs485PortPins pins = activeRs485Pins();
   Serial2.flush();
   Serial2.end();
   delay(2);
-  Serial2.begin(baudRate, serialConfig, pins.rs485Rxd, pins.rs485Txd);
+  Serial2.begin(baudRate, serialConfig, pins.rxd, pins.txd);
   setRXmode();
   delay(2);
 }
 }
 
 void setTXmode() {
-  const ControllerBoardPins& pins = controller_board_pins();
-  if(controller_board_pin_valid(pins.rs485De)) {
-    digitalWrite(pins.rs485De, HIGH);
+  const Rs485PortPins pins = activeRs485Pins();
+  if(controller_board_pin_valid(pins.de)) {
+    digitalWrite(pins.de, HIGH);
   }
-  if(controller_board_pin_valid(pins.rs485Re)) {
-    digitalWrite(pins.rs485Re, HIGH);
+  if(controller_board_pin_valid(pins.re)) {
+    digitalWrite(pins.re, HIGH);
   }
 }
 
 void setRXmode() {
-  const ControllerBoardPins& pins = controller_board_pins();
-  if(controller_board_pin_valid(pins.rs485De)) {
-    digitalWrite(pins.rs485De, LOW);
+  const Rs485PortPins pins = activeRs485Pins();
+  if(controller_board_pin_valid(pins.de)) {
+    digitalWrite(pins.de, LOW);
   }
-  if(controller_board_pin_valid(pins.rs485Re)) {
-    digitalWrite(pins.rs485Re, LOW);
+  if(controller_board_pin_valid(pins.re)) {
+    digitalWrite(pins.re, LOW);
   }
 }
 
 void comm_init() { 
-  const ControllerBoardPins& pins = controller_board_pins();
-  if(controller_board_pin_valid(pins.rs485De)) {
-    pinMode(pins.rs485De, OUTPUT);
-  }
-  if(controller_board_pin_valid(pins.rs485Re)) {
-    pinMode(pins.rs485Re, OUTPUT);
-  }
+  configureDirectionPins(activeRs485Pins());
   setRXmode();
+  commInitialized = true;
   comm_set_profile(COMM_PROFILE_JMC, true);
   #ifdef DEBUG_COMM
     Serial.println("comm init");
@@ -402,13 +453,13 @@ void comm_init() {
 }
 
 bool comm_set_profile(CommProfile profile, bool force) {
-  const ControllerBoardPins& pins = controller_board_pins();
+  const Rs485PortPins pins = activeRs485Pins();
   if (!force && profile == activeCommProfile) return false;
 
   Serial2.flush();
   Serial2.end();
   delay(2);
-  Serial2.begin(baudRateForProfile(profile), serialConfigForProfile(profile), pins.rs485Rxd, pins.rs485Txd);
+  Serial2.begin(baudRateForProfile(profile), serialConfigForProfile(profile), pins.rxd, pins.txd);
   setRXmode();
   delay(2);
 
@@ -422,6 +473,71 @@ bool comm_set_profile(CommProfile profile, bool force) {
   lastReceived = 0;
   activeCommProfile = profile;
   return true;
+}
+
+bool comm_set_rs485_port(CommRs485Port port, bool force) {
+  if(!comm_rs485_port_supported(port)) {
+    return false;
+  }
+  if(!force && port == activeRs485Port) {
+    return false;
+  }
+
+  const Rs485PortPins previousPins = activeRs485Pins();
+  parkDirectionPins(previousPins);
+  activeRs485Port = port;
+  configureDirectionPins(activeRs485Pins());
+  if(commInitialized) {
+    comm_set_profile(activeCommProfile, true);
+  }
+  return true;
+}
+
+CommRs485Port comm_get_rs485_port() {
+  return activeRs485Port;
+}
+
+bool comm_rs485_port_supported(CommRs485Port port) {
+  switch(port) {
+    case COMM_RS485_PORT_ONBOARD:
+      return true;
+    case COMM_RS485_PORT_EX_I2C_WORKAROUND:
+      return controller_board_info().id == ControllerBoardId::AdafruitFeather &&
+             controller_board_pin_valid(EXSDA) &&
+             controller_board_pin_valid(EXSCL);
+    default:
+      return false;
+  }
+}
+
+const char* comm_get_rs485_port_key(CommRs485Port port) {
+  switch(port) {
+    case COMM_RS485_PORT_EX_I2C_WORKAROUND:
+      return "ex_i2c";
+    case COMM_RS485_PORT_ONBOARD:
+    default:
+      return "onboard";
+  }
+}
+
+const char* comm_get_rs485_port_label(CommRs485Port port) {
+  switch(port) {
+    case COMM_RS485_PORT_EX_I2C_WORKAROUND:
+      return "EX_I2C RS-485";
+    case COMM_RS485_PORT_ONBOARD:
+    default:
+      return "Onboard RS-485";
+  }
+}
+
+uint8_t comm_build_rs485_port_probe_order(CommRs485Port preferredPort,
+                                          CommRs485Port* ports,
+                                          uint8_t maxCount) {
+  uint8_t count = 0;
+  appendUniquePort(preferredPort, ports, &count, maxCount);
+  appendUniquePort(COMM_RS485_PORT_ONBOARD, ports, &count, maxCount);
+  appendUniquePort(COMM_RS485_PORT_EX_I2C_WORKAROUND, ports, &count, maxCount);
+  return count;
 }
 
 bool comm_set_jmc_rate(JmcCommRate rate, bool reapply_active) {

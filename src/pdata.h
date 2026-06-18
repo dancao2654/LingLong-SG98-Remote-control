@@ -11,6 +11,8 @@ void pdata_read();
 void pdata_normalize(bool persist = true);
 uint32_t pdata_read_jmc_baud();
 void pdata_write_jmc_baud(uint32_t baud_rate);
+int16_t pdata_read_rs485_port();
+void pdata_write_rs485_port(int16_t port);
 int16_t pdata_read_drive_type();
 void pdata_write_drive_type(int16_t drive_type);
 void pdata_read_smart_purge_learning(uint16_t* learnedLoad, uint16_t* confidence, size_t count);
