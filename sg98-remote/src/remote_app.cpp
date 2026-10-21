@@ -7995,14 +7995,16 @@ void drawAboutRow(RemoteCanvas& canvas,
                   uint16_t labelColor,
                   uint16_t valueColor) {
     const RemoteTextStyle labelStyle = RemoteTextStyle::Tiny;
-    const RemoteTextStyle valueStyle = useRoundNavigation() ? RemoteTextStyle::Small : tinyTextStyle();
+    const int16_t valueWidth = static_cast<int16_t>(row.w - label.length() * 6 - 12);
+    const RemoteTextStyle valueStyle = textFitsWidth(value, valueWidth, RemoteTextStyle::Small, 0)
+                                          ? RemoteTextStyle::Small : RemoteTextStyle::Tiny;
     canvas.drawTextTopLeft(upperText(label),
                            row.x,
                            row.y,
                            labelStyle,
                            labelColor,
                            face);
-    canvas.drawTextTopRight(fitTextToWidth(value, row.w, valueStyle, 56),
+    canvas.drawTextTopRight(fitTextToWidthNoTilde(value, valueWidth, valueStyle, 0),
                             static_cast<int16_t>(row.x + row.w),
                             row.y,
                             valueStyle,
@@ -8089,7 +8091,10 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
     drawBatteryIndicator(canvas, layout, kColorBg);
 
     const Rect content = useRoundNavigation()
-                             ? roundMenuContentRect(layout)
+                             ? Rect(static_cast<int16_t>(layout.width / 8),
+                                    layout.listTop,
+                                    static_cast<int16_t>(layout.width * 3 / 4),
+                                    static_cast<int16_t>(layout.listBottom - layout.listTop))
                              : Rect(static_cast<int16_t>(layout.pad * 2),
                                     layout.listTop,
                                     static_cast<int16_t>(layout.width - layout.pad * 4),
@@ -8117,8 +8122,10 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
     const int16_t innerX = static_cast<int16_t>(panel.x + panelPad);
     const int16_t innerW = static_cast<int16_t>(panel.w - panelPad * 2);
     const int16_t versionY = static_cast<int16_t>(panel.y + panelPad + (useRoundNavigation() ? 18 : 10));
-    const RemoteTextStyle versionStyle = useRoundNavigation() ? RemoteTextStyle::Large : RemoteTextStyle::Medium;
-    const RemoteTextStyle envStyle = useRoundNavigation() ? RemoteTextStyle::Small : tinyTextStyle();
+    const RemoteTextStyle versionStyle = textFitsWidth(sg98_version::shortVersion(), innerW, RemoteTextStyle::Medium, 2)
+                                            ? RemoteTextStyle::Medium : RemoteTextStyle::Small;
+    const RemoteTextStyle envStyle = textFitsWidth(sg98_version::buildEnv(), innerW, RemoteTextStyle::Small, 2)
+                                        ? RemoteTextStyle::Small : RemoteTextStyle::Tiny;
     canvas.drawCenteredText(fitTextToWidth(sg98_version::shortVersion(), innerW, versionStyle, 2),
                             static_cast<int16_t>(panel.x + panel.w / 2),
                             versionY,
@@ -8150,7 +8157,9 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
         sg98_version::gitLabel(),
         aboutBuildTimeLine(),
         aboutOtaLine(),
-        sg98_ota_update::statusLine(app.otaUpdate)
+        app.otaUpdate.checked && app.otaUpdate.updateAvailable
+            ? String("NEW v") + app.otaUpdate.latestVersion
+            : sg98_ota_update::statusLine(app.otaUpdate)
     };
     const uint8_t rowCount = static_cast<uint8_t>(sizeof(labels) / sizeof(labels[0]));
     const int16_t rowH = useRoundNavigation() ? 30 : 22;
