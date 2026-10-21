@@ -1,6 +1,7 @@
 #include "remote_app.h"
 
 #include <math.h>
+#include <new>
 #include <string.h>
 
 #include <ESPmDNS.h>
@@ -16,6 +17,8 @@
 #include <esp_partition.h>
 #include <esp_sleep.h>
 #include <esp_wifi.h>
+#include <freertos/queue.h>
+#include <freertos/task.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -119,8 +122,9 @@ constexpr uint32_t kMotionHomeMinGapMs = 200;
 constexpr uint32_t kMotionHomeCooldownMs = 2200;
 constexpr uint32_t kMotionHomeIgnoreAfterControlMs = 900;
 constexpr const char* kControllerApHost = "192.168.4.1";
-constexpr uint8_t kWebSocketSubnetProbeBatch = 10;
+constexpr uint8_t kWebSocketSubnetProbeBatch = 1;
 constexpr uint16_t kWebSocketSubnetProbeTimeoutMs = 55;
+constexpr uint32_t kWebSocketSubnetProbeIntervalMs = 150;
 constexpr uint32_t kWebSocketCandidateRetryMs = 6500;
 constexpr const char* kEspNowRecoveryHintCommand = "RECOVER_ESPNOW";
 constexpr char kPersistentStateNamespace[] = "remote-app";
@@ -713,6 +717,29 @@ constexpr Screen kRoundMenuTabScreens[] = {
 };
 
 AppState app;
+mdns_search_once_t* g_mdnsQuery = nullptr;
+bool g_mdnsStopPending = false;
+uint32_t g_lastSubnetProbeAt = 0;
+uint32_t g_transportGeneration = 0;
+uint32_t g_autoOtaWifiStartedAt = 0;
+uint32_t g_autoOtaWifiGeneration = 0;
+RemoteOtaWifiGuard g_autoOtaWifiGuard;
+
+enum class BackgroundNetworkKind : uint8_t { Weather, OtaManifest };
+
+struct BackgroundNetworkRequest {
+    BackgroundNetworkKind kind;
+    String url;
+    String payload;
+    int httpCode = -1;
+    bool ok = false;
+    sg98_ota_download::ManifestSpec manifest;
+    sg98_ota_download::Result result;
+};
+
+QueueHandle_t g_networkRequests = nullptr;
+QueueHandle_t g_networkResults = nullptr;
+bool g_networkPending = false;
 PressureProfilerState g_pressureProfiler;
 TouchTracker touchTracker;
 InputDiagnostics g_inputDiagnostics;
@@ -2332,11 +2359,129 @@ bool remoteAutoOtaDue(uint32_t now) {
     return msUntilDeadline(now, app.nextAutoOtaCheckAt) == 0;
 }
 
-void serviceFirmwareUpdateCheck(uint32_t now) {
-    RemoteOtaWifiGuard wifiGuard;
-    bool temporaryWifi = false;
+void backgroundNetworkWorker(void*) {
+    for(;;) {
+        BackgroundNetworkRequest* request = nullptr;
+        if(xQueueReceive(g_networkRequests, &request, portMAX_DELAY) != pdTRUE) {
+            continue;
+        }
+        if(request->kind == BackgroundNetworkKind::Weather) {
+            WiFiClient client;
+            HTTPClient http;
+            http.setConnectTimeout(kDockWeatherHttpTimeoutMs);
+            http.setTimeout(kDockWeatherHttpTimeoutMs);
+            if(http.begin(client, request->url)) {
+                request->httpCode = http.GET();
+                if(request->httpCode == HTTP_CODE_OK && http.getSize() <= 16384) {
+                    request->payload = http.getString();
+                    request->ok = request->payload.length() <= 16384;
+                }
+                http.end();
+            }
+        } else {
+            request->ok = sg98_ota_download::fetchManifestSpec(request->url,
+                                                              &request->manifest,
+                                                              &request->result);
+        }
+        // Queue ownership keeps Strings and UI state confined to their owning task.
+        xQueueSend(g_networkResults, &request, portMAX_DELAY);
+        remote_runtime_notify_input();
+    }
+}
 
-    if(!remoteCanUseBackgroundNetwork()) {
+bool queueBackgroundNetwork(BackgroundNetworkKind kind, const String& url) {
+    if(g_networkPending) {
+        return false;
+    }
+    if(g_networkRequests == nullptr) {
+        g_networkRequests = xQueueCreate(1, sizeof(BackgroundNetworkRequest*));
+        g_networkResults = xQueueCreate(1, sizeof(BackgroundNetworkRequest*));
+        if(g_networkRequests == nullptr || g_networkResults == nullptr ||
+           xTaskCreate(backgroundNetworkWorker, "remote-net", 12288, nullptr, 1, nullptr) != pdPASS) {
+            if(g_networkRequests != nullptr) vQueueDelete(g_networkRequests);
+            if(g_networkResults != nullptr) vQueueDelete(g_networkResults);
+            g_networkRequests = nullptr;
+            g_networkResults = nullptr;
+            return false;
+        }
+    }
+    auto* request = new(std::nothrow) BackgroundNetworkRequest;
+    if(request == nullptr) {
+        return false;
+    }
+    request->kind = kind;
+    request->url = url;
+    if(xQueueSend(g_networkRequests, &request, 0) != pdTRUE) {
+        delete request;
+        return false;
+    }
+    g_networkPending = true;
+    return true;
+}
+
+void finishAutoOtaWifi(bool ok) {
+    if(g_autoOtaWifiStartedAt == 0) {
+        return;
+    }
+    if(g_autoOtaWifiGeneration == g_transportGeneration) {
+        restoreOtaWifi(g_autoOtaWifiGuard);
+    }
+    g_autoOtaWifiStartedAt = 0;
+    scheduleRemoteAutoOtaCheck(millis(), ok ? sg98_ota_update::kOnlineCheckIntervalMs
+                                           : kAutoOtaRetryAfterFailureMs);
+}
+
+void serviceBackgroundNetworkResults() {
+    BackgroundNetworkRequest* request = nullptr;
+    if(g_networkResults == nullptr || xQueueReceive(g_networkResults, &request, 0) != pdTRUE) {
+        return;
+    }
+    g_networkPending = false;
+    if(request->kind == BackgroundNetworkKind::Weather) {
+        app.dockClockLastWeatherHttpCode = static_cast<int16_t>(request->httpCode);
+        if(request->ok && updateDockWeatherFromJson(request->payload)) {
+            app.dockClockLastWeatherOkAt = millis();
+            app.redraw = true;
+        } else if(request->httpCode == HTTP_CODE_OK) {
+            app.dockClockLastWeatherHttpCode = -2;
+        }
+    } else {
+        app.otaUpdate.lastAttemptOk = request->ok;
+        app.otaUpdate.message = request->result.message;
+        if(request->ok) {
+            const auto& spec = request->manifest;
+            app.otaUpdate.checked = true;
+            app.otaUpdate.lastSuccessAt = millis();
+            app.otaUpdate.latestVersion = spec.version;
+            app.otaUpdate.latestGitSha = spec.gitSha;
+            app.otaUpdate.latestGitDirty = spec.gitDirty;
+            app.otaUpdate.latestGitDirtyPresent = spec.gitDirtyPresent;
+            app.otaUpdate.latestGeneratedAtUtc = spec.generatedAtUtc;
+            app.otaUpdate.latestImageSha256 = spec.sha256;
+            app.otaUpdate.latestImageSize = spec.size;
+            app.otaUpdate.updateAvailable = sg98_ota_update::manifestLooksNewer(spec);
+            app.otaUpdate.message = app.otaUpdate.updateAvailable ? "update available" : "current";
+        }
+        finishAutoOtaWifi(request->ok);
+        if(app.screen == Screen::About) app.redraw = true;
+    }
+    delete request;
+}
+
+void serviceFirmwareUpdateCheck(uint32_t now) {
+    if(g_autoOtaWifiStartedAt != 0) {
+        if(g_autoOtaWifiGeneration != g_transportGeneration) {
+            g_autoOtaWifiStartedAt = 0;
+        } else if(!remote_wifi_sta_connected()) {
+            if(static_cast<uint32_t>(now - g_autoOtaWifiStartedAt) >= 30000UL) {
+                app.otaUpdate.message = "wifi connect timeout";
+                finishAutoOtaWifi(false);
+            }
+            return;
+        }
+    }
+
+    if(g_networkPending || !remoteCanUseBackgroundNetwork()) {
         return;
     }
     if(ESP.getFreeHeap() < kNetworkFetchMinFreeHeap) {
@@ -2360,15 +2505,13 @@ void serviceFirmwareUpdateCheck(uint32_t now) {
             return;
         }
 
-        String wifiMessage;
-        if(!ensureOtaWifi(&wifiGuard, &wifiMessage)) {
-            app.otaUpdate.message = wifiMessage;
-            scheduleRemoteAutoOtaCheck(now, kAutoOtaRetryAfterFailureMs);
-            return;
-        }
-        temporaryWifi = true;
-        now = millis();
-    } else {
+        g_autoOtaWifiGuard.previousTransport = app.currentTransport;
+        g_autoOtaWifiGuard.switchedTransport = app.currentTransport != LinkTransport::WebSocket;
+        switchTransportNow(LinkTransport::WebSocket);
+        g_autoOtaWifiGeneration = g_transportGeneration;
+        g_autoOtaWifiStartedAt = millis();
+        return;
+    } else if(g_autoOtaWifiStartedAt == 0) {
         struct tm timeInfo = {};
         const bool internetSynced = localClockTime(&timeInfo) || app.dockWeather.valid;
         if(!internetSynced) {
@@ -2377,26 +2520,17 @@ void serviceFirmwareUpdateCheck(uint32_t now) {
     }
 
     if(!sg98_ota_update::shouldCheck(app.otaUpdate, now)) {
-        if(temporaryWifi) {
-            restoreOtaWifi(wifiGuard);
-            scheduleRemoteAutoOtaCheck(millis(), sg98_ota_update::kOnlineCheckIntervalMs);
-        }
+        finishAutoOtaWifi(true);
         return;
     }
 
-    const bool ok = sg98_ota_update::checkLatestManifest(&app.otaUpdate, now);
-    if(temporaryWifi) {
-        restoreOtaWifi(wifiGuard);
-        scheduleRemoteAutoOtaCheck(millis(), ok ? sg98_ota_update::kOnlineCheckIntervalMs
-                                                : kAutoOtaRetryAfterFailureMs);
-    }
-    if(app.screen == Screen::About) {
-        app.redraw = true;
+    if(queueBackgroundNetwork(BackgroundNetworkKind::OtaManifest, sg98_ota_source::latestManifestUrl())) {
+        app.otaUpdate.lastAttemptAt = now;
     }
 }
 
 void serviceDockClockWeather(uint32_t now, bool quickRetry = false) {
-    if(!remote_wifi_sta_connected()) {
+    if(g_networkPending || !remote_wifi_sta_connected()) {
         return;
     }
     if(ESP.getFreeHeap() < kNetworkFetchMinFreeHeap) {
@@ -2409,29 +2543,10 @@ void serviceDockClockWeather(uint32_t now, bool quickRetry = false) {
        (now - app.dockClockLastWeatherFetchAt) < retryMs) {
         return;
     }
-    app.dockClockLastWeatherFetchAt = now;
-    app.dockClockLastWeatherHttpCode = 0;
-
-    WiFiClient client;
-    HTTPClient http;
-    http.setTimeout(kDockWeatherHttpTimeoutMs);
-    if(!http.begin(client, dockWeatherUrl())) {
-        app.dockClockLastWeatherHttpCode = -1;
-        return;
+    if(queueBackgroundNetwork(BackgroundNetworkKind::Weather, dockWeatherUrl())) {
+        app.dockClockLastWeatherFetchAt = now;
+        app.dockClockLastWeatherHttpCode = 0;
     }
-
-    const int code = http.GET();
-    app.dockClockLastWeatherHttpCode = static_cast<int16_t>(code);
-    if(code == HTTP_CODE_OK) {
-        const String payload = http.getString();
-        if(updateDockWeatherFromJson(payload)) {
-            app.dockClockLastWeatherOkAt = now;
-            app.redraw = true;
-        } else {
-            app.dockClockLastWeatherHttpCode = -2;
-        }
-    }
-    http.end();
 }
 
 void serviceBackgroundDockClockWeather(uint32_t now) {
@@ -8623,14 +8738,31 @@ String buildRemoteMdnsHostName() {
     return String("sg98-remote-") + suffix;
 }
 
-void stopMdnsClient() {
-    if(!app.mdnsReady) {
+void serviceMdnsShutdown() {
+    if(!g_mdnsStopPending) {
         return;
     }
+    if(g_mdnsQuery != nullptr) {
+        mdns_result_t* results = nullptr;
+        if(!mdns_query_async_get_results(g_mdnsQuery, 0, &results, nullptr)) {
+            return;
+        }
+        mdns_query_async_delete(g_mdnsQuery);
+        g_mdnsQuery = nullptr;
+        if(results != nullptr) mdns_query_results_free(results);
+    }
+    if(app.mdnsReady) {
+        MDNS.end();
+        app.mdnsReady = false;
+        Serial.println("[remote_ws] mdns stopped");
+    }
+    g_mdnsStopPending = false;
+}
 
-    MDNS.end();
-    app.mdnsReady = false;
-    Serial.println("[remote_ws] mdns stopped");
+void stopMdnsClient() {
+    // The SDK permits deletion only after an async query finishes.
+    g_mdnsStopPending = true;
+    serviceMdnsShutdown();
 }
 
 void stopWebSocketSession() {
@@ -8666,7 +8798,8 @@ void scheduleTransportSwitch(LinkTransport transport, uint32_t delayMs = 0) {
 }
 
 void ensureMdnsClientReady() {
-    if(app.mdnsReady || !remote_wifi_sta_connected()) {
+    serviceMdnsShutdown();
+    if(g_mdnsStopPending || app.mdnsReady || !remote_wifi_sta_connected()) {
         return;
     }
 
@@ -8697,6 +8830,7 @@ void connectWebSocketHost(const String& host, uint16_t port) {
     app.wsHost = host;
     app.wsPort = port;
     app.wsEndpointLabel = String("WS ") + host;
+    stopMdnsClient();
     wsClient.begin(app.wsHost.c_str(), app.wsPort, "/");
     wsClient.setReconnectInterval(remote_config::kWebSocketReconnectMs);
     app.wsClientStarted = true;
@@ -8713,43 +8847,64 @@ bool discoverControllerService(bool force) {
         return false;
     }
     ensureMdnsClientReady();
-    if(!app.mdnsReady) {
+    if(!app.mdnsReady || g_mdnsStopPending) {
         return false;
     }
-    if(!force && (app.lastMdnsQueryAt + remote_config::kMdnsQueryMs) > millis()) {
-        return false;
-    }
-
-    app.lastMdnsQueryAt = millis();
-    const int serviceCount = MDNS.queryService("sg98", "tcp");
-    if(serviceCount <= 0) {
-        if(connectedToControllerAp()) {
-            connectWebSocketHost(kControllerApHost, remote_config::kWebSocketPort);
-            return true;
-        }
-        IPAddress probedIp;
-        if(probeControllerSubnet(&probedIp)) {
-            connectWebSocketHost(probedIp.toString(), remote_config::kWebSocketPort);
-            return true;
-        }
-        return false;
-    }
-
-    for(int i = 0; i < serviceCount; ++i) {
-        const IPAddress ip = MDNS.address(i);
-        const uint16_t port = MDNS.port(i);
-        if(ip[0] == 0 || port == 0) {
-            continue;
-        }
-        connectWebSocketHost(ip.toString(), port);
-        app.wsSubnetProbeCursor = 0;
+    if(connectedToControllerAp()) {
+        connectWebSocketHost(kControllerApHost, remote_config::kWebSocketPort);
         return true;
+    }
+
+    if(g_mdnsQuery != nullptr) {
+        mdns_result_t* results = nullptr;
+        if(mdns_query_async_get_results(g_mdnsQuery, 0, &results, nullptr)) {
+            IPAddress foundIp;
+            uint16_t foundPort = 0;
+            for(auto* result = results; result != nullptr && foundPort == 0; result = result->next) {
+                for(auto* addr = result->addr; addr != nullptr; addr = addr->next) {
+                    if(addr->addr.type == MDNS_IP_PROTOCOL_V4 && result->port != 0) {
+                        const IPAddress ip(addr->addr.u_addr.ip4.addr);
+                        if(validLanHost(ip)) {
+                            foundIp = ip;
+                            foundPort = result->port;
+                            break;
+                        }
+                    }
+                }
+            }
+            mdns_query_async_delete(g_mdnsQuery);
+            g_mdnsQuery = nullptr;
+            if(results != nullptr) mdns_query_results_free(results);
+            if(foundPort != 0) {
+                connectWebSocketHost(foundIp.toString(), foundPort);
+                app.wsSubnetProbeCursor = 0;
+                return true;
+            }
+        }
+    }
+
+    const uint32_t now = millis();
+    if(g_mdnsQuery == nullptr &&
+       (force || app.lastMdnsQueryAt == 0 ||
+        static_cast<uint32_t>(now - app.lastMdnsQueryAt) >= remote_config::kMdnsQueryMs)) {
+        app.lastMdnsQueryAt = now;
+        g_mdnsQuery = mdns_query_async_new(nullptr, "_sg98", "_tcp", MDNS_TYPE_PTR, 3000, 4, nullptr);
+    }
+
+    if(static_cast<uint32_t>(now - g_lastSubnetProbeAt) >= kWebSocketSubnetProbeIntervalMs) {
+        g_lastSubnetProbeAt = now;
+        IPAddress ip;
+        if(probeControllerSubnet(&ip)) {
+            connectWebSocketHost(ip.toString(), remote_config::kWebSocketPort);
+            return true;
+        }
     }
     return false;
 }
 
 void requestWebSocketDiscovery(bool resetSession) {
     if(resetSession) {
+        stopMdnsClient();
         if(app.wsClientStarted || app.wsConnected) {
             wsClient.disconnect();
         }
@@ -9637,6 +9792,7 @@ void serviceEspNowFirstPolicy() {
 }
 
 void switchTransportNow(LinkTransport transport) {
+    ++g_transportGeneration;
     if(kDisableTransportPerfTest) {
         (void)transport;
         stopAllTransportStacks();
@@ -12331,6 +12487,19 @@ void appendRemoteStatusJson(String& out) {
     out += sg98_version::dirty() ? "true" : "false";
     out += ",\"buildEnv\":";
     appendJsonQuoted(out, sg98_version::buildEnv());
+    out += ",\"ota\":{\"checked\":";
+    out += app.otaUpdate.checked ? "true" : "false";
+    out += ",\"lastAttemptOk\":";
+    out += app.otaUpdate.lastAttemptOk ? "true" : "false";
+    out += ",\"updateAvailable\":";
+    out += app.otaUpdate.updateAvailable ? "true" : "false";
+    out += ",\"networkPending\":";
+    out += g_networkPending ? "true" : "false";
+    out += ",\"latestVersion\":";
+    appendJsonQuoted(out, app.otaUpdate.latestVersion);
+    out += ",\"message\":";
+    appendJsonQuoted(out, app.otaUpdate.message);
+    out += '}';
     out += ",\"screen\":";
     appendJsonQuoted(out, screenTitle(app.screen));
     out += ",\"editing\":";
@@ -13301,6 +13470,7 @@ void printRemoteConsolePeers() {
 void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
+    Serial.println("[remote-diag] api: api ota check [url|latest]");
     Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep|voice>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
@@ -14089,6 +14259,14 @@ void handleRemoteConsoleLine(const char* rawLine) {
         if(sub == "ota") {
             String action = takeToken(&tail);
             action.toLowerCase();
+            if(action == "check") {
+                const String url = sg98_ota_source::resolveManifestUrl(takeToken(&tail));
+                const bool queued = remote_wifi_sta_connected() &&
+                    queueBackgroundNetwork(BackgroundNetworkKind::OtaManifest, url);
+                if(queued) app.otaUpdate.lastAttemptAt = millis();
+                printRemoteConsoleAck(line, queued, queued ? "check queued" : "network busy or wifi offline");
+                return;
+            }
             if(action == "boot") {
                 const String target = takeToken(&tail);
                 String rebootToken = takeToken(&tail);
@@ -14299,6 +14477,8 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("audio", sectionStartUs, loopStartUs, input);
     remoteConsolePoll();
     sectionStartUs = traceLoopStep("console_poll", sectionStartUs, loopStartUs, input);
+    serviceMdnsShutdown();
+    serviceBackgroundNetworkResults();
     serviceControllerOtaUi(now);
 
     const bool hasControlInput =
