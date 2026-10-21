@@ -8122,7 +8122,7 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
 
     const int16_t innerX = static_cast<int16_t>(panel.x + panelPad);
     const int16_t innerW = static_cast<int16_t>(panel.w - panelPad * 2);
-    const int16_t versionY = static_cast<int16_t>(panel.y + panelPad + (useRoundNavigation() ? 18 : 10));
+    const int16_t versionY = static_cast<int16_t>(panel.y + panelPad + (useRoundNavigation() ? 6 : 10));
     const RemoteTextStyle versionStyle = textFitsWidth(sg98_version::shortVersion(), innerW, RemoteTextStyle::Medium, 2)
                                             ? RemoteTextStyle::Medium : RemoteTextStyle::Small;
     const RemoteTextStyle envStyle = textFitsWidth(sg98_version::buildEnv(), innerW, RemoteTextStyle::Small, 2)
@@ -8135,18 +8135,18 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
                             face);
     canvas.drawCenteredText(aboutRoleLine(),
                             static_cast<int16_t>(panel.x + panel.w / 2),
-                            static_cast<int16_t>(versionY + (useRoundNavigation() ? 34 : 24)),
+                            static_cast<int16_t>(versionY + (useRoundNavigation() ? 26 : 24)),
                             tinyTextStyle(),
                             blendColor565(kColorMuted, face, 0.02f),
                             face);
     canvas.drawCenteredText(fitTextToWidthNoTilde(String(sg98_version::buildEnv()), innerW, envStyle, 2),
                             static_cast<int16_t>(panel.x + panel.w / 2),
-                            static_cast<int16_t>(versionY + (useRoundNavigation() ? 58 : 42)),
+                            static_cast<int16_t>(versionY + (useRoundNavigation() ? 48 : 42)),
                             envStyle,
                             kColorText,
                             face);
 
-    const int16_t dividerY = static_cast<int16_t>(versionY + (useRoundNavigation() ? 78 : 58));
+    const int16_t dividerY = static_cast<int16_t>(versionY + (useRoundNavigation() ? 66 : 58));
     canvas.drawLine(innerX,
                     dividerY,
                     static_cast<int16_t>(innerX + innerW),
@@ -8163,8 +8163,8 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
             : sg98_ota_update::statusLine(app.otaUpdate)
     };
     const uint8_t rowCount = static_cast<uint8_t>(sizeof(labels) / sizeof(labels[0]));
-    const int16_t rowH = useRoundNavigation() ? 30 : 22;
-    int16_t rowY = static_cast<int16_t>(dividerY + (useRoundNavigation() ? 12 : 9));
+    const int16_t rowH = useRoundNavigation() ? 24 : 22;
+    int16_t rowY = static_cast<int16_t>(dividerY + (useRoundNavigation() ? 10 : 9));
     const uint16_t labelColor = blendColor565(kColorMuted, face, 0.04f);
     for(uint8_t i = 0; i < rowCount; ++i) {
         const Rect row = {innerX, rowY, innerW, rowH};
