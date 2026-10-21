@@ -1418,6 +1418,12 @@ String upperText(const String& text) {
 
 bool isLinkOnline();
 
+String controllerConnectionText() {
+    const char* radio = app.currentTransport == LinkTransport::WebSocket ? "WIFI" :
+                        app.currentTransport == LinkTransport::EspNow ? "ESP-NOW" : "NET";
+    return String(radio) + (isLinkOnline() ? " CTRL ONLINE" : " CTRL OFFLINE");
+}
+
 String roundHomeTopLabel() {
     if(app.hasStatus) {
         if(app.status.motor.length() > 0) {
@@ -1492,13 +1498,9 @@ String roundHomeBottomLabel() {
     return networkCurveStatusText();
 }
 
-void serviceHomeNetworkCurveRedraw() {
-    if(!useRoundNavigation() || app.screen != Screen::Home) {
-        return;
-    }
-
+void serviceNetworkStatusRedraw() {
     static String previousLabel;
-    const String label = roundHomeBottomLabel();
+    const String label = controllerConnectionText() + "|" + networkCurveStatusText() + "|" + roundHomeBottomLabel();
     if(label != previousLabel) {
         previousLabel = label;
         app.redraw = true;
@@ -4825,7 +4827,7 @@ NetworkBadgeMode currentNetworkBadgeMode() {
 String networkBadgeLabel(NetworkBadgeMode mode) {
     switch(mode) {
         case NetworkBadgeMode::WifiLan:
-            return "WIFI LAN";
+            return isLinkOnline() ? "WIFI LINK" : "WIFI NO CTRL";
         case NetworkBadgeMode::WifiAp:
             return remote_wifi_ap_station_count() > 0
                        ? String("WIFI AP ") + String(static_cast<unsigned>(remote_wifi_ap_station_count()))
@@ -4833,7 +4835,7 @@ String networkBadgeLabel(NetworkBadgeMode mode) {
         case NetworkBadgeMode::WifiJoin:
             return "WIFI JOIN";
         case NetworkBadgeMode::EspNow:
-            return "ESP-NOW";
+            return isLinkOnline() ? "ESP-NOW LINK" : "ESP-NOW SEARCH";
         case NetworkBadgeMode::Off:
         default:
             return "NET OFF";
@@ -4843,13 +4845,13 @@ String networkBadgeLabel(NetworkBadgeMode mode) {
 uint16_t networkBadgeFill(NetworkBadgeMode mode) {
     switch(mode) {
         case NetworkBadgeMode::WifiLan:
-            return kColorGood;
+            return isLinkOnline() ? kColorGood : kColorWarn;
         case NetworkBadgeMode::WifiAp:
             return kColorWarn;
         case NetworkBadgeMode::WifiJoin:
             return kColorAccent2;
         case NetworkBadgeMode::EspNow:
-            return kColorEspNow;
+            return isLinkOnline() ? kColorEspNow : kColorWarn;
         case NetworkBadgeMode::Off:
         default:
             return blendColor565(kColorPanelHi, kColorMuted, 0.28f);
@@ -6654,6 +6656,16 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                            palette.background);
         }
 
+        const int16_t connectionY = static_cast<int16_t>(layout.homeDialOuterRadius * 0.69f);
+        const int16_t connectionW = static_cast<int16_t>(layout.homeDialOuterRadius * 1.30f);
+        const String connectionLabel = String(isLargeCanvas() ? "CTRL " : "") +
+                                       (isLinkOnline() ? "ONLINE" : "OFFLINE");
+        canvas.drawCenteredText(fitTextToWidth(connectionLabel, connectionW, RemoteTextStyle::Small, 0),
+                                layout.homeDialCx,
+                                static_cast<int16_t>(layout.homeDialCy + connectionY),
+                                RemoteTextStyle::Small,
+                                linkStatusColor(),
+                                palette.panel);
         drawBatteryIndicator(canvas, layout, palette.background);
         return;
     }
@@ -6720,17 +6732,18 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                homeActionButtonFill(palette),
                homeActionButtonTextColor());
 
-    const String stateLine = homePrimaryStatusLine();
-    const String telemetryLine =
-        String("RPM ") + (app.hasStatus ? String(rpmMagnitude(homeWheelDisplayRpm())) : "-") +
-        "  WT " + (app.hasStatus ? weightLabel(app.status.currentWeightMg) : String("-"));
+    const String stateLine = isLinkOnline() ? homePrimaryStatusLine() : controllerConnectionText();
+    const String telemetryLine = isLinkOnline()
+        ? String("RPM ") + (app.hasStatus ? String(rpmMagnitude(homeWheelDisplayRpm())) : "-") +
+          "  WT " + (app.hasStatus ? weightLabel(app.status.currentWeightMg) : String("-"))
+        : networkCurveStatusText();
     const String gapLine = homeGapValueLabel();
 
     canvas.drawCenteredText(stateLine,
                             layout.width / 2,
                             static_cast<int16_t>(layout.homeActionButton.y + layout.homeActionButton.h + layout.gap + 10),
                             bodyTextStyle(),
-                            kColorText,
+                            linkStatusColor(),
                             palette.background);
     canvas.drawCenteredText(telemetryLine,
                             layout.width / 2,
@@ -7772,6 +7785,23 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
                                     bg);
         }
     }
+    const int16_t connectionW = roundClock ? static_cast<int16_t>(shortSide / 3)
+                                           : static_cast<int16_t>(layout.width - layout.pad * 4);
+    const String connectionLabel = isLinkOnline() ? "CTRL ONLINE" : "CTRL OFFLINE";
+    canvas.drawCenteredText(fitTextToWidth(connectionLabel, connectionW, RemoteTextStyle::Small, 0),
+                            cx,
+                            roundClock ? 22 : static_cast<int16_t>(layout.pad + 30),
+                            RemoteTextStyle::Small,
+                            linkStatusColor(),
+                            bg);
+    canvas.drawCenteredText(fitTextToWidth(networkCurveStatusText(),
+                                           roundClock ? static_cast<int16_t>(shortSide / 2) : connectionW,
+                                           RemoteTextStyle::Tiny, 0),
+                            cx,
+                            roundClock ? 40 : static_cast<int16_t>(layout.pad + 46),
+                            RemoteTextStyle::Tiny,
+                            muted,
+                            bg);
 }
 
 void drawPressureProfiler(RemoteCanvas& canvas, const Layout& layout) {
@@ -12502,6 +12532,10 @@ void appendRemoteStatusJson(String& out) {
     out += '}';
     out += ",\"screen\":";
     appendJsonQuoted(out, screenTitle(app.screen));
+    out += ",\"controllerConnection\":";
+    appendJsonQuoted(out, controllerConnectionText());
+    out += ",\"networkInfo\":";
+    appendJsonQuoted(out, networkCurveStatusText());
     out += ",\"editing\":";
     out += app.editing ? "true" : "false";
     out += ",\"selection\":";
@@ -14622,7 +14656,7 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("menu_anim", sectionStartUs, loopStartUs, input);
     serviceDeferredHomeStatusRedraw();
     sectionStartUs = traceLoopStep("deferred_status", sectionStartUs, loopStartUs, input);
-    serviceHomeNetworkCurveRedraw();
+    serviceNetworkStatusRedraw();
     sectionStartUs = traceLoopStep("network_curve", sectionStartUs, loopStartUs, input);
     serviceFlashScreen(now);
     sectionStartUs = traceLoopStep("flash_screen", sectionStartUs, loopStartUs, input);
