@@ -49,6 +49,7 @@ constexpr uint16_t kColorPowerHold = 0x5677;
 constexpr uint16_t kColorEspNow = 0x55FF;
 constexpr uint16_t kColorMuted = 0x7BEF;
 constexpr uint16_t kColorText = 0xFFFF;
+constexpr bool kShowBurrGapReadout = false;
 
 constexpr uint16_t kTapMoveThreshold = 10;
 constexpr uint32_t kTouchLongPressMs = 650;
@@ -6527,14 +6528,16 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                                 unitStyle,
                                 unitColor,
                                 palette.background);
-        drawGapReadout(canvas,
-                       layout.homeDialCx,
-                       static_cast<int16_t>(layout.homeDialCy + (isLargeCanvas() ? 72 : 54)),
-                       gapLine,
-                       gapValueStyle,
-                       gapUnitStyle,
-                       kColorGauge,
-                       palette.background);
+        if(kShowBurrGapReadout) {
+            drawGapReadout(canvas,
+                           layout.homeDialCx,
+                           static_cast<int16_t>(layout.homeDialCy + (isLargeCanvas() ? 72 : 54)),
+                           gapLine,
+                           gapValueStyle,
+                           gapUnitStyle,
+                           kColorGauge,
+                           palette.background);
+        }
 
         drawBatteryIndicator(canvas, layout, palette.background);
         return;
@@ -6620,14 +6623,16 @@ void drawHome(RemoteCanvas& canvas, const Layout& layout) {
                             tinyTextStyle(),
                             palette.muted,
                             palette.background);
-    drawGapReadout(canvas,
-                   layout.width / 2,
-                   static_cast<int16_t>(layout.homeActionButton.y + layout.homeActionButton.h + layout.gap + (isLargeCanvas() ? 58 : 36)),
-                   gapLine,
-                   bodyTextStyle(),
-                   tinyTextStyle(),
-                   kColorGauge,
-                   palette.background);
+    if(kShowBurrGapReadout) {
+        drawGapReadout(canvas,
+                       layout.width / 2,
+                       static_cast<int16_t>(layout.homeActionButton.y + layout.homeActionButton.h + layout.gap + (isLargeCanvas() ? 58 : 36)),
+                       gapLine,
+                       bodyTextStyle(),
+                       tinyTextStyle(),
+                       kColorGauge,
+                       palette.background);
+    }
 
     drawTabs(canvas, layout);
 }
@@ -7579,16 +7584,18 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
                                      sectionFace,
                                      bg);
         }
-        drawDockClockInfoSection(canvas,
-                                 cx,
-                                 bottomY,
-                                 timeW,
-                                 38,
-                                 gapText,
-                                 RemoteTextStyle::Medium,
-                                 gapAccent,
-                                 sectionFace,
-                                 bg);
+        if(kShowBurrGapReadout) {
+            drawDockClockInfoSection(canvas,
+                                     cx,
+                                     bottomY,
+                                     timeW,
+                                     38,
+                                     gapText,
+                                     RemoteTextStyle::Medium,
+                                     gapAccent,
+                                     sectionFace,
+                                     bg);
+        }
         const uint16_t handBody = blendColor565(packColor565(182, 198, 205), kColorText, 0.20f);
         const uint16_t handLume = blendColor565(packColor565(196, 246, 218), accent, 0.08f);
         const uint16_t minuteBody = blendColor565(handBody, packColor565(92, 116, 132), 0.20f);
@@ -7622,12 +7629,14 @@ void drawDockClock(RemoteCanvas& canvas, const Layout& layout) {
         canvas.fillCircle(cx, cy, 4, secondRed);
         canvas.drawCircle(cx, cy, 13, blendColor565(secondRed, kColorText, 0.12f));
     } else {
-        canvas.drawCenteredText(gapText,
-                                cx,
-                                static_cast<int16_t>(cy + radius + 24),
-                                RemoteTextStyle::Medium,
-                                blendColor565(packColor565(255, 150, 48), text, 0.18f),
-                                bg);
+        if(kShowBurrGapReadout) {
+            canvas.drawCenteredText(gapText,
+                                    cx,
+                                    static_cast<int16_t>(cy + radius + 24),
+                                    RemoteTextStyle::Medium,
+                                    blendColor565(packColor565(255, 150, 48), text, 0.18f),
+                                    bg);
+        }
         if(hasTime) {
             canvas.drawCenteredText(dateText,
                                     cx,

@@ -32,6 +32,7 @@ constexpr uint32_t kSplashVisibleMs = 1800;
 constexpr uint32_t kMotorProbeSplashMs = 5200;
 constexpr uint8_t kVisibleMenuRows = 3;
 constexpr uint8_t kVisibleMotorSelectRows = 3;
+constexpr bool kShowBurrGapReadout = false;
 
 constexpr uint32_t kColorBg = 0x08111C;
 constexpr uint32_t kColorPanel = 0x10233A;
@@ -1507,7 +1508,7 @@ void syncBurrGapPanel(bool visible) {
 }
 
 void syncTorqueMonitor(bool visible, int32_t torquePercent = 0) {
-    const bool showGap = burr_gap_has_value();
+    const bool showGap = kShowBurrGapReadout && burr_gap_has_value();
     const bool showTorqueArc = visible && !showGap;
     lv_obj_set_width(ui.dashPrimary, (visible || showGap) ? 166 : 240);
     lv_obj_set_width(ui.dashSecondary, (visible || showGap) ? 166 : 240);
