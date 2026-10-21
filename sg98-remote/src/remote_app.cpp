@@ -726,6 +726,7 @@ uint32_t g_autoOtaWifiGeneration = 0;
 RemoteOtaWifiGuard g_autoOtaWifiGuard;
 RemoteInputState g_consoleUiInput;
 bool g_consoleUiInputPending = false;
+bool g_remoteOtaRequested = false;
 
 enum class BackgroundNetworkKind : uint8_t { Weather, OtaManifest };
 
@@ -10774,9 +10775,20 @@ void confirmRemoteOtaUpdate() {
 
     app.dangerArmUntil = 0;
     showFlashScreen("REMOTE OTA", "Downloading update", 120000, kColorGood);
+    g_remoteOtaRequested = true;
+}
+
+void serviceRemoteOtaUpdate() {
+    if(!g_remoteOtaRequested) {
+        return;
+    }
+    g_remoteOtaRequested = false;
+    Serial.println("[remote_ota] GUI download started");
     String message;
     const bool ok = downloadOtaManifest("latest", &message);
+    Serial.printf("[remote_ota] download ok=%d %s\n", ok, message.c_str());
     if(!ok) {
+        app.flashUntil = 0;
         setToast(String("OTA ERR: ") + message, 2800);
         app.redraw = true;
         return;
@@ -10785,12 +10797,13 @@ void confirmRemoteOtaUpdate() {
     String bootMessage;
     const bool bootOk = setOtaBootPartition("next", &bootMessage);
     if(!bootOk) {
+        app.flashUntil = 0;
         setToast(String("OTA BOOT ERR: ") + bootMessage, 2800);
         app.redraw = true;
         return;
     }
 
-    showFlashScreen("REMOTE OTA", "Rebooting update", 1200, kColorGood);
+    Serial.printf("[remote_ota] %s; rebooting\n", bootMessage.c_str());
     delay(150);
     Serial.flush();
     ESP.restart();
@@ -14534,6 +14547,11 @@ void remote_app_setup() {
 }
 
 void remote_app_loop() {
+    if(g_remoteOtaRequested) {
+        // Run TLS/flash work after the input callback returns, on a fresh loop frame.
+        serviceRemoteOtaUpdate();
+        return;
+    }
     RemoteInputState input = {};
     const uint32_t now = millis();
     const uint32_t loopStartUs = micros();
