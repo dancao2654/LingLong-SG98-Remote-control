@@ -724,6 +724,8 @@ uint32_t g_transportGeneration = 0;
 uint32_t g_autoOtaWifiStartedAt = 0;
 uint32_t g_autoOtaWifiGeneration = 0;
 RemoteOtaWifiGuard g_autoOtaWifiGuard;
+RemoteInputState g_consoleUiInput;
+bool g_consoleUiInputPending = false;
 
 enum class BackgroundNetworkKind : uint8_t { Weather, OtaManifest };
 
@@ -12536,6 +12538,8 @@ void appendRemoteStatusJson(String& out) {
     appendJsonQuoted(out, controllerConnectionText());
     out += ",\"networkInfo\":";
     appendJsonQuoted(out, networkCurveStatusText());
+    out += ",\"remoteOtaArmed\":";
+    out += dangerIsArmed(Screen::About, 1) ? "true" : "false";
     out += ",\"editing\":";
     out += app.editing ? "true" : "false";
     out += ",\"selection\":";
@@ -13505,6 +13509,7 @@ void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] commands: ?=status, h=help, s=snapshot, v=toggle stream, f=toggle frame trace, p=peer list");
     Serial.println("[remote-diag] api: api device | api status | api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
     Serial.println("[remote-diag] api: api ota check [url|latest]");
+    Serial.println("[remote-diag] UI input: api ui primary_short|primary_long|secondary_short|dial <-20..20>");
     Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep|voice>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
@@ -14286,6 +14291,30 @@ void handleRemoteConsoleLine(const char* rawLine) {
     if(cmd == "api") {
         String sub = takeToken(&tail);
         sub.toLowerCase();
+        if(sub == "ui") {
+            String event = takeToken(&tail);
+            event.toLowerCase();
+            RemoteInputState input = {};
+            bool valid = true;
+            if(event == "primary_short") input.primaryShortPress = true;
+            else if(event == "primary_long") input.primaryLongPress = true;
+            else if(event == "secondary_short") input.secondaryShortPress = true;
+            else if(event == "dial") {
+                int32_t delta = 0;
+                valid = parseInt32Token(takeToken(&tail), &delta) && delta != 0 && delta >= -20 && delta <= 20;
+                input.dialDelta = delta;
+            } else valid = false;
+            tail.trim();
+            valid = valid && tail.length() == 0;
+            if(!valid || g_consoleUiInputPending || controllerOtaActionBusy() || app.flashUntil > millis()) {
+                printRemoteConsoleAck(line, false, valid ? "UI busy" : "usage: api ui primary_short|primary_long|secondary_short|dial <-20..20>");
+                return;
+            }
+            g_consoleUiInput = input;
+            g_consoleUiInputPending = true;
+            printRemoteConsoleAck(line, true, "UI input queued");
+            return;
+        }
         if(sub == "device" || sub == "identity") {
             printRemoteConsoleDevice();
             return;
@@ -14501,7 +14530,6 @@ void remote_app_loop() {
     const uint32_t loopStartUs = micros();
     uint32_t sectionStartUs = loopStartUs;
     remote_board_poll_input(&input);
-    updateInputDiagnostics(input, now);
     sectionStartUs = traceLoopStep("board_poll", sectionStartUs, loopStartUs, input);
     if(input.displayRotationChanged) {
         touchTracker = {};
@@ -14510,6 +14538,15 @@ void remote_app_loop() {
     remote_audio_service();
     sectionStartUs = traceLoopStep("audio", sectionStartUs, loopStartUs, input);
     remoteConsolePoll();
+    if(g_consoleUiInputPending) {
+        // Inject before the normal activity, navigation, and confirmation handlers.
+        input.primaryShortPress = input.primaryShortPress || g_consoleUiInput.primaryShortPress;
+        input.primaryLongPress = input.primaryLongPress || g_consoleUiInput.primaryLongPress;
+        input.secondaryShortPress = input.secondaryShortPress || g_consoleUiInput.secondaryShortPress;
+        input.dialDelta += g_consoleUiInput.dialDelta;
+        g_consoleUiInputPending = false;
+    }
+    updateInputDiagnostics(input, now);
     sectionStartUs = traceLoopStep("console_poll", sectionStartUs, loopStartUs, input);
     serviceMdnsShutdown();
     serviceBackgroundNetworkResults();
