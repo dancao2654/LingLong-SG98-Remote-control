@@ -375,7 +375,7 @@ Motor bus wiring moves to the replacement board:
 
 This workaround requires an auto-direction board because `EX_I2C` only provides two GPIOs. Boards that require separate `DE` and `/RE` pins need an additional GPIO from another header or a different firmware pin map.
 
-At startup and during drive redetect, firmware tries the saved working RS-485 path first, then falls back to the other supported path. A valid motor probe response saves the working path for the next boot. A failed probe does not permanently switch paths.
+At startup and during drive redetect, firmware tries the external `EX_I2C` RS-485 path first when it is supported by the detected controller board, then falls back to the saved working path and onboard RS-485. A valid motor probe response saves the working path for the next boot. A failed probe does not permanently switch paths.
 
 ### Display
 

@@ -534,9 +534,9 @@ uint8_t comm_build_rs485_port_probe_order(CommRs485Port preferredPort,
                                           CommRs485Port* ports,
                                           uint8_t maxCount) {
   uint8_t count = 0;
+  appendUniquePort(COMM_RS485_PORT_EX_I2C_WORKAROUND, ports, &count, maxCount);
   appendUniquePort(preferredPort, ports, &count, maxCount);
   appendUniquePort(COMM_RS485_PORT_ONBOARD, ports, &count, maxCount);
-  appendUniquePort(COMM_RS485_PORT_EX_I2C_WORKAROUND, ports, &count, maxCount);
   return count;
 }
 
