@@ -13,6 +13,7 @@ DEFAULT_CONTROLLER_ENV = "controller-universal-s3"
 DEFAULT_REMOTE_ENV = "remote-universal-s3"
 WINDOWS_RID = "win-x64"
 MACOS_RID = "osx-arm64"
+MACOS_INTEL_RID = "osx-x64"
 
 
 def _project_core_dir() -> Path:
@@ -101,6 +102,10 @@ def bundle_macos_updater(source=None, target=None, env_=None, **kwargs):
     _bundle_env((env_ or env)["PIOENV"], MACOS_RID, ensure_build=False)
 
 
+def bundle_macos_intel_updater(source=None, target=None, env_=None, **kwargs):
+    _bundle_env((env_ or env)["PIOENV"], MACOS_INTEL_RID, ensure_build=False)
+
+
 def bundle_all_windows_updaters(source=None, target=None, env_=None, **kwargs):
     _bundle_env(DEFAULT_CONTROLLER_ENV, WINDOWS_RID, ensure_build=True)
     _bundle_env(DEFAULT_REMOTE_ENV, WINDOWS_RID, ensure_build=True)
@@ -113,6 +118,8 @@ def bundle_all_macos_updaters(source=None, target=None, env_=None, **kwargs):
 
 def bundle_all_updaters(source=None, target=None, env_=None, **kwargs):
     bundle_all_windows_updaters(source=source, target=target, env_=env_, **kwargs)
+    for env_name in (DEFAULT_CONTROLLER_ENV, DEFAULT_REMOTE_ENV):
+        _bundle_env(env_name, MACOS_INTEL_RID, ensure_build=True)
     bundle_all_macos_updaters(source=source, target=target, env_=env_, **kwargs)
 
 
@@ -142,6 +149,14 @@ env.AddCustomTarget(
 )
 
 env.AddCustomTarget(
+    name="bundle_macos_intel_updater",
+    dependencies=[str(Path("$BUILD_DIR") / "${PROGNAME}.bin")],
+    actions=[bundle_macos_intel_updater],
+    title="Bundle macOS Intel Updater",
+    description="Build the macOS x64 updater zip for the current firmware environment",
+)
+
+env.AddCustomTarget(
     name="bundle_all_windows_updaters",
     dependencies=[],
     actions=[bundle_all_windows_updaters],
@@ -162,7 +177,7 @@ env.AddCustomTarget(
     dependencies=[],
     actions=[bundle_all_updaters],
     title="Bundle All Updaters",
-    description="Build controller and remote updater zips for win-x64 and osx-arm64",
+    description="Build controller and remote updater zips for win-x64, osx-x64, and osx-arm64",
 )
 
 env.AddCustomTarget(

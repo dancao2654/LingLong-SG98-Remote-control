@@ -91,6 +91,7 @@ Available updater tasks:
 
 - `Bundle Windows Updater`
 - `Bundle macOS ARM64 Updater`
+- `Bundle macOS Intel Updater`
 - `Bundle All Windows Updaters`
 - `Bundle All macOS ARM64 Updaters`
 - `Bundle All Updaters`
@@ -105,7 +106,8 @@ The aggregate tasks build the currently shipped updater set:
 Bundle generation is pinned to the release runtimes:
 
 - Windows bundles -> `win-x64`
-- macOS bundles -> `osx-arm64`
+- Intel Mac bundles -> `osx-x64`
+- Apple Silicon Mac bundles -> `osx-arm64`
 
 That means the same PlatformIO task can be run on both Windows and macOS
 machines and will still emit the same release bundle set.
