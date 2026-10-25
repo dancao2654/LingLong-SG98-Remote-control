@@ -35,6 +35,14 @@ class RemoteCanvas {
     virtual void fillCircle(int16_t x, int16_t y, int16_t radius, uint16_t color) = 0;
     virtual void drawCircle(int16_t x, int16_t y, int16_t radius, uint16_t color) = 0;
     virtual void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1, uint16_t color) = 0;
+    virtual void drawRgb565Bitmap(int16_t x, int16_t y, const uint16_t* pixels, int16_t w, int16_t h) {
+        if(pixels == nullptr || w <= 0 || h <= 0) return;
+        for(int16_t row = 0; row < h; ++row) {
+            for(int16_t col = 0; col < w; ++col) {
+                fillRect(x + col, y + row, 1, 1, pixels[static_cast<size_t>(row) * w + col]);
+            }
+        }
+    }
 
     virtual void drawCenteredText(const String& text,
                                   int16_t x,

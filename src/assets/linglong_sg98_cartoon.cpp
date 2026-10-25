@@ -1,4 +1,9 @@
+#ifdef SG98_CARTOON_PIXELS_ONLY
+#include "assets/sg98_cartoon_pixels.h"
+#define LV_ATTRIBUTE_LARGE_CONST
+#else
 #include "assets/linglong_sg98_cartoon.h"
+#endif
 
 #ifndef LV_ATTRIBUTE_MEM_ALIGN
 #define LV_ATTRIBUTE_MEM_ALIGN
@@ -3855,8 +3860,10 @@ const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_LINGLONG_
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
+#ifndef SG98_CARTOON_PIXELS_ONLY
 const lv_img_dsc_t linglong_sg98_cartoon_124 = {
     {LV_IMG_CF_TRUE_COLOR_ALPHA, 0, 0, 124, 124},
     sizeof(linglong_sg98_cartoon_124_map),
     linglong_sg98_cartoon_124_map,
 };
+#endif

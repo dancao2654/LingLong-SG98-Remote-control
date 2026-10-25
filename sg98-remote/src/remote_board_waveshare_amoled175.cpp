@@ -462,6 +462,13 @@ class WaveshareCanvas : public RemoteCanvas {
         }
     }
 
+    void drawRgb565Bitmap(int16_t x, int16_t y, const uint16_t* pixels, int16_t w, int16_t h) override {
+        Arduino_GFX* gfx = activeDisplay();
+        if(gfx != nullptr && pixels != nullptr) {
+            gfx->draw16bitRGBBitmap(shiftX(x), shiftY(y), const_cast<uint16_t*>(pixels), w, h);
+        }
+    }
+
     void drawCenteredText(const String& text,
                           int16_t x,
                           int16_t y,

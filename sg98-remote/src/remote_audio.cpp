@@ -3,6 +3,9 @@
 #include <ESP_I2S.h>
 #include <Wire.h>
 #include <math.h>
+#include <atomic>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <string.h>
 
 #include "remote_board.h"
@@ -22,6 +25,49 @@ bool g_initialized = false;
 bool g_codecConfigured = false;
 uint32_t g_lastPrepareAttemptAt = 0;
 I2SClass g_audioI2s;
+std::atomic<bool> g_revealBusy{false};
+std::atomic<bool> g_revealCancel{false};
+std::atomic<bool> g_revealFinished{false};
+std::atomic<bool> g_revealOk{false};
+
+void revealAudioWorker(void*) {
+    constexpr float twoPi = 6.28318530718f;
+    constexpr uint32_t frames = kSampleRate * 1350 / 1000;
+    constexpr size_t chunkFrames = 96;
+    int16_t chunk[chunkFrames * 2];
+    float phase = 0.0f;
+    bool ok = true;
+    // A rising, airy reveal settles into a soft C-major voicing, then fades away.
+    for(uint32_t offset = 0; offset < frames && !g_revealCancel.load(); offset += chunkFrames) {
+        const size_t count = min<size_t>(chunkFrames, frames - offset);
+        for(size_t i = 0; i < count; ++i) {
+            const float seconds = static_cast<float>(offset + i) / kSampleRate;
+            const float rise = min(1.0f, seconds / 0.52f);
+            const float attack = min(1.0f, seconds / 0.12f);
+            const float release = min(1.0f, (1.35f - seconds) / 0.65f);
+            const float hz = 330.0f + 330.0f * rise * rise;
+            phase += twoPi * hz / kSampleRate;
+            if(phase > twoPi) phase -= twoPi;
+            const float shimmer = (sinf(phase) + 0.25f * sinf(phase * 3.0f)) * (1.0f - rise);
+            const float chord = (sinf(twoPi * 523.25f * seconds) +
+                                 0.8f * sinf(twoPi * 659.25f * seconds) +
+                                 0.65f * sinf(twoPi * 783.99f * seconds)) / 2.45f;
+            const int16_t sample = static_cast<int16_t>((shimmer + chord * rise) *
+                                                        kAmplitude * 0.65f * attack * release);
+            chunk[i * 2] = sample;
+            chunk[i * 2 + 1] = sample;
+        }
+        const size_t bytes = count * 2 * sizeof(int16_t);
+        if(g_audioI2s.write(reinterpret_cast<const uint8_t*>(chunk), bytes) != bytes) {
+            ok = false;
+            break;
+        }
+    }
+    g_revealOk.store(ok);
+    g_revealBusy.store(false);
+    g_revealFinished.store(true);
+    vTaskDelete(nullptr);
+}
 
 void setDetail(const char* text) {
     if(text == nullptr) {
@@ -327,6 +373,7 @@ bool prepareAudio(bool forceRetry) {
 }  // namespace
 
 void remote_audio_init() {
+    if(g_revealBusy.load()) return;
     if(!g_initialized) {
         g_initialized = true;
         g_status = {};
@@ -337,9 +384,19 @@ void remote_audio_init() {
     }
 }
 
-void remote_audio_service() {}
+void remote_audio_service() {
+    if(g_revealFinished.exchange(false)) {
+        g_status.lastPlayOk = g_revealOk.load();
+        if(g_status.lastPlayOk) ++g_status.successfulPlays;
+        else ++g_status.failedPlays;
+        setDetail(g_status.lastPlayOk ? "reveal playback complete" : "reveal playback failed");
+    }
+}
+
+void remote_audio_cancel_reveal() { g_revealCancel.store(true); }
 
 bool remote_audio_play(RemoteAudioTone tone) {
+    if(g_revealBusy.load()) return false;
     if(!g_initialized) {
         remote_audio_init();
     }
@@ -352,6 +409,18 @@ bool remote_audio_play(RemoteAudioTone tone) {
         g_status.lastPlayOk = false;
         ++g_status.failedPlays;
         return false;
+    }
+    if(tone == RemoteAudioTone::Reveal) {
+        g_revealCancel.store(false);
+        g_revealBusy.store(true);
+        if(xTaskCreate(revealAudioWorker, "sg98-reveal", 3072, nullptr, 1, nullptr) != pdPASS) {
+            g_revealBusy.store(false);
+            g_status.lastPlayOk = false;
+            ++g_status.failedPlays;
+            setDetail("reveal audio task unavailable");
+            return false;
+        }
+        return true;
     }
 
     bool ok = false;
@@ -368,6 +437,8 @@ bool remote_audio_play(RemoteAudioTone tone) {
         case RemoteAudioTone::Sweep:
             ok = writeTone(520.0f, 1640.0f, 160);
             break;
+        case RemoteAudioTone::Reveal:
+            break;
     }
 
     g_status.lastPlayOk = ok;
@@ -381,6 +452,7 @@ bool remote_audio_play(RemoteAudioTone tone) {
 }
 
 bool remote_audio_record_wav(uint32_t durationMs, uint8_t** outBuffer, size_t* outSize) {
+    if(g_revealBusy.load()) return false;
     if(outBuffer != nullptr) {
         *outBuffer = nullptr;
     }

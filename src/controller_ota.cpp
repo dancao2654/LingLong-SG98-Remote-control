@@ -5,6 +5,9 @@
 #include <esp_ota_ops.h>
 
 #include "controller_board.h"
+#include "diag_console.h"
+#include "display.h"
+#include "main.h"
 
 namespace {
 
@@ -31,6 +34,8 @@ OtaReadyMarker g_marker;
 uint32_t g_lastValidateAt = 0;
 bool g_cachedReady = false;
 String g_cachedDetail;
+uint32_t g_localConfirmUntil = 0;
+bool g_localUpdatePending = false;
 
 String appDescString(const char* value, size_t maxLen) {
     if(value == nullptr || maxLen == 0) {
@@ -181,6 +186,39 @@ void finalizeBootedReadySlotIfNeeded() {
 }
 
 }  // namespace
+
+bool controller_ota_local_armed() {
+    return g_localConfirmUntil != 0 && static_cast<int32_t>(g_localConfirmUntil - millis()) > 0;
+}
+
+void controller_ota_local_cancel() {
+    g_localConfirmUntil = 0;
+}
+
+void controller_ota_local_confirm() {
+    if(!controller_board_has_local_settings_ui() || state != ABOUT_INFO) return;
+    if(!controller_ota_local_armed()) {
+        g_localConfirmUntil = millis() + 15000;
+        display_show_action_feedback("Press encoder to update", 2500);
+    } else {
+        g_localConfirmUntil = 0;
+        g_localUpdatePending = true;
+        display_show_action_feedback("Controller updating", 240000);
+    }
+    disp_updateRequired = true;
+}
+
+bool controller_ota_service_local_update() {
+    if(!g_localUpdatePending) return false;
+    g_localUpdatePending = false;
+    String message;
+    const bool ok = diag_api_run_action("ota_manifest_reboot", "latest", nullptr, &message);
+    if(!ok) {
+        display_show_action_feedback((String("OTA: ") + message).c_str(), 10000);
+        disp_updateRequired = true;
+    }
+    return true;
+}
 
 void controller_ota_init() {
     loadMarkerIfNeeded();

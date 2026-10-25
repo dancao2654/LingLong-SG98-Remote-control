@@ -11,6 +11,7 @@
 
 #include "burr_gap.h"
 #include "controller_board.h"
+#include "controller_ota_transport.h"
 #include "definitions.h"
 #include "comm.h"
 #include "display.h"
@@ -19,20 +20,21 @@
 #include <sg98_remote_protocol.h>
 
 namespace {
-constexpr size_t ESPNOW_COMMAND_LEN = 64;
+constexpr size_t ESPNOW_COMMAND_LEN = 250;
 constexpr uint8_t ESPNOW_RX_QUEUE_LEN = 16;
 constexpr uint32_t ESPNOW_GAUGE_STATUS_PUSH_MIN_MS = 60;
 constexpr uint8_t ESPNOW_BROADCAST_MAC[ESP_NOW_ETH_ALEN] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 struct EspNowEvent {
     uint8_t mac[ESP_NOW_ETH_ALEN];
-    char payload[ESPNOW_COMMAND_LEN];
+    uint16_t length = 0;
+    uint8_t payload[ESPNOW_COMMAND_LEN] = {};
 };
 
 struct LatestEspNowEvent {
     bool valid = false;
     uint8_t mac[ESP_NOW_ETH_ALEN] = {};
-    char payload[ESPNOW_COMMAND_LEN] = {};
+    char payload[64] = {};
 };
 
 QueueHandle_t espnowQueue = nullptr;
@@ -57,6 +59,7 @@ LatestEspNowEvent pendingTargetEvent;
 portMUX_TYPE espnowIngressMux = portMUX_INITIALIZER_UNLOCKED;
 
 bool sendFrame(const uint8_t* mac_addr, const String& frame);
+bool sendBytes(const uint8_t* mac_addr, const uint8_t* data, size_t length);
 
 uint8_t currentWifiPrimaryChannel() {
     uint8_t primary = 0;
@@ -189,8 +192,9 @@ bool takeLatestEvent(LatestEspNowEvent* slot, EspNowEvent* event) {
     portENTER_CRITICAL(&espnowIngressMux);
     if(slot->valid) {
         memcpy(event->mac, slot->mac, sizeof(event->mac));
-        memcpy(event->payload, slot->payload, sizeof(event->payload));
-        event->payload[sizeof(event->payload) - 1] = '\0';
+        memset(event->payload, 0, sizeof(event->payload));
+        memcpy(event->payload, slot->payload, sizeof(slot->payload));
+        event->length = static_cast<uint16_t>(strnlen(slot->payload, sizeof(slot->payload)) + 1);
         slot->valid = false;
         hasEvent = true;
     }
@@ -202,10 +206,19 @@ void processEvent(const EspNowEvent& event) {
     lastRxAt = millis();
     ++rxCount;
     rememberStatusPeer(event.mac);
-    strncpy(lastCommand, event.payload, sizeof(lastCommand) - 1);
+    if(sg98_ota_transport::isFrame(event.payload, event.length)) {
+        sg98_ota_transport::AckFrame ack = {};
+        if(controller_ota_transport_handle(event.payload, event.length, &ack)) {
+            (void)sendBytes(event.mac, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
+        }
+        return;
+    }
+    const char* command = reinterpret_cast<const char*>(event.payload);
+    const bool wifiCredentials = strncmp(command, "WIFI|", 5) == 0;
+    strncpy(lastCommand, wifiCredentials ? "WIFI|[redacted]" : command, sizeof(lastCommand) - 1);
     lastCommand[sizeof(lastCommand) - 1] = '\0';
 
-    if(isRecoveryRequestCommand(event.payload)) {
+    if(isRecoveryRequestCommand(command)) {
         lastCommandRxAt = lastRxAt;
         lastRecoveryRequestAt = lastRxAt;
         sendFrame(event.mac, sg98_protocol::ack(true, "recovery requested"));
@@ -213,12 +226,12 @@ void processEvent(const EspNowEvent& event) {
         return;
     }
 
-    if(isDiscoverCommand(event.payload)) {
+    if(isDiscoverCommand(command)) {
         sendFrame(event.mac, controllerDiscoveryFrame());
         return;
     }
 
-    if(isGetEnvironmentCommand(event.payload)) {
+    if(isGetEnvironmentCommand(command)) {
         sendFrame(event.mac, remote_link_build_environment_frame());
         return;
     }
@@ -226,12 +239,12 @@ void processEvent(const EspNowEvent& event) {
     String message;
     bool sendStatus = false;
     int8_t menuRefresh = 0;
-    const bool ok = remote_link_handle_command(String(event.payload), &message, &sendStatus, &menuRefresh);
+    const bool ok = remote_link_handle_command(String(command), &message, &sendStatus, &menuRefresh);
     if(ok) {
         lastCommandRxAt = lastRxAt;
     }
     Serial.printf("[espnow] cmd=\"%s\" ok=%s msg=%s\n",
-                  event.payload,
+                  wifiCredentials ? "WIFI|[redacted]" : command,
                   ok ? "true" : "false",
                   message.c_str());
     if(sendStatus || menuRefresh != 0 || !ok) {
@@ -245,7 +258,7 @@ void processEvent(const EspNowEvent& event) {
     if(menuRefresh != 0) {
         sendFrame(event.mac, remote_link_build_menu_frame(static_cast<uint8_t>(menuRefresh)));
     }
-    if(!isGetStatusCommand(event.payload) || !controller_is_menu_state(state)) {
+    if(!isGetStatusCommand(command) || !controller_is_menu_state(state)) {
         disp_updateRequired = true;
     }
 }
@@ -267,15 +280,26 @@ void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, 
     const int copyLen = data_len < static_cast<int>(sizeof(event.payload) - 1) ? data_len : static_cast<int>(sizeof(event.payload) - 1);
     memcpy(event.payload, data, copyLen);
     event.payload[copyLen] = '\0';
+    event.length = static_cast<uint16_t>(copyLen);
 
-    if(isGetStatusCommand(event.payload)) {
+    if(sg98_ota_transport::isFrame(event.payload, event.length)) {
+        if(xQueueSend(espnowQueue, &event, 0) != pdPASS) {
+            portENTER_CRITICAL_ISR(&espnowIngressMux);
+            ++dropCount;
+            portEXIT_CRITICAL_ISR(&espnowIngressMux);
+        }
+        return;
+    }
+
+    const char* command = reinterpret_cast<const char*>(event.payload);
+    if(isGetStatusCommand(command)) {
         portENTER_CRITICAL_ISR(&espnowIngressMux);
         storeLatestEvent(&pendingStatusEvent, event);
         portEXIT_CRITICAL_ISR(&espnowIngressMux);
         return;
     }
 
-    if(isTargetUpdateCommand(event.payload)) {
+    if(isTargetUpdateCommand(command)) {
         portENTER_CRITICAL_ISR(&espnowIngressMux);
         storeLatestEvent(&pendingTargetEvent, event);
         portEXIT_CRITICAL_ISR(&espnowIngressMux);
@@ -351,8 +375,13 @@ bool sendFrame(const uint8_t* mac_addr, const String& frame) {
         }
         return false;
     }
-    const uint8_t* payload = reinterpret_cast<const uint8_t*>(frame.c_str());
-    return esp_now_send(mac_addr, payload, frame.length() + 1) == ESP_OK;
+    return sendBytes(mac_addr, reinterpret_cast<const uint8_t*>(frame.c_str()), frame.length() + 1);
+}
+
+bool sendBytes(const uint8_t* mac_addr, const uint8_t* data, size_t length) {
+    if(mac_addr == nullptr || data == nullptr || length == 0 || length > 250) return false;
+    if(!ensurePeer(mac_addr)) return false;
+    return esp_now_send(mac_addr, data, length) == ESP_OK;
 }
 }
 
@@ -447,6 +476,7 @@ void espnow_control_poll() {
     }
 
     refreshCoexistChannel();
+    controller_ota_transport_service();
     if(espnowWifiClientActive) {
         xQueueReset(espnowQueue);
         return;

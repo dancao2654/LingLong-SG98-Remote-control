@@ -32,9 +32,12 @@ struct Result {
 };
 
 struct DownloadOptions {
+    using ProgressCallback = void (*)(uint32_t written, uint32_t total, void* context);
     uint32_t expectedSize = 0;
     String expectedSha256;
     String version;
+    ProgressCallback progress = nullptr;
+    void* progressContext = nullptr;
 };
 
 struct HttpsUrl {
@@ -554,6 +557,9 @@ inline bool writeOtaBody(Stream& stream,
         if(result != nullptr) {
             result->written = written;
         }
+        if(options.progress != nullptr) {
+            options.progress(written, static_cast<uint32_t>(contentLength), options.progressContext);
+        }
         yield();
     }
 
@@ -635,6 +641,145 @@ inline bool downloadHttpsToNextSlot(const String& url,
     return ok;
 }
 
+inline bool writeRawPartitionBody(Stream& stream,
+                                  Client& client,
+                                  const esp_partition_t* partition,
+                                  uint32_t partitionOffset,
+                                  int contentLength,
+                                  const DownloadOptions& options,
+                                  Result* result) {
+    if(partition == nullptr || contentLength <= 0) {
+        finish(result, false, "invalid staging partition");
+        return false;
+    }
+    const uint32_t total = static_cast<uint32_t>(contentLength);
+    if(options.expectedSize > 0 && total != options.expectedSize) {
+        finish(result, false, String("size mismatch ") + total + "/" + options.expectedSize);
+        return false;
+    }
+    if(partitionOffset > partition->size || total > partition->size - partitionOffset) {
+        finish(result, false, "staging partition too small");
+        return false;
+    }
+    const String expectedSha = normalizeSha256(options.expectedSha256);
+    if(!isSha256Hex(expectedSha)) {
+        finish(result, false, "bad manifest sha256");
+        return false;
+    }
+    constexpr uint32_t kSectorSize = 4096;
+    if((partitionOffset % kSectorSize) != 0) {
+        finish(result, false, "staging offset not aligned");
+        return false;
+    }
+    const uint32_t eraseSize = (total + kSectorSize - 1) & ~(kSectorSize - 1);
+    if(esp_partition_erase_range(partition, partitionOffset, eraseSize) != ESP_OK) {
+        finish(result, false, "staging erase failed");
+        return false;
+    }
+
+    uint8_t* buffer = static_cast<uint8_t*>(malloc(kOtaDownloadBufferSize));
+    if(buffer == nullptr) {
+        finish(result, false, "staging buffer alloc failed");
+        return false;
+    }
+    mbedtls_sha256_context sha;
+    mbedtls_sha256_init(&sha);
+    if(mbedtls_sha256_starts(&sha, 0) != 0) {
+        mbedtls_sha256_free(&sha);
+        free(buffer);
+        finish(result, false, "sha256 init failed");
+        return false;
+    }
+    uint32_t written = 0;
+    uint32_t lastProgressAt = millis();
+    bool ok = true;
+    String message;
+    while((client.connected() || stream.available() > 0) && written < total) {
+        const int available = stream.available();
+        if(available <= 0) {
+            if(static_cast<uint32_t>(millis() - lastProgressAt) > 30000UL) {
+                ok = false;
+                message = "download timeout";
+                break;
+            }
+            delay(2);
+            yield();
+            continue;
+        }
+        const size_t toRead = static_cast<size_t>(min<uint32_t>(
+            min<uint32_t>(available, kOtaDownloadBufferSize), total - written));
+        const int bytesRead = stream.readBytes(buffer, toRead);
+        if(bytesRead <= 0 ||
+           mbedtls_sha256_update(&sha, buffer, static_cast<size_t>(bytesRead)) != 0 ||
+           esp_partition_write(partition, partitionOffset + written, buffer,
+                               static_cast<size_t>(bytesRead)) != ESP_OK) {
+            ok = false;
+            message = "staging write failed";
+            break;
+        }
+        written += static_cast<uint32_t>(bytesRead);
+        lastProgressAt = millis();
+        if(result != nullptr) result->written = written;
+        if(options.progress != nullptr) options.progress(written, total, options.progressContext);
+        yield();
+    }
+    if(ok && written != total) {
+        ok = false;
+        message = String("short download ") + written + "/" + total;
+    }
+    uint8_t digest[32] = {};
+    if(ok && mbedtls_sha256_finish(&sha, digest) != 0) {
+        ok = false;
+        message = "sha256 finish failed";
+    }
+    mbedtls_sha256_free(&sha);
+    const String actualSha = ok ? sha256ToHex(digest) : String();
+    if(ok && actualSha != expectedSha) {
+        ok = false;
+        message = "sha256 mismatch";
+    }
+    free(buffer);
+    if(result != nullptr) {
+        result->expected = total;
+        result->written = written;
+        result->verified = ok;
+        result->sha256 = actualSha;
+        result->version = options.version;
+        result->slotLabel = partition->label;
+        result->slotOffset = offsetHex(partition->address + partitionOffset);
+    }
+    if(ok) message = String("staged ") + written + " bytes sha256=ok";
+    finish(result, ok, message);
+    return ok;
+}
+
+inline bool downloadHttpsToPartition(const String& url,
+                                     const esp_partition_t* partition,
+                                     uint32_t partitionOffset,
+                                     const DownloadOptions& options,
+                                     Result* result) {
+    if(result != nullptr) {
+        *result = Result();
+        result->imageUrl = url;
+    }
+    WiFiClientSecure client;
+    String headers;
+    String effectiveUrl;
+    if(!openHttpsGet(url, "application/octet-stream", &client, &headers, &effectiveUrl, result)) {
+        return false;
+    }
+    const int statusCode = parseStatusCode(headers);
+    if(statusCode != 200) {
+        client.stop();
+        finish(result, false, String("http ") + statusCode);
+        return false;
+    }
+    const bool ok = writeRawPartitionBody(client, client, partition, partitionOffset,
+                                          parseContentLength(headers), options, result);
+    client.stop();
+    return ok;
+}
+
 inline String jsonString(const cJSON* object, const char* key) {
     const cJSON* item = cJSON_GetObjectItemCaseSensitive(object, key);
     if(!cJSON_IsString(item) || item->valuestring == nullptr) {
@@ -663,8 +808,10 @@ inline bool jsonBool(const cJSON* object, const char* key, bool* out) {
     return true;
 }
 
-inline bool parseManifest(const String& manifestUrl,
+inline bool parseManifestForTarget(const String& manifestUrl,
                           const String& payload,
+                          const String& expectedRole,
+                          const String& expectedEnv,
                           ManifestSpec* spec,
                           Result* result) {
     if(spec == nullptr) {
@@ -718,12 +865,12 @@ inline bool parseManifest(const String& manifestUrl,
         finish(result, false, "manifest missing role/env");
         return false;
     }
-    if(spec->role != sg98_version::role()) {
-        finish(result, false, String("manifest role ") + spec->role + " != " + sg98_version::role());
+    if(spec->role != expectedRole) {
+        finish(result, false, String("manifest role ") + spec->role + " != " + expectedRole);
         return false;
     }
-    if(spec->envName != sg98_version::buildEnv()) {
-        finish(result, false, String("manifest env ") + spec->envName + " != " + sg98_version::buildEnv());
+    if(spec->envName != expectedEnv) {
+        finish(result, false, String("manifest env ") + spec->envName + " != " + expectedEnv);
         return false;
     }
     if(spec->imageUrl.length() == 0) {
@@ -751,6 +898,14 @@ inline bool parseManifest(const String& manifestUrl,
     return true;
 }
 
+inline bool parseManifest(const String& manifestUrl,
+                          const String& payload,
+                          ManifestSpec* spec,
+                          Result* result) {
+    return parseManifestForTarget(manifestUrl, payload, sg98_version::role(),
+                                  sg98_version::buildEnv(), spec, result);
+}
+
 inline bool fetchManifestSpec(const String& manifestUrl, ManifestSpec* spec, Result* result) {
     if(result != nullptr) {
         *result = Result();
@@ -771,6 +926,33 @@ inline bool fetchManifestSpec(const String& manifestUrl, ManifestSpec* spec, Res
     }
 
     const bool ok = parseManifest(manifestUrl, payload, spec, result);
+    if(ok && result != nullptr && spec != nullptr) {
+        result->ok = true;
+        result->version = spec->version;
+        result->sha256 = spec->sha256;
+        result->imageUrl = spec->imageUrl;
+        result->expected = spec->size;
+        result->message = "manifest ok";
+    }
+    return ok;
+}
+
+inline bool fetchManifestSpecForTarget(const String& manifestUrl,
+                                       const String& expectedRole,
+                                       const String& expectedEnv,
+                                       ManifestSpec* spec,
+                                       Result* result) {
+    if(result != nullptr) {
+        *result = Result();
+        result->fromManifest = true;
+    }
+    if(manifestUrl.length() == 0 || WiFi.status() != WL_CONNECTED || WiFi.localIP()[0] == 0) {
+        finish(result, false, manifestUrl.length() == 0 ? "missing manifest url" : "wifi not connected");
+        return false;
+    }
+    String payload;
+    if(!fetchHttpsString(manifestUrl, "application/json", kMaxManifestBytes, &payload, result)) return false;
+    const bool ok = parseManifestForTarget(manifestUrl, payload, expectedRole, expectedEnv, spec, result);
     if(ok && result != nullptr && spec != nullptr) {
         result->ok = true;
         result->version = spec->version;

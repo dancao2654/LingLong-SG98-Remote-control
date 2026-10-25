@@ -33,6 +33,10 @@
 #include "sg98_ota_download.h"
 #include "sg98_ota_source.h"
 #include "sg98_ota_update.h"
+#include "sg98_system_ota.h"
+#include "sg98_ota_transport.h"
+#include "sg98_connection_reveal.h"
+#include "assets/sg98_cartoon_pixels.h"
 #include "sg98_version.h"
 #include <sg98_remote_protocol.h>
 
@@ -578,6 +582,13 @@ struct RemoteOtaWifiGuard {
     bool switchedTransport = false;
 };
 
+bool systemOtaBusy();
+void confirmSystemOta();
+void serviceSystemOta();
+void serviceSystemRemoteInstall();
+void finishSystemOta(bool ok, const String& detail);
+bool handleSystemOtaAck(const sg98_protocol::AckFrame& ack);
+
 template <size_t N>
 constexpr size_t arrayCount(const SettingItem (&)[N]) {
     return N;
@@ -649,7 +660,7 @@ constexpr SettingItem kGbwItems[] = {
     {"Motor direction", ItemKind::Toggle, 1, SETMOTORDIRECTION, 0, 1, 1, "", nullptr, nullptr},
     {"Drive", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "drive"},
     {"Calibrate", ItemKind::Action, 0, 0, 0, 0, 0, "", "calibrate", nullptr},
-    {"Controller OTA", ItemKind::Action, 0, 0, 0, 0, 0, "", "controller_ota", nullptr},
+    {"System Update", ItemKind::Action, 0, 0, 0, 0, 0, "", "system_ota", nullptr},
     {"GbW RPM", ItemKind::Value, 3, GBW_RPM_SET, 200, 1500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow RPM", ItemKind::Value, 3, GBW_SLOW_RPM, rpm_scalar, 500, rpm_scalar, "rpm", nullptr, nullptr},
     {"GbW Slow mg", ItemKind::Value, 3, GBW_SLOW_MG, 0, 6000, 100, "mg", nullptr, nullptr},
@@ -662,7 +673,7 @@ constexpr SettingItem kGbwItems[] = {
 constexpr SettingItem kNetworkItems[] = {
     {"Wireless", ItemKind::Value, 1, RADIOMODE, 0, 2, 1, "", nullptr, nullptr},
     {"Controller link", ItemKind::Action, 0, 0, 0, 0, 0, "", "screen", "peers"},
-    {"Controller OTA", ItemKind::Action, 0, 0, 0, 0, 0, "", "controller_ota", nullptr},
+    {"System Update", ItemKind::Action, 0, 0, 0, 0, 0, "", "system_ota", nullptr},
     {"Reset Network", ItemKind::Action, 0, 0, 0, 0, 0, "", "reset_network", nullptr},
 };
 
@@ -730,7 +741,49 @@ RemoteInputState g_consoleUiInput;
 bool g_consoleUiInputPending = false;
 bool g_remoteOtaRequested = false;
 
-enum class BackgroundNetworkKind : uint8_t { Weather, OtaManifest };
+struct SystemOtaState {
+    sg98_system_ota::Flow flow;
+    sg98_system_ota::Stage sentStage = sg98_system_ota::Stage::Idle;
+    LinkTransport previousTransport = LinkTransport::None;
+    bool previousOverride = false;
+    bool remoteInstallRequested = false;
+    uint32_t lastProbeAt = 0;
+    uint32_t lastProgressAt = 0;
+    String detail;
+    String expectedVersion;
+    String expectedSha;
+    String controllerVersion;
+    String controllerSha;
+    String controllerEnv;
+    String controllerUi = "Unknown/legacy";
+    bool controllerLocalUi = false;
+    bool controllerIdentityProbePending = false;
+    bool controllerIdentityLegacy = false;
+    bool controllerLocalPush = false;
+    bool legacyUpdateSent = false;
+    bool restoreTransportPending = false;
+    bool remoteBootVerificationPending = false;
+    sg98_ota_download::ManifestSpec remoteManifest;
+    sg98_ota_download::ManifestSpec controllerManifest;
+    uint32_t controllerImageOffset = 0;
+    volatile uint8_t downloadPart = 0;
+    volatile uint32_t downloadWritten = 0;
+    volatile uint32_t downloadTotal = 0;
+    uint16_t transferSession = 0;
+    uint32_t transferOffset = 0;
+    uint32_t transferSentAt = 0;
+    uint8_t transferRetries = 0;
+    uint8_t transferPhase = 0;
+    bool transferAwaitingAck = false;
+};
+SystemOtaState g_systemOta;
+sg98_connection_reveal::State g_connectionReveal;
+uint32_t g_connectionRevealLastFrame = 0;
+uint16_t* g_connectionRevealBitmap = nullptr;
+
+bool systemOtaBusy() { return g_systemOta.flow.busy(); }
+
+enum class BackgroundNetworkKind : uint8_t { Weather, OtaManifest, SystemOtaStage };
 
 struct BackgroundNetworkRequest {
     BackgroundNetworkKind kind;
@@ -739,8 +792,18 @@ struct BackgroundNetworkRequest {
     int httpCode = -1;
     bool ok = false;
     sg98_ota_download::ManifestSpec manifest;
+    sg98_ota_download::ManifestSpec controllerManifest;
     sg98_ota_download::Result result;
+    sg98_ota_download::Result controllerResult;
+    uint32_t controllerImageOffset = 0;
+    volatile uint8_t progressPart = 0;
+    volatile uint32_t progressWritten = 0;
+    volatile uint32_t progressTotal = 0;
 };
+
+sg98_ota_transport::AckFrame g_systemOtaAck = {};
+bool g_systemOtaAckPending = false;
+portMUX_TYPE g_systemOtaAckMux = portMUX_INITIALIZER_UNLOCKED;
 
 QueueHandle_t g_networkRequests = nullptr;
 QueueHandle_t g_networkResults = nullptr;
@@ -2350,7 +2413,7 @@ void serviceDockClockTime(uint32_t now) {
 }
 
 bool remoteCanUseBackgroundNetwork() {
-    return !app.editing && !app.targetDirty && !isRunningState() && app.screen != Screen::Profiler &&
+    return !systemOtaBusy() && !app.editing && !app.targetDirty && !isRunningState() && app.screen != Screen::Profiler &&
            !remote_pressure_ble_connected() &&
            static_cast<uint32_t>(millis() - app.lastControlActivityAt) >= kFirmwareCheckUserQuietMs;
 }
@@ -2365,6 +2428,12 @@ bool remoteAutoOtaDue(uint32_t now) {
         return false;
     }
     return msUntilDeadline(now, app.nextAutoOtaCheckAt) == 0;
+}
+
+void systemOtaDownloadProgress(uint32_t written, uint32_t total, void*) {
+    g_systemOta.downloadWritten = written;
+    g_systemOta.downloadTotal = total;
+    remote_runtime_notify_input();
 }
 
 void backgroundNetworkWorker(void*) {
@@ -2385,6 +2454,59 @@ void backgroundNetworkWorker(void*) {
                     request->ok = request->payload.length() <= 16384;
                 }
                 http.end();
+            }
+        } else if(request->kind == BackgroundNetworkKind::SystemOtaStage) {
+            request->ok = sg98_ota_download::fetchManifestSpecForTarget(
+                sg98_ota_source::latestManifestUrl(), "remote", sg98_version::buildEnv(),
+                &request->manifest, &request->result);
+            if(request->ok) {
+                request->ok = sg98_ota_download::fetchManifestSpecForTarget(
+                    sg98_ota_source::controllerManifestUrl(), "controller", "controller-universal-s3",
+                    &request->controllerManifest, &request->controllerResult);
+            }
+            if(request->ok &&
+               (request->manifest.version != request->controllerManifest.version ||
+                !request->manifest.gitSha.equalsIgnoreCase(request->controllerManifest.gitSha))) {
+                request->ok = false;
+                request->result.message = "controller and remote releases differ";
+            }
+            const esp_partition_t* partition = request->ok
+                                                   ? esp_ota_get_next_update_partition(nullptr)
+                                                   : nullptr;
+            request->controllerImageOffset = request->ok
+                                                 ? (request->manifest.size + 4095U) & ~4095U
+                                                 : 0;
+            if(request->ok &&
+               (partition == nullptr || request->controllerImageOffset > partition->size ||
+                request->controllerManifest.size > partition->size - request->controllerImageOffset)) {
+                request->ok = false;
+                request->result.message = "inactive slot cannot stage both images";
+            }
+            if(request->ok) {
+                sg98_ota_download::DownloadOptions options;
+                options.expectedSize = request->manifest.size;
+                options.expectedSha256 = request->manifest.sha256;
+                options.version = request->manifest.version;
+                options.progress = systemOtaDownloadProgress;
+                g_systemOta.downloadPart = 1;
+                g_systemOta.downloadWritten = 0;
+                g_systemOta.downloadTotal = request->manifest.size;
+                request->ok = sg98_ota_download::downloadHttpsToPartition(
+                    request->manifest.imageUrl, partition, 0, options, &request->result);
+            }
+            if(request->ok) {
+                sg98_ota_download::DownloadOptions options;
+                options.expectedSize = request->controllerManifest.size;
+                options.expectedSha256 = request->controllerManifest.sha256;
+                options.version = request->controllerManifest.version;
+                options.progress = systemOtaDownloadProgress;
+                g_systemOta.downloadPart = 2;
+                g_systemOta.downloadWritten = 0;
+                g_systemOta.downloadTotal = request->controllerManifest.size;
+                request->ok = sg98_ota_download::downloadHttpsToPartition(
+                    request->controllerManifest.imageUrl, partition,
+                    request->controllerImageOffset, options, &request->controllerResult);
+                if(!request->ok) request->result.message = request->controllerResult.message;
             }
         } else {
             request->ok = sg98_ota_download::fetchManifestSpec(request->url,
@@ -2470,10 +2592,35 @@ void serviceBackgroundNetworkResults() {
             app.otaUpdate.updateAvailable = sg98_ota_update::manifestLooksNewer(spec);
             app.otaUpdate.message = app.otaUpdate.updateAvailable ? "update available" : "current";
         }
-        finishAutoOtaWifi(request->ok);
+        if(request->kind == BackgroundNetworkKind::SystemOtaStage) {
+            if(g_systemOta.flow.stage == sg98_system_ota::Stage::DownloadFiles) {
+                if(request->ok) {
+                    g_systemOta.remoteManifest = request->manifest;
+                    g_systemOta.controllerManifest = request->controllerManifest;
+                    g_systemOta.controllerImageOffset = request->controllerImageOffset;
+                    g_systemOta.expectedVersion = request->controllerManifest.version;
+                    g_systemOta.expectedSha = request->controllerManifest.gitSha;
+                    g_systemOta.detail = "Files verified; reconnecting controller";
+                    g_systemOta.flow.receive(sg98_system_ota::Event::FilesReady, millis());
+                    switchTransportNow(LinkTransport::EspNow);
+                    app.transportOverrideActive = true;
+                } else {
+                    finishSystemOta(false, String("Download: ") + request->result.message);
+                }
+            }
+        } else {
+            finishAutoOtaWifi(request->ok);
+        }
         if(app.screen == Screen::About) app.redraw = true;
     }
     delete request;
+    if(g_systemOta.restoreTransportPending) {
+        g_systemOta.restoreTransportPending = false;
+        if(g_systemOta.previousTransport != LinkTransport::None) {
+            switchTransportNow(g_systemOta.previousTransport);
+            app.transportOverrideActive = g_systemOta.previousOverride;
+        }
+    }
 }
 
 void serviceFirmwareUpdateCheck(uint32_t now) {
@@ -2612,6 +2759,7 @@ void shareLocalEnvironmentWithController(uint32_t now) {
 }
 
 void serviceControllerEnvironmentSync(uint32_t now) {
+    if(systemOtaBusy()) return;
     if(!isLinkOnline()) {
         return;
     }
@@ -2694,7 +2842,7 @@ bool statusMotorUnavailable(const sg98_protocol::StatusFrame& status) {
 }
 
 bool isRunActionAvailable() {
-    return isLinkOnline();
+    return !systemOtaBusy() && isLinkOnline();
 }
 
 String homeActionButtonLabel() {
@@ -8030,12 +8178,9 @@ void drawAboutUpdateBanner(RemoteCanvas& canvas,
                            bool armed,
                            uint16_t fill,
                            uint16_t textColor) {
-    const String top = remoteUpdateReady
-                           ? (armed ? "PRESS AGAIN" : "REMOTE")
-                           : (armed ? "PRESS AGAIN" : "CONTROLLER");
-    const String bottom = remoteUpdateReady
-                              ? (armed ? "UPDATE" : "UPDATE READY")
-                              : (armed ? "UPDATE" : "OTA READY");
+    (void)remoteUpdateReady;
+    const String top = armed ? "PRESS AGAIN" : "SYSTEM UPDATE";
+    const String bottom = armed ? "UPDATE BOTH" : "CONTROLLER + REMOTE";
 
     if(useRoundNavigation()) {
         const uint16_t face = blendColor565(kColorPanel, fill, 0.34f);
@@ -8164,14 +8309,13 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
                     dividerY,
                     blendColor565(face, accent, 0.22f));
 
-    const char* labels[] = {"GIT", "BUILT", "OTA", "UPDATE"};
+    const char* labels[] = {"GIT", "BUILT", "CTRL", "UPDATE"};
     const String values[] = {
         sg98_version::gitLabel(),
         aboutBuildTimeLine(),
-        aboutOtaLine(),
-        app.otaUpdate.checked && app.otaUpdate.updateAvailable
-            ? String("NEW v") + app.otaUpdate.latestVersion
-            : sg98_ota_update::statusLine(app.otaUpdate)
+        g_systemOta.controllerVersion.isEmpty() ? g_systemOta.controllerUi
+                                              : g_systemOta.controllerVersion + (g_systemOta.controllerLocalUi ? " Full" : " Internal"),
+        g_systemOta.detail.isEmpty() ? String("Controller + remote") : g_systemOta.detail
     };
     const uint8_t rowCount = static_cast<uint8_t>(sizeof(labels) / sizeof(labels[0]));
     const int16_t rowH = useRoundNavigation() ? 24 : 22;
@@ -8193,13 +8337,13 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
 
     const bool controllerUpdateReady = controllerOtaReady();
     const bool remoteUpdateReady = remoteOtaUpdateAvailable() && !controllerUpdateReady;
-    if(controllerUpdateReady || remoteUpdateReady) {
+    {
         const int16_t buttonH = useRoundNavigation() ? 48 : 34;
         const int16_t buttonY = max<int16_t>(
             static_cast<int16_t>(rowY + (useRoundNavigation() ? 10 : 6)),
             static_cast<int16_t>(panel.y + panel.h - panelPad - buttonH));
         const Rect button = {innerX, buttonY, innerW, buttonH};
-        const uint8_t dangerSlot = remoteUpdateReady ? 1 : 0;
+        const uint8_t dangerSlot = 2;
         const bool armed = dangerIsArmed(Screen::About, dangerSlot);
         const uint16_t buttonFace = armed ? kColorWarn : blendColor565(kColorGood, kColorPanel, 0.30f);
         const uint16_t buttonText = kColorText;
@@ -8724,11 +8868,153 @@ void drawFlashScreen(RemoteCanvas& canvas, const Layout& layout) {
                             face);
 }
 
+uint8_t systemOtaStep(sg98_system_ota::Stage stage) {
+    using sg98_system_ota::Stage;
+    if(stage == Stage::Connect) return 1;
+    if(stage <= Stage::DownloadFiles) return 2;
+    if(stage <= Stage::ControllerTransfer) return 3;
+    if(stage == Stage::ControllerVerify) return 4;
+    return 5;
+}
+
+uint8_t systemOtaPercent(uint32_t written, uint32_t total) {
+    return total == 0 ? 0 : static_cast<uint8_t>(min<uint32_t>(100, (written * 100ULL) / total));
+}
+
+String systemOtaControllerLine() {
+    using sg98_system_ota::Stage;
+    const Stage stage = g_systemOta.flow.stage;
+    if(g_systemOta.flow.controllerVerified) {
+        return String("Verified v") + g_systemOta.controllerVersion;
+    }
+    if(stage == Stage::Connect) return "Checking controller state";
+    if(stage == Stage::WifiConnect) return "Waiting while remote joins Wi-Fi";
+    if(stage == Stage::DownloadFiles) {
+        if(g_systemOta.downloadPart < 2) return "Waiting for controller file";
+        return String("Downloading ") + systemOtaPercent(g_systemOta.downloadWritten,
+                                                          g_systemOta.downloadTotal) + "%";
+    }
+    if(stage == Stage::LocalConnect) return "Reconnecting over ESP-NOW";
+    if(stage == Stage::LegacyControllerUpdate) return "Downloading compatibility update";
+    if(stage == Stage::ControllerTransfer) {
+        return String("Transferring ") + systemOtaPercent(g_systemOta.transferOffset,
+                                                           g_systemOta.controllerManifest.size) + "%";
+    }
+    return "Restarting and verifying";
+}
+
+String systemOtaRemoteLine() {
+    using sg98_system_ota::Stage;
+    const Stage stage = g_systemOta.flow.stage;
+    if(stage == Stage::WifiConnect) return "Connecting home Wi-Fi";
+    if(stage == Stage::DownloadFiles) {
+        if(g_systemOta.downloadPart == 1) {
+            return String("Downloading ") + systemOtaPercent(g_systemOta.downloadWritten,
+                                                              g_systemOta.downloadTotal) + "%";
+        }
+        return "Remote file verified";
+    }
+    if(stage == Stage::RemoteInstall) return "Installing staged firmware";
+    if(stage > Stage::DownloadFiles) return "Firmware staged and verified";
+    return "Waiting for download";
+}
+
+void drawSystemOtaProgress(RemoteCanvas& canvas, const Layout& layout) {
+    canvas.fillScreen(kColorBg);
+    const int16_t centerX = layout.width / 2;
+    const int16_t width = min<int16_t>(useRoundNavigation() ? 330 : layout.width - 40,
+                                       layout.width - 32);
+    const int16_t left = centerX - width / 2;
+    const uint8_t step = systemOtaStep(g_systemOta.flow.stage);
+    const uint16_t active = blendColor565(kColorAccent, kColorText, 0.12f);
+    canvas.drawCenteredText("SYSTEM UPDATE", centerX, useRoundNavigation() ? 62 : 38,
+                            RemoteTextStyle::Small, active, kColorBg);
+    canvas.drawCenteredText(String("STEP ") + step + " OF 5", centerX,
+                            useRoundNavigation() ? 91 : 65,
+                            RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+
+    const int16_t barY = useRoundNavigation() ? 116 : 88;
+    canvas.fillRoundRect(left, barY, width, 8, 4, kColorPanelHi);
+    canvas.fillRoundRect(left, barY, max<int16_t>(8, width * step / 5), 8, 4, active);
+
+    const int16_t controllerY = useRoundNavigation() ? 162 : 126;
+    canvas.drawTextTopLeft("CONTROLLER", left, controllerY,
+                           RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+    canvas.drawTextTopLeft(fitTextToWidthNoTilde(systemOtaControllerLine(), width,
+                                                 RemoteTextStyle::Small, 0),
+                           left, controllerY + 23, RemoteTextStyle::Small,
+                           g_systemOta.flow.controllerVerified ? kColorGood : kColorText, kColorBg);
+    String controllerKind = g_systemOta.controllerUi;
+    if(!g_systemOta.controllerEnv.isEmpty()) controllerKind += String("  ") + g_systemOta.controllerEnv;
+    canvas.drawTextTopLeft(fitTextToWidthNoTilde(controllerKind, width, RemoteTextStyle::Tiny, 0),
+                           left, controllerY + 51, RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+
+    const int16_t dividerY = controllerY + 79;
+    canvas.drawLine(left, dividerY, left + width, dividerY, kColorPanelHi);
+    const int16_t remoteY = dividerY + 20;
+    canvas.drawTextTopLeft("REMOTE", left, remoteY,
+                           RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+    canvas.drawTextTopLeft(fitTextToWidthNoTilde(systemOtaRemoteLine(), width,
+                                                 RemoteTextStyle::Small, 0),
+                           left, remoteY + 23, RemoteTextStyle::Small, kColorText, kColorBg);
+    canvas.drawTextTopLeft(fitTextToWidthNoTilde(String("v") + sg98_version::release() + "  " +
+                                                 sg98_version::buildEnv(), width,
+                                                 RemoteTextStyle::Tiny, 0),
+                           left, remoteY + 51, RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+
+    const int16_t statusY = min<int16_t>(layout.height - 48, remoteY + 96);
+    canvas.drawCenteredText(fitTextToWidthNoTilde(String(sg98_system_ota::label(g_systemOta.flow.stage)),
+                                                  width, RemoteTextStyle::Small, 0),
+                            centerX, statusY, RemoteTextStyle::Small, active, kColorBg);
+    canvas.drawCenteredText("Keep both devices powered", centerX, statusY + 25,
+                            RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+}
+
 void redrawUi() {
     RemoteCanvas& canvas = remote_board_canvas();
     const Layout layout = buildLayout();
 
-    if(app.flashUntil > millis()) {
+    if(systemOtaBusy()) {
+        drawSystemOtaProgress(canvas, layout);
+    } else if(g_connectionReveal.active) {
+        canvas.fillScreen(kColorBg);
+        const uint32_t age = millis() - g_connectionReveal.startedAt;
+        const float enter = min(1.0f, static_cast<float>(age) / 280.0f);
+        const float ease = 1.0f - powf(1.0f - enter, 3.0f);
+        const float fade = age > 1200 ? max(0.0f, static_cast<float>(1500 - age) / 300.0f) : ease;
+        const int16_t size = static_cast<int16_t>(min<int16_t>(170, layout.width / 2) * (0.86f + 0.14f * ease));
+        const int16_t left = (layout.width - size) / 2;
+        const int16_t top = static_cast<int16_t>(layout.height / 2 - size / 2 - 25 + 10 * (1.0f - ease));
+        if(g_connectionRevealBitmap == nullptr) {
+            g_connectionRevealBitmap = static_cast<uint16_t*>(
+                heap_caps_malloc(170 * 170 * sizeof(uint16_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        }
+        if(g_connectionRevealBitmap == nullptr) {
+            g_connectionReveal.active = false;
+            app.redraw = true;
+            canvas.drawCenteredText("Grinder connected", layout.width / 2, layout.height / 2,
+                                    RemoteTextStyle::Medium, kColorGood, kColorBg);
+            canvas.present();
+            app.redraw = false;
+            return;
+        }
+        for(int16_t y = 0; y < size; ++y) {
+            for(int16_t x = 0; x < size; ++x) {
+                const size_t pixel = static_cast<size_t>((y * 124 / size) * 124 + x * 124 / size) * 3;
+                const uint8_t alpha = linglong_sg98_cartoon_124_map[pixel + 2];
+                const uint16_t color = linglong_sg98_cartoon_124_map[pixel] |
+                                       (static_cast<uint16_t>(linglong_sg98_cartoon_124_map[pixel + 1]) << 8);
+                g_connectionRevealBitmap[static_cast<size_t>(y) * size + x] =
+                    blendColor565(kColorBg, color, fade * alpha / 255.0f);
+            }
+        }
+        canvas.drawRgb565Bitmap(left, top, g_connectionRevealBitmap, size, size);
+        const String label = "Grinder connected";
+        const auto style = textFitsWidth(label, layout.width - 30, RemoteTextStyle::Medium, 0)
+                               ? RemoteTextStyle::Medium : RemoteTextStyle::Small;
+        canvas.drawCenteredText(label, layout.width / 2, layout.height / 2 + size / 2 + 5,
+                                style, blendColor565(kColorBg, kColorText, fade), kColorBg);
+    } else if(app.flashUntil > millis()) {
         drawFlashScreen(canvas, layout);
     } else if(app.dockClockActive) {
         drawDockClock(canvas, layout);
@@ -9065,6 +9351,16 @@ bool sendEspNowFrame(const uint8_t* mac, const String& command) {
                                       reinterpret_cast<const uint8_t*>(command.c_str()),
                                       command.length() + 1);
     return rc == ESP_OK;
+}
+
+bool sendEspNowBytes(const uint8_t* mac, const uint8_t* data, size_t length) {
+    if(!app.espNowReady || mac == nullptr || data == nullptr || length == 0 || length > 250) {
+        return false;
+    }
+    if(!ensureEspNowPeer(mac)) return false;
+    app.sendComplete = false;
+    app.sendOk = false;
+    return esp_now_send(mac, data, length) == ESP_OK;
 }
 
 bool sendEspNowRaw(const String& command) {
@@ -9641,6 +9937,7 @@ void servicePendingMenuPolls() {
 }
 
 void servicePendingControllerSync() {
+    if(systemOtaBusy()) return;
     reconcilePendingControllerSync();
     if(!pendingControllerSyncActive()) {
         return;
@@ -9782,6 +10079,7 @@ void notifyAutoEspNowReturn(bool synced, const String& fallbackDetail = String()
 }
 
 void serviceEspNowFirstPolicy() {
+    if(systemOtaBusy()) return;
     if(app.currentTransport == LinkTransport::WebSocket) {
         const bool websocketOverride = app.transportOverrideActive;
         if(websocketOverride) {
@@ -10287,6 +10585,7 @@ void consumeProtocolFrame(const String& frame) {
         const bool wasOnline = isLinkOnline();
         app.lastLinkActivityAt = millis();
         app.lastAckAt = millis();
+        if(handleSystemOtaAck(ackFrame)) return;
         if(ackFrame.ok) {
             clearRecoveredSendFailureToast();
         } else if(app.pendingAction.kind != PendingActionKind::None) {
@@ -10367,7 +10666,20 @@ void onEspNowReceive(const esp_now_recv_info_t*, const uint8_t* data, int len) {
         return;
     }
 
-    consumeProtocolFrame(String(reinterpret_cast<const char*>(data)));
+    if(sg98_ota_transport::isFrame(data, static_cast<size_t>(len))) {
+        sg98_ota_transport::Header header = {};
+        memcpy(&header, data, sizeof(header));
+        if(header.type == sg98_ota_transport::Type::Ack &&
+           len >= static_cast<int>(sizeof(sg98_ota_transport::AckFrame))) {
+            portENTER_CRITICAL_ISR(&g_systemOtaAckMux);
+            memcpy(&g_systemOtaAck, data, sizeof(g_systemOtaAck));
+            g_systemOtaAckPending = true;
+            portEXIT_CRITICAL_ISR(&g_systemOtaAckMux);
+            remote_runtime_notify_input();
+        }
+        return;
+    }
+    consumeProtocolFrame(String(reinterpret_cast<const char*>(data), static_cast<unsigned int>(len)));
 }
 
 bool initEspNow(bool preserveWifi) {
@@ -10439,7 +10751,7 @@ void handleSendCompletion() {
     }
 
     app.sendComplete = false;
-    if(!app.sendOk && !pendingControllerSyncActive()) {
+    if(!app.sendOk && !pendingControllerSyncActive() && !systemOtaBusy() && !controllerOtaActionBusy()) {
         setToast("Send failed");
     }
 }
@@ -10458,7 +10770,28 @@ void manageTransport() {
         switchTransportNow(initialTransport());
     }
 
-    if(app.currentTransport == LinkTransport::WebSocket) {
+    const auto otaStage = g_systemOta.flow.stage;
+    const bool otaWifiOnly = systemOtaBusy() &&
+        (otaStage == sg98_system_ota::Stage::WifiConnect ||
+         otaStage == sg98_system_ota::Stage::DownloadFiles);
+
+    if(app.currentTransport == LinkTransport::WebSocket && otaWifiOnly) {
+        if(app.wsClientStarted || app.wsConnected || app.wsDiscoveryPending || app.mdnsReady || g_mdnsQuery != nullptr) {
+            stopWebSocketSession();
+        }
+        if(!remote_wifi_is_active()) {
+            remote_wifi_start();
+        }
+        if((now - app.lastWifiServiceAt) >= remote_config::kWifiServiceMs) {
+            remote_wifi_poll();
+            app.lastWifiServiceAt = now;
+        }
+        const bool staConnected = remote_wifi_sta_connected();
+        if(staConnected != app.wsStaConnected) {
+            app.wsStaConnected = staConnected;
+            app.redraw = true;
+        }
+    } else if(app.currentTransport == LinkTransport::WebSocket) {
         if(app.espNowReady) {
             stopEspNowSession();
         }
@@ -10546,7 +10879,7 @@ void manageTransport() {
         }
     }
 
-    if(!isLinkOnline() && (millis() - app.lastTransportSwitchAt) >= remote_config::kTransportSearchWindowMs) {
+    if(!systemOtaBusy() && !isLinkOnline() && (millis() - app.lastTransportSwitchAt) >= remote_config::kTransportSearchWindowMs) {
         const LinkTransport fallback = alternateTransport();
         if(fallback != app.currentTransport) {
             if(app.currentTransport == LinkTransport::WebSocket &&
@@ -10566,6 +10899,7 @@ void manageTransport() {
 }
 
 void syncPolling() {
+    if(systemOtaBusy()) return;
     if(millis() - app.lastStatusPollAt >= currentStatusPollIntervalMs()) {
         requestStatus();
         app.lastStatusPollAt = millis();
@@ -10821,6 +11155,392 @@ void serviceRemoteOtaUpdate() {
     ESP.restart();
 }
 
+String systemOtaToken(String& text) {
+    text.trim();
+    const int split = text.indexOf(' ');
+    if(split < 0) { String token = text; text = ""; return token; }
+    String token = text.substring(0, split);
+    text.remove(0, split + 1);
+    return token;
+}
+
+bool systemOtaShaMatches(const String& a, const String& b) {
+    return a.length() >= 7 && b.length() >= 7 && (a.startsWith(b) || b.startsWith(a));
+}
+
+void finishSystemOta(bool ok, const String& detail) {
+    if(ok) g_systemOta.flow.enter(sg98_system_ota::Stage::Complete, millis());
+    else g_systemOta.flow.fail(millis());
+    g_systemOta.detail = detail;
+    g_systemOta.remoteInstallRequested = false;
+    if(g_statePrefsReady) g_statePrefs.remove("sysPending");
+    if(g_networkPending) {
+        // The TLS worker owns the active Wi-Fi socket. Restore the user's
+        // transport only after that worker reports its result.
+        g_systemOta.restoreTransportPending = true;
+    } else if(g_systemOta.previousTransport != LinkTransport::None) {
+        switchTransportNow(g_systemOta.previousTransport);
+        app.transportOverrideActive = g_systemOta.previousOverride;
+    }
+    app.flashUntil = 0;
+    app.screen = Screen::About;
+    setToast(detail, 6000);
+    app.redraw = true;
+    Serial.printf("[system_ota] %s: %s\n", ok ? "complete" : "stopped", detail.c_str());
+}
+
+void confirmSystemOta() {
+    if(systemOtaBusy()) return;
+    if(!isLinkOnline() || !app.hasControllerStatus) {
+        setToast("Connect grinder first", 2000);
+        return;
+    }
+    if(isRunningState() || app.pendingAction.kind != PendingActionKind::None ||
+       app.pendingTarget.active || app.targetDirty || g_networkPending || g_autoOtaWifiStartedAt != 0) {
+        setToast("Wait until idle", 2000);
+        return;
+    }
+    if(!remote_wifi_has_saved_network()) {
+        setToast("Save home Wi-Fi first", 2400);
+        return;
+    }
+    app.screen = Screen::About;
+    app.editing = false;
+    if(!dangerIsArmed(Screen::About, 2)) {
+        // A legacy controller OTA check can leave the old per-device UI busy
+        // while its staged image is ready. The coordinated flow owns OTA state.
+        clearControllerOtaBusy();
+        clearControllerOtaDownloadArm();
+        armDanger(Screen::About, 2);
+        setToast("Press again: update both", remote_config::kDangerConfirmMs);
+        app.redraw = true;
+        return;
+    }
+    app.dangerArmUntil = 0;
+    clearControllerOtaBusy();
+    clearControllerOtaDownloadArm();
+    g_systemOta.previousTransport = app.currentTransport;
+    g_systemOta.previousOverride = app.transportOverrideActive;
+    g_systemOta.expectedVersion = "";
+    g_systemOta.expectedSha = "";
+    g_systemOta.sentStage = sg98_system_ota::Stage::Idle;
+    g_systemOta.detail = "Download both, update locally";
+    g_systemOta.lastProbeAt = 0;
+    g_systemOta.lastProgressAt = 0;
+    g_systemOta.restoreTransportPending = false;
+    g_systemOta.remoteBootVerificationPending = false;
+    g_systemOta.downloadPart = 0;
+    g_systemOta.downloadWritten = 0;
+    g_systemOta.downloadTotal = 0;
+    g_systemOta.controllerImageOffset = 0;
+    g_systemOta.transferSession = 0;
+    g_systemOta.transferOffset = 0;
+    g_systemOta.transferPhase = 0;
+    g_systemOta.transferAwaitingAck = false;
+    g_systemOta.controllerLocalPush = false;
+    g_systemOta.legacyUpdateSent = false;
+    g_systemOta.flow.start(millis());
+    app.transportOverrideActive = true;
+    app.dockClockActive = false;
+    app.redraw = true;
+}
+
+bool handleSystemOtaAck(const sg98_protocol::AckFrame& ack) {
+    using namespace sg98_system_ota;
+    String text = ack.message;
+    const uint32_t now = millis();
+    if(ack.ok && text.startsWith("ota state ")) {
+        g_systemOta.controllerIdentityProbePending = false;
+        g_systemOta.controllerIdentityLegacy = false;
+        text.remove(0, 10);
+        const String version = systemOtaToken(text);
+        const String sha = systemOtaToken(text);
+        const String env = systemOtaToken(text);
+        const String ui = systemOtaToken(text);
+        const String local = systemOtaToken(text);
+        const String idle = systemOtaToken(text);
+        const String capabilities = systemOtaToken(text);
+        if((ui != "full" && ui != "headless") || (local != "local" && local != "remote") ||
+           (idle != "idle" && idle != "busy") || version.isEmpty() || sha.length() < 7) return true;
+        g_systemOta.controllerVersion = version;
+        g_systemOta.controllerSha = sha;
+        g_systemOta.controllerEnv = env;
+        g_systemOta.controllerUi = ui == "full" ? "Full controller" : "Internal controller";
+        g_systemOta.controllerLocalUi = local == "local";
+        g_systemOta.controllerLocalPush = capabilities.indexOf("local-push") >= 0;
+        if(systemOtaBusy()) {
+            if(idle != "idle") {
+                finishSystemOta(false, "Controller not idle; remote unchanged");
+            } else if(g_systemOta.flow.stage == Stage::Connect) {
+                g_systemOta.flow.receive(Event::ControllerReady, now);
+                g_systemOta.detail = "Controller ready; joining Wi-Fi";
+            } else if(g_systemOta.flow.stage == Stage::LocalConnect) {
+                if(version == g_systemOta.expectedVersion &&
+                   systemOtaShaMatches(sha, g_systemOta.expectedSha)) {
+                    g_systemOta.flow.enter(Stage::ControllerVerify, now);
+                    g_systemOta.flow.receive(Event::ControllerVerified, now);
+                    g_systemOta.detail = "Controller already current";
+                } else if(g_systemOta.controllerLocalPush) {
+                    g_systemOta.flow.receive(Event::LocalConnected, now);
+                    g_systemOta.detail = "Controller connected; sending firmware";
+                } else {
+                    g_systemOta.flow.receive(Event::LegacyUpdateRequired, now);
+                    g_systemOta.detail = "One-time controller compatibility update";
+                }
+            } else if(g_systemOta.flow.stage == Stage::LegacyControllerUpdate &&
+                      version == g_systemOta.expectedVersion &&
+                      systemOtaShaMatches(sha, g_systemOta.expectedSha) &&
+                      g_systemOta.controllerLocalPush) {
+                g_systemOta.flow.enter(Stage::ControllerVerify, now);
+                g_systemOta.flow.receive(Event::ControllerVerified, now);
+                g_systemOta.detail = "Controller compatibility update verified";
+            } else if(g_systemOta.flow.stage == Stage::ControllerVerify &&
+                      version == g_systemOta.expectedVersion &&
+                      systemOtaShaMatches(sha, g_systemOta.expectedSha)) {
+                if(g_systemOta.remoteBootVerificationPending) {
+                    g_systemOta.remoteBootVerificationPending = false;
+                    finishSystemOta(true, "Both devices verified current");
+                } else {
+                    g_systemOta.flow.receive(Event::ControllerVerified, now);
+                    g_systemOta.detail = "Controller verified";
+                }
+            }
+        }
+        app.redraw = true;
+        return true;
+    }
+    if(!systemOtaBusy()) {
+        if(g_systemOta.controllerIdentityProbePending && !ack.ok && text == "unknown action") {
+            g_systemOta.controllerIdentityProbePending = false;
+            g_systemOta.controllerIdentityLegacy = true;
+            g_systemOta.controllerUi = "Unknown/legacy";
+            app.redraw = true;
+            return true;
+        }
+        return false;
+    }
+    if(g_systemOta.flow.stage == Stage::LegacyControllerUpdate) {
+        if(!ack.ok) {
+            finishSystemOta(false, String("Legacy controller: ") + text);
+        } else if(text == "wifi saved") {
+            g_systemOta.detail = "Controller Wi-Fi configured";
+        } else if(text.indexOf("reboot queued") >= 0) {
+            g_systemOta.detail = "Legacy controller rebooting";
+            g_systemOta.lastProbeAt = now;
+        }
+        app.redraw = true;
+        return true;
+    }
+    return true;
+}
+
+bool systemOtaParseSha(const String& value, uint8_t out[sg98_ota_transport::kSha256Bytes]) {
+    if(value.length() != sg98_ota_transport::kSha256Bytes * 2) return false;
+    for(size_t index = 0; index < sg98_ota_transport::kSha256Bytes; ++index) {
+        const int high = sg98_protocol::detail::hexValue(value[index * 2]);
+        const int low = sg98_protocol::detail::hexValue(value[index * 2 + 1]);
+        if(high < 0 || low < 0) return false;
+        out[index] = static_cast<uint8_t>((high << 4) | low);
+    }
+    return true;
+}
+
+bool takeSystemOtaAck(sg98_ota_transport::AckFrame* ack) {
+    if(ack == nullptr) return false;
+    bool available = false;
+    portENTER_CRITICAL(&g_systemOtaAckMux);
+    if(g_systemOtaAckPending) {
+        *ack = g_systemOtaAck;
+        g_systemOtaAckPending = false;
+        available = true;
+    }
+    portEXIT_CRITICAL(&g_systemOtaAckMux);
+    return available;
+}
+
+bool sendSystemOtaTransferFrame() {
+    using namespace sg98_ota_transport;
+    const uint8_t* peer = activeEspNowPeerMac();
+    if(peer == nullptr) return false;
+    const uint8_t phase = g_systemOta.transferPhase;
+    if(phase == 0) {
+        BeginFrame frame;
+        frame.header.type = Type::Begin;
+        frame.header.session = g_systemOta.transferSession;
+        frame.imageSize = g_systemOta.controllerManifest.size;
+        if(!systemOtaParseSha(g_systemOta.controllerManifest.sha256, frame.sha256)) return false;
+        strncpy(frame.release, g_systemOta.controllerManifest.version.c_str(), sizeof(frame.release) - 1);
+        return sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), sizeof(frame));
+    }
+    if(phase == 1) {
+        DataFrame frame;
+        frame.header.type = Type::Data;
+        frame.header.session = g_systemOta.transferSession;
+        frame.offset = g_systemOta.transferOffset;
+        frame.length = static_cast<uint16_t>(min<uint32_t>(
+            sizeof(frame.data), g_systemOta.controllerManifest.size - frame.offset));
+        const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
+        if(partition == nullptr ||
+           esp_partition_read(partition, g_systemOta.controllerImageOffset + frame.offset,
+                              frame.data, frame.length) != ESP_OK) return false;
+        frame.crc32 = crc32(frame.data, frame.length);
+        const size_t length = offsetof(DataFrame, data) + frame.length;
+        return sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), length);
+    }
+    ControlFrame frame;
+    frame.header.type = phase == 2 ? Type::End : Type::Commit;
+    frame.header.session = g_systemOta.transferSession;
+    return sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), sizeof(frame));
+}
+
+void serviceSystemOtaTransfer(uint32_t now) {
+    using namespace sg98_ota_transport;
+    AckFrame ack;
+    if(takeSystemOtaAck(&ack) && ack.header.session == g_systemOta.transferSession) {
+        g_systemOta.transferAwaitingAck = false;
+        g_systemOta.transferRetries = 0;
+        if(ack.status == Status::Error || ack.status == Status::Busy) {
+            finishSystemOta(false, String("Controller: ") + ack.message);
+            return;
+        }
+        if(g_systemOta.transferPhase == 0 && ack.status == Status::Accepted) {
+            g_systemOta.transferOffset = ack.nextOffset;
+            g_systemOta.transferPhase = 1;
+        } else if(g_systemOta.transferPhase == 1 && ack.status == Status::Accepted) {
+            g_systemOta.transferOffset = ack.nextOffset;
+            if(g_systemOta.transferOffset >= g_systemOta.controllerManifest.size) {
+                g_systemOta.transferPhase = 2;
+            }
+        } else if(g_systemOta.transferPhase == 2 && ack.status == Status::Ready) {
+            g_systemOta.transferPhase = 3;
+        } else if(g_systemOta.transferPhase == 3 && ack.status == Status::Committed) {
+            g_systemOta.flow.receive(sg98_system_ota::Event::TransferReady, now);
+            g_systemOta.detail = "Controller rebooting";
+            g_systemOta.lastProbeAt = now;
+            g_systemOta.sentStage = sg98_system_ota::Stage::Idle;
+            return;
+        }
+        app.redraw = true;
+    }
+    if(g_systemOta.transferAwaitingAck && now - g_systemOta.transferSentAt < 700) return;
+    if(g_systemOta.transferAwaitingAck && ++g_systemOta.transferRetries > 15) {
+        finishSystemOta(false, "Controller transfer timed out");
+        return;
+    }
+    if(sendSystemOtaTransferFrame()) {
+        g_systemOta.transferAwaitingAck = true;
+        g_systemOta.transferSentAt = now;
+    } else if(++g_systemOta.transferRetries > 15) {
+        finishSystemOta(false, "Controller transfer unavailable");
+    }
+}
+
+void serviceSystemOta() {
+    using namespace sg98_system_ota;
+    const uint32_t now = millis();
+    if(!systemOtaBusy()) {
+        if(app.screen == Screen::About && isLinkOnline() &&
+           !g_systemOta.controllerIdentityLegacy &&
+           now - g_systemOta.lastProbeAt >= 5000) {
+            g_systemOta.lastProbeAt = now;
+            g_systemOta.controllerIdentityProbePending = sendAction("ota_status");
+        }
+        return;
+    }
+    app.lastUserActivityAt = now;
+    app.lastControlActivityAt = now;
+    if(g_systemOta.flow.expired(now)) {
+        finishSystemOta(false, String(label(g_systemOta.flow.stage)) + " timed out");
+        return;
+    }
+    const Stage stage = g_systemOta.flow.stage;
+    if(g_systemOta.lastProgressAt == 0 || now - g_systemOta.lastProgressAt >= 1000 || g_systemOta.sentStage != stage) {
+        showFlashScreen("SYSTEM UPDATE", label(stage), 250000, kColorAccent2);
+        g_systemOta.lastProgressAt = now;
+    }
+    if(stage == Stage::Connect) {
+        if(isLinkOnline() && (g_systemOta.sentStage != stage || now - g_systemOta.lastProbeAt >= 2000)) {
+            g_systemOta.controllerIdentityProbePending = sendAction("ota_status");
+            g_systemOta.sentStage = stage;
+            g_systemOta.lastProbeAt = now;
+        }
+    } else if(stage == Stage::WifiConnect) {
+        if(g_systemOta.sentStage != stage) {
+            switchTransportNow(LinkTransport::WebSocket);
+            stopWebSocketSession();
+            app.transportOverrideActive = true;
+            g_systemOta.sentStage = stage;
+        }
+        if(remote_wifi_sta_connected()) g_systemOta.flow.receive(Event::WifiConnected, now);
+    } else if(stage == Stage::DownloadFiles) {
+        if(g_systemOta.sentStage != stage && !g_networkPending &&
+           queueBackgroundNetwork(BackgroundNetworkKind::SystemOtaStage, "")) {
+            g_systemOta.sentStage = stage;
+        }
+    } else if(stage == Stage::LocalConnect) {
+        if(isLinkOnline() && (g_systemOta.sentStage != stage || now - g_systemOta.lastProbeAt >= 2000)) {
+            sendAction("ota_status");
+            g_systemOta.sentStage = stage;
+            g_systemOta.lastProbeAt = now;
+        }
+    } else if(stage == Stage::LegacyControllerUpdate) {
+        if(!g_systemOta.legacyUpdateSent) {
+            const bool wifiSent = sendControllerWifiConfigIfAvailable();
+            const bool otaSent = sendAction("ota_manifest_reboot", "latest");
+            if(!otaSent) {
+                finishSystemOta(false, "Could not start legacy controller update");
+                return;
+            }
+            g_systemOta.legacyUpdateSent = true;
+            g_systemOta.sentStage = stage;
+            g_systemOta.lastProbeAt = now;
+            g_systemOta.detail = wifiSent ? "Legacy controller downloading over Wi-Fi"
+                                          : "Legacy controller update requested";
+        } else if(isLinkOnline() && now - g_systemOta.lastProbeAt >= 2000) {
+            sendAction("ota_status");
+            g_systemOta.lastProbeAt = now;
+        }
+    } else if(stage == Stage::ControllerTransfer) {
+        if(g_systemOta.transferSession == 0) {
+            g_systemOta.transferSession = static_cast<uint16_t>((esp_random() & 0xFFFFU) | 1U);
+            g_systemOta.transferOffset = 0;
+            g_systemOta.transferPhase = 0;
+            g_systemOta.transferRetries = 0;
+            g_systemOta.transferAwaitingAck = false;
+        }
+        serviceSystemOtaTransfer(now);
+    } else if(stage == Stage::ControllerVerify) {
+        if(g_systemOta.sentStage != stage || now - g_systemOta.lastProbeAt >= 2000) {
+            if(isLinkOnline()) sendAction("ota_status");
+            g_systemOta.sentStage = stage;
+            g_systemOta.lastProbeAt = now;
+        }
+    } else if(stage == Stage::RemoteInstall) {
+        g_systemOta.remoteInstallRequested = true;
+    }
+}
+
+void serviceSystemRemoteInstall() {
+    if(!g_systemOta.remoteInstallRequested || !g_systemOta.flow.controllerVerified) return;
+    g_systemOta.remoteInstallRequested = false;
+    const auto& spec = g_systemOta.remoteManifest;
+    // Both images were already downloaded and hash-verified before Wi-Fi was released.
+    if(!g_statePrefsReady || g_statePrefs.putString("sysVersion", spec.version) == 0 ||
+       g_statePrefs.putString("sysSha", spec.gitSha) == 0 ||
+       g_statePrefs.putUChar("sysTransport", static_cast<uint8_t>(g_systemOta.previousTransport)) == 0 ||
+       g_statePrefs.putBool("sysOverride", g_systemOta.previousOverride) == 0 ||
+       g_statePrefs.putBool("sysPending", true) == 0) {
+        finishSystemOta(false, "Could not save remote verification state");
+        return;
+    }
+    String message;
+    if(!setOtaBootPartition("next", &message)) { finishSystemOta(false, message); return; }
+    Serial.printf("[system_ota] staged remote selected; %s; rebooting\n", message.c_str());
+    delay(150);
+    Serial.flush();
+    ESP.restart();
+}
+
 String actionFeedbackLabel(const SettingItem& item) {
     if(item.action == nullptr) {
         if(isGaugeSetItem(item)) {
@@ -10846,6 +11566,7 @@ void runConfirmAction(const SettingItem& item) {
     if(item.action == nullptr) {
         return;
     }
+    if(strcmp(item.action, "system_ota") == 0) { confirmSystemOta(); return; }
 
     if(strcmp(item.action, "about") == 0) {
         setToast(sg98_version::buildId(), 2600);
@@ -11289,14 +12010,8 @@ void triggerRunAction() {
 
 void handlePrimaryShortPress() {
     if(app.screen == Screen::About && !app.editing) {
-        if(controllerOtaReady()) {
-            confirmControllerOtaReady();
-            return;
-        }
-        if(remoteOtaUpdateAvailable()) {
-            confirmRemoteOtaUpdate();
-            return;
-        }
+        confirmSystemOta();
+        return;
     }
 
     if(app.screen == Screen::Profiler && !app.editing) {
@@ -11378,6 +12093,7 @@ void clearWakePin(int8_t gpioNum) {
 }
 
 bool idleSleepAllowed() {
+    if(systemOtaBusy()) return false;
     if(remote_config::kDisableIdleSleepForTesting) {
         return false;
     }
@@ -12028,14 +12744,10 @@ void handleTouchTap(int16_t x, int16_t y) {
     rememberTouchTap(x, y);
 
     if(app.screen == Screen::About && !app.editing) {
-        if(controllerOtaReady()) {
-            confirmControllerOtaReady();
-            return;
-        }
-        if(remoteOtaUpdateAvailable()) {
-            confirmRemoteOtaUpdate();
-            return;
-        }
+        const Layout layout = buildLayout();
+        if(useRoundNavigation() && handleRoundNavTouch(x, y)) return;
+        confirmSystemOta();
+        return;
     }
 
     if(useRoundNavigation()) {
@@ -12553,6 +13265,27 @@ void appendRemoteStatusJson(String& out) {
     out += sg98_version::dirty() ? "true" : "false";
     out += ",\"buildEnv\":";
     appendJsonQuoted(out, sg98_version::buildEnv());
+    out += ",\"systemOta\":{\"stage\":";
+    appendJsonQuoted(out, sg98_system_ota::label(g_systemOta.flow.stage));
+    out += ",\"busy\":";
+    out += systemOtaBusy() ? "true" : "false";
+    out += ",\"controllerVerified\":";
+    out += g_systemOta.flow.controllerVerified ? "true" : "false";
+    out += ",\"controllerVersion\":";
+    appendJsonQuoted(out, g_systemOta.controllerVersion);
+    out += ",\"controllerGitSha\":";
+    appendJsonQuoted(out, g_systemOta.controllerSha);
+    out += ",\"controllerUi\":";
+    appendJsonQuoted(out, g_systemOta.controllerUi);
+    out += ",\"controllerHasLocalUi\":";
+    out += g_systemOta.controllerLocalUi ? "true" : "false";
+    out += ",\"detail\":";
+    appendJsonQuoted(out, g_systemOta.detail);
+    out += ",\"armed\":";
+    out += dangerIsArmed(Screen::About, 2) ? "true" : "false";
+    out += ",\"legacyControllerOtaBusy\":";
+    out += controllerOtaActionBusy() ? "true" : "false";
+    out += '}';
     out += ",\"ota\":{\"checked\":";
     out += app.otaUpdate.checked ? "true" : "false";
     out += ",\"lastAttemptOk\":";
@@ -13804,6 +14537,15 @@ bool runVoiceCommand(String* message, bool showToast) {
 bool remoteConsoleRunAction(String commandLine, String* message) {
     String action = takeToken(&commandLine);
     action.toLowerCase();
+    if(systemOtaBusy() && action != "stop") {
+        if(message != nullptr) *message = "system update running";
+        return false;
+    }
+    if(action == "system_ota") {
+        confirmSystemOta();
+        if(message != nullptr) *message = systemOtaBusy() ? "system update started" : "system update confirmation";
+        return true;
+    }
 
     if(action == "start" || action == "stop" || action == "idle" || action == "idle_gbw" || action == "calibrate") {
         PendingActionKind kind = PendingActionKind::None;
@@ -14063,7 +14805,7 @@ void remoteConsoleTraceFrame(const char* direction, const String& frame) {
     out += ",\"transport\":";
     appendJsonQuoted(out, transportName(app.currentTransport));
     out += ",\"frame\":";
-    appendJsonQuoted(out, frame);
+    appendJsonQuoted(out, frame.startsWith("WIFI|") ? String("WIFI|[redacted]") : frame);
     out += '}';
     Serial.println(out);
 }
@@ -14540,6 +15282,28 @@ void remote_app_setup() {
     LinkTransport startupTransport = initialTransport();
     restorePersistentSnapshot(&startupTransport);
     restoreSleepSnapshot(&startupTransport);
+    if(g_statePrefsReady && g_statePrefs.getBool("sysPending", false)) {
+        g_systemOta.expectedVersion = g_statePrefs.getString("sysVersion", "");
+        g_systemOta.expectedSha = g_statePrefs.getString("sysSha", "");
+        const uint8_t transport = g_statePrefs.getUChar("sysTransport", static_cast<uint8_t>(startupTransport));
+        if(transport == static_cast<uint8_t>(LinkTransport::EspNow) || transport == static_cast<uint8_t>(LinkTransport::WebSocket)) {
+            startupTransport = static_cast<LinkTransport>(transport);
+        }
+        g_systemOta.previousTransport = startupTransport;
+        g_systemOta.previousOverride = g_statePrefs.getBool("sysOverride", false);
+        app.screen = Screen::About;
+        if(g_systemOta.expectedVersion == sg98_version::release() &&
+           systemOtaShaMatches(g_systemOta.expectedSha, sg98_version::gitSha())) {
+            g_systemOta.flow.enter(sg98_system_ota::Stage::ControllerVerify, millis());
+            g_systemOta.remoteBootVerificationPending = true;
+            g_systemOta.detail = "Remote verified; reconnecting controller";
+            app.transportOverrideActive = true;
+        } else {
+            g_systemOta.flow.enter(sg98_system_ota::Stage::Failed, millis());
+            g_systemOta.detail = "Remote release verification failed";
+            g_statePrefs.remove("sysPending");
+        }
+    }
     refreshBatteryStatus(true);
     applyCurrentBacklightLevel(true);
 
@@ -14559,6 +15323,10 @@ void remote_app_setup() {
 }
 
 void remote_app_loop() {
+    if(g_systemOta.remoteInstallRequested) {
+        serviceSystemRemoteInstall();
+        return;
+    }
     if(g_remoteOtaRequested) {
         // Run TLS/flash work after the input callback returns, on a fresh loop frame.
         serviceRemoteOtaUpdate();
@@ -14595,6 +15363,25 @@ void remote_app_loop() {
         input.dialDelta != 0 || input.primaryPressed || input.primaryLongPress || input.primaryShortPress ||
         input.secondaryPressed || input.secondaryLongPress || input.secondaryShortPress ||
         input.touch.pressed || input.touch.justPressed || input.touch.justReleased;
+    const bool revealEligible = !systemOtaBusy() && !controllerOtaActionBusy() &&
+                                app.flashUntil <= now && app.screen == Screen::Home && !app.editing &&
+                                !app.targetDirty && !pendingControllerSyncActive() && app.hasControllerStatus &&
+                                (app.controllerStatus.state == "IDLE" || app.controllerStatus.state == "IDLE_GBW");
+    const bool revealWasActive = g_connectionReveal.active;
+    const bool freshStatus = app.lastStatusAt != 0 && now - app.lastStatusAt < remote_config::kLinkTimeoutMs;
+    if(g_connectionReveal.observe(freshStatus, revealEligible && !hasControlInput, now)) {
+        if(app.localUiSounds != 0) remote_audio_play(RemoteAudioTone::Reveal);
+        app.redraw = true;
+    }
+    g_connectionReveal.service(revealEligible, hasControlInput, now);
+    if(g_connectionReveal.active && now - g_connectionRevealLastFrame >= 40) {
+        g_connectionRevealLastFrame = now;
+        app.redraw = true;
+    }
+    if(revealWasActive && !g_connectionReveal.active) {
+        remote_audio_cancel_reveal();
+        app.redraw = true;
+    }
     if(app.dockClockActive && hasControlInput) {
         exitDockClock();
         markUserActivity(now);
@@ -14608,7 +15395,9 @@ void remote_app_loop() {
         input.secondaryLongPress = false;
         input.touch = {};
     }
-    if(controllerOtaActionBusy() && hasControlInput) {
+    const bool systemOtaConfirmationArmed =
+        app.screen == Screen::About && dangerIsArmed(Screen::About, 2);
+    if((systemOtaBusy() || (controllerOtaActionBusy() && !systemOtaConfirmationArmed)) && hasControlInput) {
         markUserActivity(now);
         app.lastControlActivityAt = now;
         input.dialDelta = 0;
@@ -14619,7 +15408,7 @@ void remote_app_loop() {
         input.secondaryShortPress = false;
         input.secondaryLongPress = false;
         input.touch = {};
-        setToast("Controller OTA running", 900);
+        setToast(systemOtaBusy() ? "System update running" : "Controller OTA running", 900);
     }
     if(hasControlInput) {
         app.lastControlActivityAt = now;
@@ -14686,9 +15475,9 @@ void remote_app_loop() {
     sectionStartUs = traceLoopStep("weather_sync", sectionStartUs, loopStartUs, input);
     serviceFirmwareUpdateCheck(now);
     sectionStartUs = traceLoopStep("ota_check", sectionStartUs, loopStartUs, input);
-    serviceDockClock(now);
+    if(!systemOtaBusy()) serviceDockClock(now);
     sectionStartUs = traceLoopStep("dock_clock", sectionStartUs, loopStartUs, input);
-    const bool yieldTransport = shouldYieldTransportToUi();
+    const bool yieldTransport = !systemOtaBusy() && shouldYieldTransportToUi();
     if(!kDisableTransportPerfTest && !yieldTransport) {
         const uint32_t transportServiceInterval = currentTransportServiceIntervalMs();
         const uint32_t pollingServiceInterval = currentPollingServiceIntervalMs();
@@ -14724,6 +15513,7 @@ void remote_app_loop() {
         refreshBatteryStatus(false);
         sectionStartUs = traceLoopStep("battery_yield", sectionStartUs, loopStartUs, input);
     }
+    serviceSystemOta();
     remote_board_apply_indicator(currentIndicator());
     sectionStartUs = traceLoopStep("indicator", sectionStartUs, loopStartUs, input);
     updateHomeWheelAnimation();

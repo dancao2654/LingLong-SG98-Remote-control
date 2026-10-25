@@ -15,6 +15,7 @@
 #include "burr_gap.h"
 #include "comm.h"
 #include "controller_env.h"
+#include "controller_ota.h"
 #include "gbw.h"
 #include "io.h"
 #include "main.h"
@@ -1824,7 +1825,9 @@ void syncAboutInfo() {
 
     lv_label_set_text(ui.detailMeta, "");
     setHidden(ui.detailMeta, true);
-    lv_label_set_text(ui.detailHint, "Start / encoder: back");
+    lv_label_set_text(ui.detailHint, controller_ota_local_armed()
+                                       ? "Encoder: confirm update | Start: back"
+                                       : "Encoder: update | Start: back");
     lv_obj_set_style_text_color(ui.detailHint, lvColor(kColorMuted), 0);
     setHidden(ui.detailHint, false);
 }

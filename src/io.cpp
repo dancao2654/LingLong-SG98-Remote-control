@@ -1,6 +1,7 @@
 #include "definitions.h"
 #include "burr_gap.h"
 #include "controller_board.h"
+#include "controller_ota.h"
 #include "io.h"
 #include "main.h"
 #include <math.h>
@@ -930,9 +931,17 @@ void do_io() {
             disp_updateRequired = true;
         }
 
-        if(START_BUTTON() == true || ENC_BUTTON_DOWN() == true) {
+        if(START_BUTTON() == true) {
+            controller_ota_local_cancel();
             state = state == NETWORK_INFO ? networkInfoReturnState : aboutInfoReturnState;
             disp_updateRequired = true;
+        } else if(ENC_BUTTON_DOWN() == true) {
+            if(state == ABOUT_INFO) {
+                controller_ota_local_confirm();
+            } else {
+                state = networkInfoReturnState;
+                disp_updateRequired = true;
+            }
         }
     }
 

@@ -12,3 +12,7 @@ String controller_ota_ready_detail();
 void controller_ota_clear_ready();
 bool controller_ota_mark_ready_bootable(String* message);
 bool controller_ota_invalidate_inactive_slot(String* message);
+bool controller_ota_local_armed();
+void controller_ota_local_confirm();
+void controller_ota_local_cancel();
+bool controller_ota_service_local_update();

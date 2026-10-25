@@ -812,6 +812,10 @@ void apiPrintDevice() {
     jsonPrintQuoted(controller_board_target_name());
     Serial.print(",\"board\":");
     jsonPrintQuoted(controller_board_display_name());
+    Serial.print(",\"controllerUi\":");
+    jsonPrintQuoted(controller_board_has_display() ? "full" : "headless");
+    Serial.print(",\"hasLocalSettingsUi\":");
+    Serial.print(controller_board_has_local_settings_ui() ? "true" : "false");
     const ControllerBoardBurrGapInput& burrGapInput = controller_board_burr_gap_input();
     const bool hasBurrGapInput = controller_board_has_burr_gap_input();
     Serial.print(",\"burrGapInput\":{\"enabled\":");
@@ -3361,6 +3365,14 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
         ok = apiActionAbout(&rawMessage);
     } else if(strcmp(action, "reset_defaults") == 0) {
         ok = apiActionResetDefaults(arg0, &rawMessage);
+    } else if(strcmp(action, "ota_status") == 0) {
+        dynamicMessage = String("ota state ") + sg98_version::release() + " " +
+                         sg98_version::gitSha() + " " + sg98_version::buildEnv() + " " +
+                         (controller_board_has_display() ? "full" : "headless") + " " +
+                         (controller_board_has_local_settings_ui() ? "local" : "remote") + " " +
+                         (apiCanStartOta() && motor_setRPM == 0 ? "idle" : "busy") + " local-push";
+        rawMessage = dynamicMessage.c_str();
+        ok = true;
     } else if(strcmp(action, "ota_check") == 0) {
         if(!apiCanStartOta()) {
             rawMessage = "ota requires idle/menu state";

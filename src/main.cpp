@@ -557,6 +557,7 @@ void setup() {
 }
 
 void loop() { 
+    if(controller_ota_service_local_update()) return;
     doVitals();
     burr_gap_poll();
     do_io();

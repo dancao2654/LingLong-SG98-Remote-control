@@ -13,6 +13,10 @@ inline String latestManifestUrl() {
     return String(kPublicOtaBaseUrl) + sg98_version::buildEnv() + "/sg98-ota-manifest.json";
 }
 
+inline String controllerManifestUrl() {
+    return String(kPublicOtaBaseUrl) + "controller-universal-s3/sg98-ota-manifest.json";
+}
+
 inline bool isLatestToken(const String& token) {
     return token.length() == 0 || token == "latest" || token == "public" || token == "default";
 }

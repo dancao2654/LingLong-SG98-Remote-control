@@ -238,7 +238,7 @@ String otaCheckMessage() {
     if(g_otaUpdate.checked) {
         return g_otaUpdate.updateAvailable
                    ? String("update available ") + sg98_ota_update::latestLabel(g_otaUpdate)
-                   : String("current");
+                   : String("current ") + sg98_ota_update::latestLabel(g_otaUpdate);
     }
     return g_otaUpdate.message.length() > 0 ? g_otaUpdate.message : String("check failed");
 }
