@@ -200,6 +200,7 @@ const char* profileText(CommProfile profile) {
         case COMM_PROFILE_RT: return "RT";
         case COMM_PROFILE_KRS: return "KRS";
         case COMM_PROFILE_SEW_MOVILINK: return "SEW";
+        case COMM_PROFILE_TSE: return "TSE";
     }
     return "UNK";
 }
@@ -364,6 +365,7 @@ const char* rpmSourceText(uint8_t source) {
         case ERROR_HISTORY_MOTOR_RPM_SRC_RT_1301: return "RT1301";
         case ERROR_HISTORY_MOTOR_RPM_SRC_KRS_DN008: return "KRS";
         case ERROR_HISTORY_MOTOR_RPM_SRC_SEW_PI2: return "SEWPI2";
+        case ERROR_HISTORY_MOTOR_RPM_SRC_TSE_1000: return "TSE1000";
     }
     return "UNK";
 }
@@ -1582,6 +1584,8 @@ bool apiActionDrive(const char* mode, const char** message) {
         motor_force_drive_type(DRIVE_TYPE_KRS_XB130AEA20025_SHL, true);
     } else if(strcmp(mode, "sew") == 0 || strcmp(mode, "sew-movilink") == 0 || strcmp(mode, "movilink") == 0) {
         motor_force_drive_type(DRIVE_TYPE_SEW_MOVILINK, true);
+    } else if(strcmp(mode, "tse") == 0) {
+        motor_force_drive_type(DRIVE_TYPE_TSE, true);
     } else {
         *message = "invalid drive mode";
         return false;
@@ -1895,7 +1899,7 @@ void printHelp() {
     Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
     Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota check [url|latest] | api ota download_if_available [url|latest] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|jmc_baud <baud>|reset_network|reset_defaults confirm|ota_check [latest]|ota_download_if_available [latest]|ota_manifest [latest]|ota_apply_ready_reboot>");
+    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|drive tse|jmc_baud <baud>|reset_network|reset_defaults confirm|ota_check [latest]|ota_download_if_available [latest]|ota_manifest [latest]|ota_apply_ready_reboot>");
 }
 
 void printStatus() {
@@ -1951,7 +1955,7 @@ void forceIdleMode(States nextState) {
 void printProbeReport() {
     const MotorProbeReport report = motor_run_probe_report();
     Serial.printf(
-        "[diag] probe jmc_6041=%s jmc_1010=%s jmc_6040w=%s jmc_baud=%lu rt_1300=%s krs20=%s xb130_20=%s sew_3pd=%s sew_addr=%u active_drive=%s active_uart=%s rs485_port=%s\n",
+        "[diag] probe jmc_6041=%s jmc_1010=%s jmc_6040w=%s jmc_baud=%lu rt_1300=%s krs20=%s xb130_20=%s sew_3pd=%s sew_addr=%u tse=%s active_drive=%s active_uart=%s rs485_port=%s\n",
         report.jmc_status_word ? "ok" : "no",
         report.jmc_magic_word ? "ok" : "no",
         report.jmc_control_word ? "ok" : "no",
@@ -1961,6 +1965,7 @@ void printProbeReport() {
         report.krs_xb130aea20025_shl_motor_code ? "ok" : "no",
         report.sew_movilink_3pd ? "ok" : "no",
         static_cast<unsigned>(report.sew_movilink_address),
+        report.tse_signature ? "ok" : "no",
         motor_get_type_label(),
         comm_get_profile_label(),
         comm_get_rs485_port_label(comm_get_rs485_port())
@@ -2180,6 +2185,7 @@ void dumpErrorHistory(bool toSerial, bool toBle) {
                 if(detectedType == DRIVE_TYPE_KRS_130ST_M07725) detectedLabel = "KRS";
                 if(detectedType == DRIVE_TYPE_KRS_XB130AEA20025_SHL) detectedLabel = "XB130";
                 if(detectedType == DRIVE_TYPE_SEW_MOVILINK) detectedLabel = "SEW";
+                if(detectedType == DRIVE_TYPE_TSE) detectedLabel = "TSE";
                 const uint8_t sewAddress = static_cast<uint8_t>((entry.value >> 24) & 0xFFU);
                 snprintf(line,
                          sizeof(line),
@@ -2365,6 +2371,11 @@ bool parseUnsignedToken(const char* token, uint32_t* value) {
 bool parseProfileToken(const char* token, CommProfile* profile) {
     if(token == nullptr || profile == nullptr) {
         return false;
+    }
+
+    if(strcmp(token, "tse") == 0 || strcmp(token, "TSE") == 0) {
+        *profile = COMM_PROFILE_TSE;
+        return true;
     }
 
     if(strcmp(token, "j") == 0 || strcmp(token, "J") == 0 || strcmp(token, "jmc") == 0 || strcmp(token, "JMC") == 0) {

@@ -335,6 +335,7 @@ enum class PendingActionKind : uint8_t {
     DriveKrs,
     DriveXb130,
     DriveSew,
+    DriveTse,
     JmcBaud,
     ResetDefaults,
 };
@@ -681,6 +682,7 @@ constexpr SettingItem kDriveItems[] = {
     {"Force KRS", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "krs"},
     {"Force XB130", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "xb130"},
     {"Force SEW", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "sew"},
+    {"Force TSE", ItemKind::Action, 0, 0, 0, 0, 0, "", "drive", "tse"},
     {"JMC 9600", ItemKind::Action, 0, 0, 0, 0, 0, "", "jmc_baud", "9600"},
     {"JMC 19200", ItemKind::Action, 0, 0, 0, 0, 0, "", "jmc_baud", "19200"},
     {"JMC 38400", ItemKind::Action, 0, 0, 0, 0, 0, "", "jmc_baud", "38400"},
@@ -776,6 +778,7 @@ enum LocalDriveSelection : int32_t {
     LOCAL_DRIVE_KRS = 3,
     LOCAL_DRIVE_XB130 = 4,
     LOCAL_DRIVE_SEW = 5,
+    LOCAL_DRIVE_TSE = 6,
 };
 
 bool useRoundNavigation();
@@ -2927,6 +2930,7 @@ LocalDriveSelection sanitizeLocalDriveSelection(int32_t value) {
         case LOCAL_DRIVE_KRS: return LOCAL_DRIVE_KRS;
         case LOCAL_DRIVE_XB130: return LOCAL_DRIVE_XB130;
         case LOCAL_DRIVE_SEW: return LOCAL_DRIVE_SEW;
+        case LOCAL_DRIVE_TSE: return LOCAL_DRIVE_TSE;
         case LOCAL_DRIVE_AUTO:
         default:
             return LOCAL_DRIVE_AUTO;
@@ -2948,6 +2952,7 @@ String localDriveSelectionLabel(LocalDriveSelection selection) {
         case LOCAL_DRIVE_KRS: return "KRS130ST";
         case LOCAL_DRIVE_XB130: return "XB130";
         case LOCAL_DRIVE_SEW: return "SEW";
+        case LOCAL_DRIVE_TSE: return "TSE";
         case LOCAL_DRIVE_AUTO:
         default:
             return "AUTO";
@@ -2960,6 +2965,12 @@ bool forcedDriveForArg(const char* arg,
                        const char** expectedLabel) {
     if(arg == nullptr) {
         return false;
+    }
+    if(strcmp(arg, "tse") == 0) {
+        if(selection != nullptr) *selection = LOCAL_DRIVE_TSE;
+        if(pendingKind != nullptr) *pendingKind = PendingActionKind::DriveTse;
+        if(expectedLabel != nullptr) *expectedLabel = "TSE";
+        return true;
     }
     if(strcmp(arg, "jmc") == 0) {
         if(selection != nullptr) *selection = LOCAL_DRIVE_JMC;
@@ -9451,7 +9462,8 @@ const char* pendingActionName(PendingActionKind kind) {
         case PendingActionKind::DriveRt:
         case PendingActionKind::DriveKrs:
         case PendingActionKind::DriveXb130:
-        case PendingActionKind::DriveSew: return "drive";
+        case PendingActionKind::DriveSew:
+        case PendingActionKind::DriveTse: return "drive";
         case PendingActionKind::JmcBaud: return "jmc_baud";
         case PendingActionKind::ResetDefaults: return "reset_defaults";
         case PendingActionKind::None:
@@ -13533,7 +13545,7 @@ void printRemoteConsoleHelp() {
     Serial.println("[remote-diag] api: api ota check [url|latest]");
     Serial.println("[remote-diag] UI input: api ui primary_short|primary_long|secondary_short|dial <-20..20>");
     Serial.println("[remote-diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
-    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep|voice>");
+    Serial.println("[remote-diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|drive tse|jmc_baud <baud>|controller_ota|controller_ota_check|controller_ota_download|controller_ota_apply|reset_network|reset_defaults confirm|peer_scan|peer_clear|ws_scan|audio_probe|audio_click|audio_swipe|audio_sweep|voice>");
     Serial.println("[remote-diag] transport: transport <ws|espnow|auto>");
     Serial.println("[remote-diag] voice: voice status | voice url <http://host:port/command> | voice clear | voice test");
     Serial.println("[remote-diag] peers: peer scan | peer list | peer lock <MAC> | peer clear");
@@ -13868,7 +13880,7 @@ bool remoteConsoleRunAction(String commandLine, String* message) {
             return ok;
         }
         if(message != nullptr) {
-            *message = "usage: drive auto|jmc|rt|krs|xb130|sew";
+            *message = "usage: drive auto|jmc|rt|krs|xb130|sew|tse";
         }
         return false;
     }

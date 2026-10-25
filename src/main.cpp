@@ -340,6 +340,8 @@ uint8_t motorStartWatchdogRpmSource() {
             return ERROR_HISTORY_MOTOR_RPM_SRC_KRS_DN008;
         case DRIVE_TYPE_SEW_MOVILINK:
             return ERROR_HISTORY_MOTOR_RPM_SRC_SEW_PI2;
+        case DRIVE_TYPE_TSE:
+            return ERROR_HISTORY_MOTOR_RPM_SRC_TSE_1000;
         case DRIVE_TYPE_UNKNOWN:
         default:
             return 0;

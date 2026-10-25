@@ -11,6 +11,7 @@
 #include "RT/motorcontrol_rt.h"
 #include "KRS/motorcontrol_krs_130st_m07725.h"
 #include "SEW/motorcontrol_sew_movilink.h"
+#include "TSE/motorcontrol_tse.h"
 #include "pdata.h"
 
 int16_t motor_setRPM = 0;
@@ -73,7 +74,15 @@ const MotorCommandDescriptor SEW_MOVILINK_COMMANDS[] = {
     {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the signed MOVILINK speed setpoint."},
 };
 
+const MotorCommandDescriptor TSE_COMMANDS[] = {
+    {MOTOR_COMMAND_SET_RPM, MOTOR_MENU_NONE, MOTOR_MENU_NONE, 1, true, "Set RPM", "rpm", "TSE signed internal speed 1.", "Limited to 3000 rpm; commission the drive before running."},
+    {MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 1, true, "Motor torque", "%", "TSE signed CCW/CW torque limits.", "Runtime changes use volatile PA addresses, not EEPROM."},
+    {MOTOR_COMMAND_RAMP_LEVEL, 1, static_cast<uint8_t>(SETMOTORRAMP), 1, false, "Motor ramp", "lvl", "Shared ramp levels are not mapped for TSE.", "Set PA40/41 on the drive; leave existing tuning intact."},
+    {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Reversed flips the signed speed command."},
+};
+
 const MotorDescriptor MOTOR_DESCRIPTORS[] = {
+    // Keep AUTO first: findMotorDescriptor uses entry zero as its fallback.
     {
         DRIVE_TYPE_UNKNOWN,
         "auto",
@@ -157,6 +166,20 @@ const MotorDescriptor MOTOR_DESCRIPTORS[] = {
         SEW_MOVILINK_COMMANDS,
         static_cast<uint8_t>(sizeof(SEW_MOVILINK_COMMANDS) / sizeof(SEW_MOVILINK_COMMANDS[0])),
         &MOTOR_BACKEND_SEW_MOVILINK,
+    },
+    {
+        DRIVE_TYPE_TSE,
+        "tse",
+        "TSE",
+        "TSE family 1 kW speed-mode profile (KFM uses the family manual).",
+        "9600 8N2, slave 1. Requires software-enable commissioning; see Documentation/TSE-Servo-Setup.md.",
+        COMM_PROFILE_TSE,
+        3000,
+        100,
+        35,
+        TSE_COMMANDS,
+        static_cast<uint8_t>(sizeof(TSE_COMMANDS) / sizeof(TSE_COMMANDS[0])),
+        &MOTOR_BACKEND_TSE,
     },
 };
 
@@ -424,6 +447,7 @@ uint32_t packProbeLogValue(const MotorProbeReport& report,
     if(report.krs_130st_m07725_motor_code) value |= (1UL << 4);
     if(report.krs_xb130aea20025_shl_motor_code) value |= (1UL << 5);
     if(report.sew_movilink_3pd) value |= (1UL << 6);
+    if(report.tse_signature) value |= (1UL << 7);
     value |= (static_cast<uint32_t>(detectedType) & 0xFFUL) << 8;
     value |= (static_cast<uint32_t>(report.sew_movilink_address) & 0xFFUL) << 24;
     if(report.jmc_baud == 9600) value |= (1UL << 16);

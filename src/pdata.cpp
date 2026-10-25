@@ -43,6 +43,7 @@ int16_t sanitize_drive_type(int16_t drive_type) {
         case DRIVE_TYPE_KRS_130ST_M07725:
         case DRIVE_TYPE_KRS_XB130AEA20025_SHL:
         case DRIVE_TYPE_SEW_MOVILINK:
+        case DRIVE_TYPE_TSE:
             return drive_type;
         default:
             return DEFAULT_DRIVE_TYPE;

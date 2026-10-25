@@ -105,6 +105,8 @@ uint32_t baudRateForProfile(CommProfile profile) {
       return COMM_BAUD_RATE_SEW_MOVILINK;
     case COMM_PROFILE_KRS:
       return COMM_BAUD_RATE_KRS;
+    case COMM_PROFILE_TSE:
+      return COMM_BAUD_RATE_TSE;
     case COMM_PROFILE_RT:
     default:
       return COMM_BAUD_RATE_RT;
@@ -119,6 +121,8 @@ uint32_t serialConfigForProfile(CommProfile profile) {
       return SERIAL_8E1;
     case COMM_PROFILE_KRS:
       return SERIAL_8O1;
+    case COMM_PROFILE_TSE:
+      return SERIAL_8N2;
     case COMM_PROFILE_RT:
     default:
       return SERIAL_8N1;
@@ -618,6 +622,8 @@ const char* comm_get_profile_label() {
       }
     case COMM_PROFILE_KRS:
       return "9600-8O1";
+    case COMM_PROFILE_TSE:
+      return "9600-8N2";
     case COMM_PROFILE_SEW_MOVILINK:
       return "9600-8E1";
     case COMM_PROFILE_RT:

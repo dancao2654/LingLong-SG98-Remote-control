@@ -293,6 +293,9 @@ void openDriveSelector(States returnState) {
         case DRIVE_TYPE_SEW_MOVILINK:
             motorSelectSelected = MOTOR_SELECT_SEW_MOVILINK;
             break;
+        case DRIVE_TYPE_TSE:
+            motorSelectSelected = MOTOR_SELECT_TSE;
+            break;
         case DRIVE_TYPE_UNKNOWN:
         default:
             motorSelectSelected = MOTOR_SELECT_AUTO;
@@ -320,6 +323,9 @@ void applyDriveSelection() {
             break;
         case MOTOR_SELECT_SEW_MOVILINK:
             motor_force_drive_type(DRIVE_TYPE_SEW_MOVILINK, true);
+            break;
+        case MOTOR_SELECT_TSE:
+            motor_force_drive_type(DRIVE_TYPE_TSE, true);
             break;
         case MOTOR_SELECT_AUTO:
         default:

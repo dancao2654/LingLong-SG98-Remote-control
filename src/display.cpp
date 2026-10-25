@@ -295,6 +295,8 @@ uint32_t getActiveMotorCommBaud() {
       return comm_get_jmc_baud();
     case COMM_PROFILE_KRS:
       return COMM_BAUD_RATE_KRS;
+    case COMM_PROFILE_TSE:
+      return COMM_BAUD_RATE_TSE;
     case COMM_PROFILE_SEW_MOVILINK:
       return COMM_BAUD_RATE_SEW_MOVILINK;
     case COMM_PROFILE_RT:
@@ -1533,6 +1535,7 @@ static const char* getMotorSelectLabel(int idx) {
         case MOTOR_SELECT_KRS_130ST_M07725: return "KRS";
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "XB130";
         case MOTOR_SELECT_SEW_MOVILINK: return "SEW";
+        case MOTOR_SELECT_TSE: return "TSE";
         default: return "";
     }
 }
@@ -1545,6 +1548,7 @@ static const char* getMotorSelectHint(int idx) {
         case MOTOR_SELECT_KRS_130ST_M07725: return "Force KRS 130ST backend";
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "Force XB130 backend";
         case MOTOR_SELECT_SEW_MOVILINK: return "Force SEW MOVILINK backend";
+        case MOTOR_SELECT_TSE: return "Force TSE backend";
         default: return "";
     }
 }

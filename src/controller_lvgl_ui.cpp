@@ -569,6 +569,7 @@ lv_color_t headerMotorColor() {
         case DRIVE_TYPE_KRS_130ST_M07725: return lvColor(kColorWarn);
         case DRIVE_TYPE_KRS_XB130AEA20025_SHL: return lvColor(kColorWarn);
         case DRIVE_TYPE_SEW_MOVILINK: return lvColor(kColorAccent);
+        case DRIVE_TYPE_TSE: return lvColor(kColorGood);
         case DRIVE_TYPE_UNKNOWN:
         default:
             return lvColor(kColorMuted);
@@ -586,6 +587,8 @@ uint32_t headerMotorFillColor() {
             return blendRgb(kColorPanelHi, kColorWarn, 0.54f);
         case DRIVE_TYPE_SEW_MOVILINK:
             return blendRgb(kColorPanelHi, kColorAccent, 0.56f);
+        case DRIVE_TYPE_TSE:
+            return blendRgb(kColorPanelHi, kColorGood, 0.56f);
         case DRIVE_TYPE_UNKNOWN:
         default:
             return blendRgb(kColorPanelHi, kColorAccent, 0.50f);
@@ -830,6 +833,7 @@ const char* motorSelectTitle(int idx) {
         case MOTOR_SELECT_KRS_130ST_M07725: return "KRS";
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "XB130";
         case MOTOR_SELECT_SEW_MOVILINK: return "SEW";
+        case MOTOR_SELECT_TSE: return "TSE";
         default: return "";
     }
 }
@@ -842,6 +846,7 @@ const char* motorSelectHint(int idx) {
         case MOTOR_SELECT_KRS_130ST_M07725: return "Force KRS 130ST";
         case MOTOR_SELECT_KRS_XB130AEA20025_SHL: return "Force XB130";
         case MOTOR_SELECT_SEW_MOVILINK: return "Force SEW";
+        case MOTOR_SELECT_TSE: return "Force TSE";
         default: return "";
     }
 }
