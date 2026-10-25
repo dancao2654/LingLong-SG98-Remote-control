@@ -7,6 +7,7 @@
 #include <driver/gpio.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
+#include <esp_wifi.h>
 
 #include "burr_gap.h"
 #include "controller_board.h"
@@ -1992,6 +1993,11 @@ void printDebugStatus() {
     Serial.print(espnow_control_is_active() ? "true" : "false");
     Serial.print(",\"espnowChannel\":");
     Serial.print(static_cast<unsigned>(espnow_control_channel()));
+    uint8_t hardwareChannel = 0;
+    wifi_second_chan_t secondaryChannel = WIFI_SECOND_CHAN_NONE;
+    (void)esp_wifi_get_channel(&hardwareChannel, &secondaryChannel);
+    Serial.print(",\"espnowHardwareChannel\":");
+    Serial.print(static_cast<unsigned>(hardwareChannel));
     Serial.print(",\"espnowStatus\":");
     jsonPrintQuoted(espnow_control_status_text());
     Serial.print(",\"wsActive\":");
@@ -2000,6 +2006,10 @@ void printDebugStatus() {
     Serial.print(static_cast<unsigned>(WiFi.getMode()));
     Serial.print(",\"wifiStatusCode\":");
     Serial.print(static_cast<int>(WiFi.status()));
+    Serial.print(",\"psramSize\":");
+    Serial.print(static_cast<unsigned long>(ESP.getPsramSize()));
+    Serial.print(",\"freePsram\":");
+    Serial.print(static_cast<unsigned long>(ESP.getFreePsram()));
     Serial.println("}");
 }
 
