@@ -118,23 +118,23 @@
       }
     },
     {
-      "fileName": "SG98-Updater-osx-arm64.zip",
-      "md5FileName": "SG98-Updater-osx-arm64.zip.md5",
+      "fileName": "SG98-Updater-2026.10.25.11-osx-arm64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.11-osx-arm64.zip.md5",
       "runtime": "osx-arm64",
       "role": "controller",
       "envName": "controller-universal-s3",
       "boardName": "controller-universal-s3",
-      "version": "2026.04.28",
-      "gitSha": "90e6795b",
-      "gitDirty": true,
-      "size": 28623960,
-      "sha256": "88d31f6454e33992a6282f33e200c7412f90e8bbc5fb4cb34449502f6d857c25",
-      "md5": "6a682d42553d02795a8a2c170941b998",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 28589567,
+      "sha256": "f3c48f8c767524643c9634384ce4debdca8355621e79caedc9a7aa0d44719d35",
+      "md5": "d9326d8354d2bfc9e13f81180e4a4d12",
       "application": {
         "offset": "0x10000",
         "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "7638b7415ba4432169ae735a89247db1917025a63532a902b2927578b9d42b2a",
-        "size": 2063488
+        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
+        "size": 2056416
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -263,6 +263,35 @@
       }
     },
     {
+      "fileName": "SG98-Updater-2026.10.25.11-osx-x64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.11-osx-x64.zip.md5",
+      "runtime": "osx-x64",
+      "role": "controller",
+      "envName": "controller-universal-s3",
+      "boardName": "controller-universal-s3",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 33442037,
+      "sha256": "cac0730715aca94a305378f90b5740eb0630b0c3910d24a2fda3e37d7460c7c6",
+      "md5": "702fddce564a6e8a0529ed4fd714dc9c",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
+        "size": 2056416
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
       "fileName": "SG98-Updater-2026.10.21.4-win-x64.zip",
       "md5FileName": "SG98-Updater-2026.10.21.4-win-x64.zip.md5",
       "runtime": "win-x64",
@@ -379,23 +408,23 @@
       }
     },
     {
-      "fileName": "SG98-Updater-win-x64.zip",
-      "md5FileName": "SG98-Updater-win-x64.zip.md5",
+      "fileName": "SG98-Updater-2026.10.25.11-win-x64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.11-win-x64.zip.md5",
       "runtime": "win-x64",
       "role": "controller",
       "envName": "controller-universal-s3",
       "boardName": "controller-universal-s3",
-      "version": "2026.04.28",
-      "gitSha": "90e6795b",
-      "gitDirty": true,
-      "size": 45749010,
-      "sha256": "788a3e8f1f86a889e82c1d38f8bd406029419b6995892decb42a663cf8cda5e0",
-      "md5": "bca443ebdd13fcad755a4e0dce15eb01",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 45745824,
+      "sha256": "f412724d8142980c5d563e8115f6963d17d387147184ff07b58d2eced14e65b0",
+      "md5": "d56594fa5c148393f0d82545fd51ba9a",
       "application": {
         "offset": "0x10000",
         "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "7638b7415ba4432169ae735a89247db1917025a63532a902b2927578b9d42b2a",
-        "size": 2063488
+        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
+        "size": 2056416
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -524,23 +553,23 @@
       }
     },
     {
-      "fileName": "SG98-Remote-Updater-osx-arm64.zip",
-      "md5FileName": "SG98-Remote-Updater-osx-arm64.zip.md5",
+      "fileName": "SG98-Remote-Updater-2026.10.25.11-osx-arm64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-osx-arm64.zip.md5",
       "runtime": "osx-arm64",
       "role": "remote",
       "envName": "remote-universal-s3",
       "boardName": "remote-universal-s3",
-      "version": "2026.04.28",
-      "gitSha": "62456ddf",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
       "gitDirty": false,
-      "size": 28608742,
-      "sha256": "f79e1514dfcf493c89318784791bc775d79fa793a0bcb86677bbdcf4cee9a135",
-      "md5": "a380745a260cf16371c634462a7af8a8",
+      "size": 28614088,
+      "sha256": "ce4c6cb46844976f45b5ec29ddeeeed98349e58a257b63eeb4adafe8c64a8e67",
+      "md5": "7a096865932991c7331fee134ec66533",
       "application": {
         "offset": "0x10000",
         "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "c1dc7183953e253d64bca0072d41cb67931075b9c4401f5d51621dce167c2a8c",
-        "size": 2025344
+        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
+        "size": 2112384
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -669,6 +698,35 @@
       }
     },
     {
+      "fileName": "SG98-Remote-Updater-2026.10.25.11-osx-x64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-osx-x64.zip.md5",
+      "runtime": "osx-x64",
+      "role": "remote",
+      "envName": "remote-universal-s3",
+      "boardName": "remote-universal-s3",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 33464531,
+      "sha256": "c779bf6697e3f2485e99c908d5e1d08fae63ac5258a63883913e3bbdad477566",
+      "md5": "0a310fd0cb602028eb15488f92767e27",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
+        "size": 2112384
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
       "fileName": "SG98-Remote-Updater-2026.10.21.4-win-x64.zip",
       "md5FileName": "SG98-Remote-Updater-2026.10.21.4-win-x64.zip.md5",
       "runtime": "win-x64",
@@ -785,23 +843,23 @@
       }
     },
     {
-      "fileName": "SG98-Remote-Updater-win-x64.zip",
-      "md5FileName": "SG98-Remote-Updater-win-x64.zip.md5",
+      "fileName": "SG98-Remote-Updater-2026.10.25.11-win-x64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-win-x64.zip.md5",
       "runtime": "win-x64",
       "role": "remote",
       "envName": "remote-universal-s3",
       "boardName": "remote-universal-s3",
-      "version": "2026.04.28",
-      "gitSha": "62456ddf",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
       "gitDirty": false,
-      "size": 45731027,
-      "sha256": "a1ffde505754cdd77392dd2228a8c5e9b984276c7153faa217757ad71e5a8c8a",
-      "md5": "2d403906ae87ec214befe1f5c9cc92ed",
+      "size": 45765634,
+      "sha256": "d117bc588c89cb5c45ed823f8fea8c240f444002200672e70907e742f2a2795c",
+      "md5": "d0953854da003d4b378b5fb95a8e79e4",
       "application": {
         "offset": "0x10000",
         "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "00f519085e52e701c6db24d3bee5b9cd73ab7226f82a33b323d455631eff73f3",
-        "size": 2025344
+        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
+        "size": 2112384
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -814,7 +872,7 @@
       }
     }
   ],
-  "generatedAtUtc": "2026-10-25T18:31:04Z",
-  "version": "2026.10.25.5",
-  "gitSha": "21c0b30e"
+  "generatedAtUtc": "2026-10-25T22:00:01Z",
+  "version": "2026.10.25.11",
+  "gitSha": "57d274b6"
 }
