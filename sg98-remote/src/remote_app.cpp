@@ -823,6 +823,9 @@ uint8_t g_appliedBacklightLevel = 0;
 bool g_backlightLevelValid = false;
 bool g_consoleStreamEnabled = false;
 bool g_consoleFrameTraceEnabled = false;
+volatile uint32_t g_espNowTxDelivered = 0;
+volatile uint32_t g_espNowTxFailed = 0;
+uint32_t g_espNowTxEnqueueFailed = 0;
 uint32_t g_consoleLastStreamAt = 0;
 char g_consoleLineBuffer[384] = {};
 size_t g_consoleLineLen = 0;
@@ -9350,6 +9353,7 @@ bool sendEspNowFrame(const uint8_t* mac, const String& command) {
     const esp_err_t rc = esp_now_send(mac,
                                       reinterpret_cast<const uint8_t*>(command.c_str()),
                                       command.length() + 1);
+    if(rc != ESP_OK) ++g_espNowTxEnqueueFailed;
     return rc == ESP_OK;
 }
 
@@ -9360,7 +9364,9 @@ bool sendEspNowBytes(const uint8_t* mac, const uint8_t* data, size_t length) {
     if(!ensureEspNowPeer(mac)) return false;
     app.sendComplete = false;
     app.sendOk = false;
-    return esp_now_send(mac, data, length) == ESP_OK;
+    const esp_err_t err = esp_now_send(mac, data, length);
+    if(err != ESP_OK) ++g_espNowTxEnqueueFailed;
+    return err == ESP_OK;
 }
 
 bool sendEspNowRaw(const String& command) {
@@ -10657,6 +10663,11 @@ void onWsEvent(WStype_t type, uint8_t* payload, size_t length) {
 }
 
 void onEspNowSent(const esp_now_send_info_t*, esp_now_send_status_t status) {
+    if(status == ESP_NOW_SEND_SUCCESS) {
+        ++g_espNowTxDelivered;
+    } else {
+        ++g_espNowTxFailed;
+    }
     app.sendOk = (status == ESP_NOW_SEND_SUCCESS);
     app.sendComplete = true;
 }
@@ -10679,7 +10690,14 @@ void onEspNowReceive(const esp_now_recv_info_t*, const uint8_t* data, int len) {
         }
         return;
     }
-    consumeProtocolFrame(String(reinterpret_cast<const char*>(data), static_cast<unsigned int>(len)));
+    size_t textLength = static_cast<size_t>(len);
+    while(textLength > 0 && data[textLength - 1] == '\0') {
+        --textLength;
+    }
+    if(textLength > 0) {
+        consumeProtocolFrame(String(reinterpret_cast<const char*>(data),
+                                    static_cast<unsigned int>(textLength)));
+    }
 }
 
 bool initEspNow(bool preserveWifi) {
@@ -13323,6 +13341,17 @@ void appendRemoteStatusJson(String& out) {
     out += app.espNowReady ? "true" : "false";
     out += ",\"espNowChannel\":";
     out += String(static_cast<unsigned>(app.espNowChannel));
+    uint8_t hardwareChannel = 0;
+    wifi_second_chan_t secondaryChannel = WIFI_SECOND_CHAN_NONE;
+    (void)esp_wifi_get_channel(&hardwareChannel, &secondaryChannel);
+    out += ",\"espNowHardwareChannel\":";
+    out += String(static_cast<unsigned>(hardwareChannel));
+    out += ",\"espNowTxDelivered\":";
+    out += String(static_cast<unsigned long>(g_espNowTxDelivered));
+    out += ",\"espNowTxFailed\":";
+    out += String(static_cast<unsigned long>(g_espNowTxFailed));
+    out += ",\"espNowTxEnqueueFailed\":";
+    out += String(static_cast<unsigned long>(g_espNowTxEnqueueFailed));
     out += ",\"radioMode\":";
     appendJsonQuoted(out, formatValueLabel(kNetworkItems[0], app.menuValues[1][RADIOMODE]));
     out += ",\"radioModeKnown\":";
