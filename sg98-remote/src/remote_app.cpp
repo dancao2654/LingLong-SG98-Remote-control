@@ -775,6 +775,7 @@ struct SystemOtaState {
     uint8_t transferRetries = 0;
     uint8_t transferPhase = 0;
     bool transferAwaitingAck = false;
+    String transferSendError;
 };
 SystemOtaState g_systemOta;
 sg98_connection_reveal::State g_connectionReveal;
@@ -9423,6 +9424,9 @@ void requestEspNowRecoveryHint(bool force) {
 }
 
 void clearOfflineEspNowLockForSearch(uint32_t now) {
+    if(g_systemOta.flow.stage == sg98_system_ota::Stage::ControllerTransfer) {
+        return;
+    }
     if(!app.espNowPeerConfigured || isLinkOnline() ||
        (now - app.lastTransportSwitchAt) < kStaleEspNowLockClearMs) {
         return;
@@ -10892,7 +10896,8 @@ void manageTransport() {
             app.webFallbackWifiReleaseAt = 0;
         }
         clearOfflineEspNowLockForSearch(now);
-        if(app.screen == Screen::EspNowPeers || !hasActiveEspNowPeer() || !isLinkOnline()) {
+        if(g_systemOta.flow.stage != sg98_system_ota::Stage::ControllerTransfer &&
+           (app.screen == Screen::EspNowPeers || !hasActiveEspNowPeer() || !isLinkOnline())) {
             requestEspNowDiscovery(false);
         }
     }
@@ -11255,6 +11260,7 @@ void confirmSystemOta() {
     g_systemOta.transferOffset = 0;
     g_systemOta.transferPhase = 0;
     g_systemOta.transferAwaitingAck = false;
+    g_systemOta.transferSendError = "";
     g_systemOta.controllerLocalPush = false;
     g_systemOta.legacyUpdateSent = false;
     g_systemOta.flow.start(millis());
@@ -11379,16 +11385,24 @@ bool takeSystemOtaAck(sg98_ota_transport::AckFrame* ack) {
 bool sendSystemOtaTransferFrame() {
     using namespace sg98_ota_transport;
     const uint8_t* peer = activeEspNowPeerMac();
-    if(peer == nullptr) return false;
+    if(peer == nullptr) {
+        g_systemOta.transferSendError = "controller peer lost";
+        return false;
+    }
     const uint8_t phase = g_systemOta.transferPhase;
     if(phase == 0) {
         BeginFrame frame;
         frame.header.type = Type::Begin;
         frame.header.session = g_systemOta.transferSession;
         frame.imageSize = g_systemOta.controllerManifest.size;
-        if(!systemOtaParseSha(g_systemOta.controllerManifest.sha256, frame.sha256)) return false;
+        if(!systemOtaParseSha(g_systemOta.controllerManifest.sha256, frame.sha256)) {
+            g_systemOta.transferSendError = "controller checksum invalid";
+            return false;
+        }
         strncpy(frame.release, g_systemOta.controllerManifest.version.c_str(), sizeof(frame.release) - 1);
-        return sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), sizeof(frame));
+        if(sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), sizeof(frame))) return true;
+        g_systemOta.transferSendError = "ESP-NOW begin send failed";
+        return false;
     }
     if(phase == 1) {
         DataFrame frame;
@@ -11400,21 +11414,29 @@ bool sendSystemOtaTransferFrame() {
         const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
         if(partition == nullptr ||
            esp_partition_read(partition, g_systemOta.controllerImageOffset + frame.offset,
-                              frame.data, frame.length) != ESP_OK) return false;
+                              frame.data, frame.length) != ESP_OK) {
+            g_systemOta.transferSendError = "staged controller image unreadable";
+            return false;
+        }
         frame.crc32 = crc32(frame.data, frame.length);
         const size_t length = offsetof(DataFrame, data) + frame.length;
-        return sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), length);
+        if(sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), length)) return true;
+        g_systemOta.transferSendError = "ESP-NOW data send failed";
+        return false;
     }
     ControlFrame frame;
     frame.header.type = phase == 2 ? Type::End : Type::Commit;
     frame.header.session = g_systemOta.transferSession;
-    return sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), sizeof(frame));
+    if(sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), sizeof(frame))) return true;
+    g_systemOta.transferSendError = "ESP-NOW control send failed";
+    return false;
 }
 
 void serviceSystemOtaTransfer(uint32_t now) {
     using namespace sg98_ota_transport;
     AckFrame ack;
     if(takeSystemOtaAck(&ack) && ack.header.session == g_systemOta.transferSession) {
+        app.lastLinkActivityAt = now;
         g_systemOta.transferAwaitingAck = false;
         g_systemOta.transferRetries = 0;
         if(ack.status == Status::Error || ack.status == Status::Busy) {
@@ -11449,7 +11471,7 @@ void serviceSystemOtaTransfer(uint32_t now) {
         g_systemOta.transferAwaitingAck = true;
         g_systemOta.transferSentAt = now;
     } else if(++g_systemOta.transferRetries > 15) {
-        finishSystemOta(false, "Controller transfer unavailable");
+        finishSystemOta(false, String("Controller transfer: ") + g_systemOta.transferSendError);
     }
 }
 
@@ -13303,6 +13325,14 @@ void appendRemoteStatusJson(String& out) {
     out += dangerIsArmed(Screen::About, 2) ? "true" : "false";
     out += ",\"legacyControllerOtaBusy\":";
     out += controllerOtaActionBusy() ? "true" : "false";
+    out += ",\"transferOffset\":";
+    out += String(g_systemOta.transferOffset);
+    out += ",\"transferTotal\":";
+    out += String(g_systemOta.controllerManifest.size);
+    out += ",\"transferRetries\":";
+    out += String(static_cast<unsigned>(g_systemOta.transferRetries));
+    out += ",\"transferPhase\":";
+    out += String(static_cast<unsigned>(g_systemOta.transferPhase));
     out += '}';
     out += ",\"ota\":{\"checked\":";
     out += app.otaUpdate.checked ? "true" : "false";
