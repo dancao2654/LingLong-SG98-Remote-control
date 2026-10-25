@@ -12,6 +12,28 @@ Each updater bundle embeds a full ESP32-S3 flash set:
 
 ## Versioning and Smart Update Mode
 
+### Starting from Terminal on macOS
+
+Extract the ZIP and keep the executable and its `.dylib` files together.
+Choose `osx-arm64` for Apple Silicon and `osx-x64` for Intel. Open Terminal in
+the extracted folder and use the actual filename, including its release version:
+
+```bash
+./SG98-Updater-2026.10.25.1 --help
+```
+
+New bundles include `START-HERE.txt` with exact commands and
+`Launch-Updater.command`; launching that script without arguments shows help
+without flashing. `--help` requires no connected device. `--list` probes serial
+ports. A ZIP file or containing folder is not itself executable, and the current
+folder is not normally on the shell's command search path.
+
+macOS bundles include the .NET runtime, but flashing still requires Python 3
+and esptool. The executable is ad-hoc signed, not Developer ID notarized; a valid
+local signature does not establish that Gatekeeper will accept an Internet
+download. Verify the published SHA-256 before reviewing any macOS security
+warning. Do not disable Gatekeeper globally.
+
 Bundle metadata is generated from the root `VERSION` file plus the git short
 SHA that was used for the firmware build. The embedded `sg98-flash-manifest.json`
 now carries:

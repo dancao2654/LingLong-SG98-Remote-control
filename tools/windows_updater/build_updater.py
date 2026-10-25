@@ -6,11 +6,13 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import platform
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 import sys
+import zipfile
 
 
 def run(cmd: list[str], cwd: Path) -> None:
@@ -163,6 +165,65 @@ def create_release_archive(bundle_root: Path, publish_dir: Path, output_base: st
     return archive_path
 
 
+def prepare_launch_files(publish_dir: Path, output_base: str, rid: str) -> None:
+    executable = output_name_for_rid(output_base, rid)
+    binary = publish_dir / executable
+    if rid.startswith("osx-"):
+        binary.chmod(binary.stat().st_mode | 0o111)
+        launcher = publish_dir / "Launch-Updater.command"
+        # No arguments means help only, never an unattended flash from Finder.
+        launcher.write_text(
+            '#!/bin/sh\nset -eu\n'
+            'cd -- "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"\n'
+            'if [ "$#" -eq 0 ]; then set -- --help; fi\n'
+            f'exec "./{executable}" "$@"\n', encoding="utf-8")
+        launcher.chmod(0o755)
+        commands = (f'./{executable} --help\n'
+                    f'./{executable} --list\n'
+                    f'./{executable} --port /dev/cu.usbmodemXXXX\n')
+        platform_notes = (
+            "Use osx-arm64 for Apple Silicon (M-series); osx-x64 for Intel Macs.\n"
+            "Keep all extracted .dylib files next to the executable.\n"
+            "Run from the extracted folder using ./ before the executable name.\n"
+            "The updater runtime is included; macOS flashing also requires Python 3\n"
+            "and esptool. A missing esptool error is separate from a launch failure.\n"
+            "If macOS blocks the download, verify its published SHA-256 and use\n"
+            "System Settings > Privacy & Security to review the blocked app.\n"
+            "Do not disable Gatekeeper or remove quarantine from unrelated files.\n")
+    else:
+        commands = (f'.\\{executable} --help\n'
+                    f'.\\{executable} --list\n'
+                    f'.\\{executable} --port COM7\n')
+        platform_notes = "Extract the ZIP before running. Use the win-x64 bundle for Windows.\n"
+    (publish_dir / "START-HERE.txt").write_text(
+        "SG98 USB Firmware Updater\n\n"
+        "Disconnect +24V. Connect only the intended SG98 target over USB-C.\n"
+        "Use the controller bundle for a controller, never for a remote.\n\n"
+        + platform_notes + "\nTerminal / PowerShell commands:\n" + commands +
+        "\n--help is safe and does not access the device. --list probes serial ports.\n"
+        "The final command performs an update. Replace the example port first.\n",
+        encoding="utf-8")
+
+
+def validate_archive_launch(archive: Path, output_base: str, rid: str) -> None:
+    prefix = f"{output_base}-{rid}/"
+    executable = prefix + output_name_for_rid(output_base, rid)
+    with zipfile.ZipFile(archive) as bundle:
+        if rid.startswith("osx-") and not ((bundle.getinfo(executable).external_attr >> 16) & 0o111):
+            raise ValueError("macOS updater archive lost executable permissions")
+        if prefix + "START-HERE.txt" not in bundle.namelist():
+            raise ValueError("Updater archive is missing launch instructions")
+        native_rid = "osx-arm64" if platform.machine() == "arm64" else "osx-x64"
+        if sys.platform == "darwin" and rid == native_rid:
+            with tempfile.TemporaryDirectory(prefix="sg98-launch-test-") as directory:
+                run(["unzip", "-q", str(archive.resolve()), "-d", directory], cwd=archive.parent)
+                result = subprocess.run(
+                    [str(Path(directory) / executable), "--help"],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60, check=True)
+                if "Usage:" not in result.stdout:
+                    raise ValueError("Extracted updater failed the --help launch test")
+
+
 def write_md5_file(archive_path: Path) -> Path:
     digest = hashlib.md5(archive_path.read_bytes()).hexdigest()
     md5_path = archive_path.with_name(f"{archive_path.name}.md5")
@@ -294,7 +355,9 @@ def main() -> int:
     )
     output_path = rename_published_outputs(publish_dir, rid, output_base)
     vendor_homebrew_brotli(output_path, cwd=root)
+    prepare_launch_files(publish_dir, output_base, rid)
     archive_path = create_release_archive(bundle_root, publish_dir, output_base, rid, cwd=root)
+    validate_archive_launch(archive_path, output_base, rid)
     md5_path = write_md5_file(archive_path)
     release_manifest_path = update_release_manifest(bundle_root, archive_path, md5_path, rid, manifest)
     print(f"[ok] {output_path}")
