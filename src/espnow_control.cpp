@@ -62,6 +62,8 @@ unsigned long lastGaugeStatusPushAt = 0;
 LatestEspNowEvent pendingStatusEvent;
 LatestEspNowEvent pendingTargetEvent;
 LatestEspNowEvent pendingDiscoveryEvent;
+EspNowEvent pendingOtaEvent = {};
+bool pendingOtaEventValid = false;
 portMUX_TYPE espnowIngressMux = portMUX_INITIALIZER_UNLOCKED;
 
 bool sendFrame(const uint8_t* mac_addr, const String& frame);
@@ -208,11 +210,24 @@ bool takeLatestEvent(LatestEspNowEvent* slot, EspNowEvent* event) {
     return hasEvent;
 }
 
+bool takePendingOtaEvent(EspNowEvent* event) {
+    if(event == nullptr) return false;
+    portENTER_CRITICAL(&espnowIngressMux);
+    const bool available = pendingOtaEventValid;
+    if(available) {
+        *event = pendingOtaEvent;
+        pendingOtaEventValid = false;
+    }
+    portEXIT_CRITICAL(&espnowIngressMux);
+    return available;
+}
+
 void processEvent(const EspNowEvent& event) {
     lastRxAt = millis();
     ++rxCount;
     rememberStatusPeer(event.mac);
     if(sg98_ota_transport::isFrame(event.payload, event.length)) {
+        lastCommandRxAt = lastRxAt;
         sg98_ota_transport::AckFrame ack = {};
         if(controller_ota_transport_handle(event.payload, event.length, &ack)) {
             (void)sendBytes(event.mac, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
@@ -220,6 +235,14 @@ void processEvent(const EspNowEvent& event) {
         return;
     }
     const char* command = reinterpret_cast<const char*>(event.payload);
+    if(controller_ota_transport_active() &&
+       !isGetStatusCommand(command) &&
+       !isDiscoverCommand(command) &&
+       !isGetEnvironmentCommand(command) &&
+       strncmp(command, "GET_MENU=", 9) != 0) {
+        sendFrame(event.mac, sg98_protocol::ack(false, "controller OTA running"));
+        return;
+    }
     const bool wifiCredentials = strncmp(command, "WIFI|", 5) == 0;
     strncpy(lastCommand, wifiCredentials ? "WIFI|[redacted]" : command, sizeof(lastCommand) - 1);
     lastCommand[sizeof(lastCommand) - 1] = '\0';
@@ -298,11 +321,10 @@ void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, 
     event.length = static_cast<uint16_t>(copyLen);
 
     if(sg98_ota_transport::isFrame(event.payload, event.length)) {
-        if(xQueueSend(espnowQueue, &event, 0) != pdPASS) {
-            portENTER_CRITICAL_ISR(&espnowIngressMux);
-            ++dropCount;
-            portEXIT_CRITICAL_ISR(&espnowIngressMux);
-        }
+        portENTER_CRITICAL_ISR(&espnowIngressMux);
+        pendingOtaEvent = event;
+        pendingOtaEventValid = true;
+        portEXIT_CRITICAL_ISR(&espnowIngressMux);
         return;
     }
 
@@ -469,6 +491,7 @@ bool espnow_control_start(bool coexistWithWifi) {
     ingressCount = 0;
     statusIngressCount = 0;
     pendingDiscoveryEvent.valid = false;
+    pendingOtaEventValid = false;
     txDeliveredCount = 0;
     txFailedCount = 0;
     txEnqueueFailedCount = 0;
@@ -520,6 +543,9 @@ void espnow_control_poll() {
     }
 
     EspNowEvent event = {};
+    if(takePendingOtaEvent(&event)) {
+        processEvent(event);
+    }
     const uint8_t queueBudget = controller_is_menu_state(state) ? 1 : ESPNOW_RX_QUEUE_LEN;
     uint8_t processed = 0;
     while(processed < queueBudget && xQueueReceive(espnowQueue, &event, 0) == pdTRUE) {
@@ -542,6 +568,9 @@ void espnow_control_poll() {
 void espnow_control_poll_probe_status() {
     if(!espnowActive || espnowWifiClientActive) return;
     EspNowEvent event = {};
+    if(takePendingOtaEvent(&event)) {
+        processEvent(event);
+    }
     if(takeLatestEvent(&pendingDiscoveryEvent, &event)) {
         processEvent(event);
     }

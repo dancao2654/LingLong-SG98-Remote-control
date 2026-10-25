@@ -4,7 +4,9 @@
 #include "controller_board.h"
 #include "controller_env.h"
 #include "controller_ota.h"
+#include "controller_ota_transport.h"
 #include "display.h"
+#include "espnow_control.h"
 #include "main.h"
 #include "gbw.h"
 #include "diag_console.h"
@@ -558,6 +560,11 @@ void setup() {
 
 void loop() { 
     if(controller_ota_service_local_update()) return;
+    if(controller_ota_transport_active()) {
+        motor_setRPM = 0;
+        espnow_control_poll();
+        return;
+    }
     doVitals();
     burr_gap_poll();
     do_io();

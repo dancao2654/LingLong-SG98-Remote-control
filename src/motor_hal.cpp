@@ -4,6 +4,7 @@
 #include <limits.h>
 
 #include "comm.h"
+#include "controller_ota_transport.h"
 #include "display.h"
 #include "espnow_control.h"
 #include "error_history.h"
@@ -471,11 +472,13 @@ ProbeCycleResult runProbeCycleOnCurrentPort(bool logResult,
     int bestPriority = -1;
 
     for(const MotorDescriptor& descriptor : MOTOR_DESCRIPTORS) {
+        if(controller_ota_transport_active()) break;
         if(descriptor.backend == nullptr || descriptor.backend->api.probe == nullptr) {
             continue;
         }
 
         espnow_control_poll_probe_status();
+        if(controller_ota_transport_active()) break;
 
         ++probeStep;
         if(logResult) {
@@ -536,6 +539,7 @@ ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
     }
 
     for(uint8_t portIndex = 0; portIndex < portCount; ++portIndex) {
+        if(controller_ota_transport_active()) break;
         if(!comm_set_rs485_port(probePorts[portIndex], true) &&
            comm_get_rs485_port() != probePorts[portIndex]) {
             continue;
@@ -550,6 +554,7 @@ ProbeCycleResult runProbeCycle(bool logResult, bool persistDetectedJmcRate) {
 
         const ProbeCycleResult portCycle =
             runProbeCycleOnCurrentPort(logResult, persistDetectedJmcRate, probeStep, probeTotal);
+        if(controller_ota_transport_active()) break;
         if(cycle.detectedType == DRIVE_TYPE_UNKNOWN) {
             cycle = portCycle;
         }

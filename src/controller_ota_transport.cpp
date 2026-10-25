@@ -13,6 +13,8 @@ namespace {
 struct TransferState {
     bool active = false;
     bool shaActive = false;
+    bool verified = false;
+    uint32_t lastActivityAt = 0;
     uint16_t session = 0;
     uint32_t imageSize = 0;
     uint32_t received = 0;
@@ -60,6 +62,7 @@ bool beginTransfer(const sg98_ota_transport::BeginFrame& frame,
     }
     if(g_transfer.active && g_transfer.session == frame.header.session &&
        g_transfer.imageSize == frame.imageSize) {
+        g_transfer.lastActivityAt = millis();
         prepareAck(ack, frame.header, sg98_ota_transport::Status::Accepted, "resume");
         return true;
     }
@@ -76,6 +79,7 @@ bool beginTransfer(const sg98_ota_transport::BeginFrame& frame,
         return true;
     }
     g_transfer.active = true;
+    g_transfer.lastActivityAt = millis();
     g_transfer.session = frame.header.session;
     g_transfer.imageSize = frame.imageSize;
     g_transfer.otaHandle = handle;
@@ -102,6 +106,7 @@ bool receiveData(const sg98_ota_transport::DataFrame& frame,
         prepareAck(ack, frame.header, sg98_ota_transport::Status::Error, "no transfer");
         return true;
     }
+    g_transfer.lastActivityAt = millis();
     const size_t required = offsetof(sg98_ota_transport::DataFrame, data) + frame.length;
     if(frame.length == 0 || frame.length > sizeof(frame.data) || length < required ||
        frame.offset + frame.length > g_transfer.imageSize) {
@@ -133,6 +138,11 @@ bool finishTransfer(const sg98_ota_transport::ControlFrame& frame,
     if(!g_transfer.active || frame.header.session != g_transfer.session ||
        g_transfer.received != g_transfer.imageSize) {
         prepareAck(ack, frame.header, sg98_ota_transport::Status::Error, "image incomplete");
+        return true;
+    }
+    g_transfer.lastActivityAt = millis();
+    if(g_transfer.verified) {
+        prepareAck(ack, frame.header, sg98_ota_transport::Status::Ready, "verified");
         return true;
     }
     uint8_t digest[sg98_ota_transport::kSha256Bytes] = {};
@@ -168,7 +178,7 @@ bool finishTransfer(const sg98_ota_transport::ControlFrame& frame,
         return true;
     }
     prepareAck(ack, frame.header, sg98_ota_transport::Status::Ready, "verified");
-    g_transfer.active = false;
+    g_transfer.verified = true;
     return true;
 }
 
@@ -214,6 +224,10 @@ bool controller_ota_transport_handle(const uint8_t* data,
 }
 
 void controller_ota_transport_service() {
+    if(g_transfer.active && g_restartAt == 0 &&
+       millis() - g_transfer.lastActivityAt > 120000UL) {
+        resetTransfer(true);
+    }
     if(g_restartAt != 0 && static_cast<int32_t>(millis() - g_restartAt) >= 0) {
         Serial.println("[ota_push] commit acknowledged; rebooting");
         Serial.flush();

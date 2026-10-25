@@ -3,6 +3,7 @@
 #include <HardwareSerial.h>
 
 #include "espnow_control.h"
+#include "controller_ota_transport.h"
 #include "motor_hal.h"
 
 namespace {
@@ -33,12 +34,14 @@ bool motor_probe_read_register(uint16_t regAddr,
                                uint16_t* values,
                                uint16_t maxValues) {
     for(uint8_t attempt = 0; attempt < retries; ++attempt) {
+        if(controller_ota_transport_active()) return false;
         while(Serial2.available()) Serial2.read();
 
         const unsigned long sendDeadline = millis() + comm_get_send_delay_ms() + 20;
         while(!readRegister(regAddr, regCount)) {
             if(millis() >= sendDeadline) break;
             serviceProbeLink();
+            if(controller_ota_transport_active()) return false;
             delay(1);
         }
 
@@ -56,12 +59,14 @@ bool motor_probe_read_register(uint16_t regAddr,
                 return true;
             }
             serviceProbeLink();
+            if(controller_ota_transport_active()) return false;
             delay(1);
         }
 
         while(Serial2.available()) Serial2.read();
         commCounter = 0;
         serviceProbeLink();
+        if(controller_ota_transport_active()) return false;
         delay(BETWEEN_PROBE_ATTEMPTS_MS);
     }
 
