@@ -8313,7 +8313,11 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
                     dividerY,
                     blendColor565(face, accent, 0.22f));
 
-    const char* labels[] = {"GIT", "BUILT", "CTRL", "UPDATE"};
+    const sg98_system_ota::Stage updateStage = g_systemOta.flow.stage;
+    const bool updateSucceeded = updateStage == sg98_system_ota::Stage::Complete;
+    const bool updateFailed = updateStage == sg98_system_ota::Stage::Failed;
+    const char* labels[] = {"GIT", "BUILT", "CTRL",
+                            updateSucceeded ? "SUCCESS" : (updateFailed ? "FAILED" : "UPDATE")};
     const String values[] = {
         sg98_version::gitLabel(),
         aboutBuildTimeLine(),
@@ -8327,15 +8331,20 @@ void drawAboutPage(RemoteCanvas& canvas, const Layout& layout) {
     const uint16_t labelColor = blendColor565(kColorMuted, face, 0.04f);
     for(uint8_t i = 0; i < rowCount; ++i) {
         const Rect row = {innerX, rowY, innerW, rowH};
+        const bool resultRow = i == 3 && (updateSucceeded || updateFailed);
+        const uint16_t resultColor = updateSucceeded ? kColorGood : kColorDanger;
+        const uint16_t rowFace = resultRow ? blendColor565(face, resultColor, 0.18f) : face;
+        if(resultRow) canvas.fillRect(row.x, row.y - 2, row.w, row.h, rowFace);
         drawAboutRow(canvas,
                      row,
                      labels[i],
                      values[i],
-                     face,
-                     labelColor,
-                     i == 2 || (i == 3 && app.otaUpdate.updateAvailable)
-                         ? blendColor565(kColorGood, kColorText, 0.10f)
-                         : kColorText);
+                     rowFace,
+                     resultRow ? resultColor : labelColor,
+                     resultRow ? resultColor
+                               : (i == 2 || (i == 3 && app.otaUpdate.updateAvailable)
+                                      ? blendColor565(kColorGood, kColorText, 0.10f)
+                                      : kColorText));
         rowY = static_cast<int16_t>(rowY + rowH);
     }
 
