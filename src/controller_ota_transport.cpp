@@ -63,7 +63,7 @@ bool beginTransfer(const sg98_ota_transport::BeginFrame& frame,
     if(g_transfer.active && g_transfer.session == frame.header.session &&
        g_transfer.imageSize == frame.imageSize) {
         g_transfer.lastActivityAt = millis();
-        prepareAck(ack, frame.header, sg98_ota_transport::Status::Accepted, "resume");
+        prepareAck(ack, frame.header, sg98_ota_transport::Status::Accepted, "resume-fast");
         return true;
     }
     resetTransfer(true);
@@ -95,20 +95,23 @@ bool beginTransfer(const sg98_ota_transport::BeginFrame& frame,
         return true;
     }
     controller_ota_clear_ready();
-    prepareAck(ack, frame.header, sg98_ota_transport::Status::Accepted, "ready");
+    prepareAck(ack, frame.header, sg98_ota_transport::Status::Accepted, "ready-fast");
     return true;
 }
 
-bool receiveData(const sg98_ota_transport::DataFrame& frame,
+bool receiveData(const uint8_t* data,
                  size_t length,
                  sg98_ota_transport::AckFrame* ack) {
+    sg98_ota_transport::DataPrefix frame = {};
+    memcpy(&frame, data, sizeof(frame));
+    const uint8_t* chunk = data + sizeof(frame);
     if(!g_transfer.active || frame.header.session != g_transfer.session) {
         prepareAck(ack, frame.header, sg98_ota_transport::Status::Error, "no transfer");
         return true;
     }
     g_transfer.lastActivityAt = millis();
-    const size_t required = offsetof(sg98_ota_transport::DataFrame, data) + frame.length;
-    if(frame.length == 0 || frame.length > sizeof(frame.data) || length < required ||
+    const size_t required = sizeof(frame) + frame.length;
+    if(frame.length == 0 || frame.length > sg98_ota_transport::kDataBytes || length < required ||
        frame.offset + frame.length > g_transfer.imageSize) {
         prepareAck(ack, frame.header, sg98_ota_transport::Status::Error, "bad chunk");
         return true;
@@ -118,12 +121,12 @@ bool receiveData(const sg98_ota_transport::DataFrame& frame,
         return true;
     }
     if(frame.offset != g_transfer.received ||
-       sg98_ota_transport::crc32(frame.data, frame.length) != frame.crc32) {
+       sg98_ota_transport::crc32(chunk, frame.length) != frame.crc32) {
         prepareAck(ack, frame.header, sg98_ota_transport::Status::Error, "chunk mismatch");
         return true;
     }
-    if(esp_ota_write(g_transfer.otaHandle, frame.data, frame.length) != ESP_OK ||
-       mbedtls_sha256_update(&g_transfer.sha, frame.data, frame.length) != 0) {
+    if(esp_ota_write(g_transfer.otaHandle, chunk, frame.length) != ESP_OK ||
+       mbedtls_sha256_update(&g_transfer.sha, chunk, frame.length) != 0) {
         resetTransfer(true);
         prepareAck(ack, frame.header, sg98_ota_transport::Status::Error, "flash write failed");
         return true;
@@ -196,10 +199,8 @@ bool controller_ota_transport_handle(const uint8_t* data,
         memcpy(&frame, data, sizeof(frame));
         return beginTransfer(frame, ack);
     }
-    if(header.type == Type::Data && length >= offsetof(DataFrame, data)) {
-        DataFrame frame = {};
-        memcpy(&frame, data, min(length, sizeof(frame)));
-        return receiveData(frame, length, ack);
+    if(header.type == Type::Data && length >= sizeof(DataPrefix)) {
+        return receiveData(data, length, ack);
     }
     if(header.type == Type::End && length >= sizeof(ControlFrame)) {
         ControlFrame frame = {};

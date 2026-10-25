@@ -775,6 +775,7 @@ struct SystemOtaState {
     uint8_t transferRetries = 0;
     uint8_t transferPhase = 0;
     bool transferAwaitingAck = false;
+    bool transferFast = false;
     String transferSendError;
 };
 SystemOtaState g_systemOta;
@@ -9368,7 +9369,7 @@ bool sendEspNowFrame(const uint8_t* mac, const String& command) {
 }
 
 bool sendEspNowBytes(const uint8_t* mac, const uint8_t* data, size_t length) {
-    if(!app.espNowReady || mac == nullptr || data == nullptr || length == 0 || length > 250) {
+    if(!app.espNowReady || mac == nullptr || data == nullptr || length == 0 || length > ESP_NOW_MAX_DATA_LEN_V2) {
         return false;
     }
     if(!ensureEspNowPeer(mac)) return false;
@@ -11269,6 +11270,7 @@ void confirmSystemOta() {
     g_systemOta.transferOffset = 0;
     g_systemOta.transferPhase = 0;
     g_systemOta.transferAwaitingAck = false;
+    g_systemOta.transferFast = false;
     g_systemOta.transferSendError = "";
     g_systemOta.controllerLocalPush = false;
     g_systemOta.legacyUpdateSent = false;
@@ -11419,7 +11421,8 @@ bool sendSystemOtaTransferFrame() {
         frame.header.session = g_systemOta.transferSession;
         frame.offset = g_systemOta.transferOffset;
         frame.length = static_cast<uint16_t>(min<uint32_t>(
-            sizeof(frame.data), g_systemOta.controllerManifest.size - frame.offset));
+            g_systemOta.transferFast ? kDataBytes : kLegacyDataBytes,
+            g_systemOta.controllerManifest.size - frame.offset));
         const esp_partition_t* partition = esp_ota_get_next_update_partition(nullptr);
         if(partition == nullptr ||
            esp_partition_read(partition, g_systemOta.controllerImageOffset + frame.offset,
@@ -11430,6 +11433,7 @@ bool sendSystemOtaTransferFrame() {
         frame.crc32 = crc32(frame.data, frame.length);
         const size_t length = offsetof(DataFrame, data) + frame.length;
         if(sendEspNowBytes(peer, reinterpret_cast<const uint8_t*>(&frame), length)) return true;
+        g_systemOta.transferFast = false;
         g_systemOta.transferSendError = "ESP-NOW data send failed";
         return false;
     }
@@ -11453,6 +11457,8 @@ void serviceSystemOtaTransfer(uint32_t now) {
             return;
         }
         if(g_systemOta.transferPhase == 0 && ack.status == Status::Accepted) {
+            g_systemOta.transferFast = strcmp(ack.message, "ready-fast") == 0 ||
+                                       strcmp(ack.message, "resume-fast") == 0;
             g_systemOta.transferOffset = ack.nextOffset;
             g_systemOta.transferPhase = 1;
         } else if(g_systemOta.transferPhase == 1 && ack.status == Status::Accepted) {
@@ -11478,6 +11484,10 @@ void serviceSystemOtaTransfer(uint32_t now) {
     if(g_systemOta.transferAwaitingAck && ++g_systemOta.transferRetries > 15) {
         finishSystemOta(false, "Controller transfer timed out");
         return;
+    }
+    if(g_systemOta.transferFast && g_systemOta.transferPhase == 1 &&
+       g_systemOta.transferRetries >= 2) {
+        g_systemOta.transferFast = false;
     }
     if(sendSystemOtaTransferFrame()) {
         g_systemOta.transferAwaitingAck = true;
@@ -13339,6 +13349,9 @@ void appendRemoteStatusJson(String& out) {
     out += controllerOtaActionBusy() ? "true" : "false";
     out += ",\"transferOffset\":";
     out += String(g_systemOta.transferOffset);
+    out += ",\"transferChunkBytes\":";
+    out += String(g_systemOta.transferFast ? sg98_ota_transport::kDataBytes
+                                           : sg98_ota_transport::kLegacyDataBytes);
     out += ",\"transferTotal\":";
     out += String(g_systemOta.controllerManifest.size);
     out += ",\"transferRetries\":";

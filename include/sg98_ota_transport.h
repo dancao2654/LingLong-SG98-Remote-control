@@ -8,7 +8,8 @@ namespace sg98_ota_transport {
 
 constexpr uint32_t kMagic = 0x544F4753UL;  // "SGOT" on the wire.
 constexpr uint8_t kVersion = 1;
-constexpr size_t kDataBytes = 220;
+constexpr size_t kLegacyDataBytes = 220;
+constexpr size_t kDataBytes = 1024;
 constexpr size_t kSha256Bytes = 32;
 constexpr size_t kVersionBytes = 24;
 constexpr size_t kMessageBytes = 48;
@@ -39,6 +40,13 @@ struct DataFrame {
     uint8_t data[kDataBytes] = {};
 };
 
+struct DataPrefix {
+    Header header;
+    uint32_t offset = 0;
+    uint16_t length = 0;
+    uint32_t crc32 = 0;
+};
+
 struct ControlFrame {
     Header header;
 };
@@ -52,7 +60,8 @@ struct AckFrame {
 };
 #pragma pack(pop)
 
-static_assert(sizeof(DataFrame) <= 250, "ESP-NOW OTA frame exceeds payload limit");
+static_assert(sizeof(DataFrame) <= 1470, "ESP-NOW v2 OTA frame exceeds payload limit");
+static_assert(sizeof(DataPrefix) == offsetof(DataFrame, data), "OTA data prefix layout mismatch");
 
 inline bool isFrame(const uint8_t* data, size_t length) {
     if(data == nullptr || length < sizeof(Header)) return false;

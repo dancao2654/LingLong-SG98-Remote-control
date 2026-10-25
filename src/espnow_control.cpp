@@ -31,6 +31,12 @@ struct EspNowEvent {
     uint8_t payload[ESPNOW_COMMAND_LEN] = {};
 };
 
+struct OtaEspNowEvent {
+    uint8_t mac[ESP_NOW_ETH_ALEN] = {};
+    uint16_t length = 0;
+    uint8_t payload[sizeof(sg98_ota_transport::DataFrame)] = {};
+};
+
 struct LatestEspNowEvent {
     bool valid = false;
     uint8_t mac[ESP_NOW_ETH_ALEN] = {};
@@ -62,7 +68,7 @@ unsigned long lastGaugeStatusPushAt = 0;
 LatestEspNowEvent pendingStatusEvent;
 LatestEspNowEvent pendingTargetEvent;
 LatestEspNowEvent pendingDiscoveryEvent;
-EspNowEvent pendingOtaEvent = {};
+OtaEspNowEvent pendingOtaEvent = {};
 bool pendingOtaEventValid = false;
 portMUX_TYPE espnowIngressMux = portMUX_INITIALIZER_UNLOCKED;
 
@@ -210,7 +216,7 @@ bool takeLatestEvent(LatestEspNowEvent* slot, EspNowEvent* event) {
     return hasEvent;
 }
 
-bool takePendingOtaEvent(EspNowEvent* event) {
+bool takePendingOtaEvent(OtaEspNowEvent* event) {
     if(event == nullptr) return false;
     portENTER_CRITICAL(&espnowIngressMux);
     const bool available = pendingOtaEventValid;
@@ -222,18 +228,21 @@ bool takePendingOtaEvent(EspNowEvent* event) {
     return available;
 }
 
+void processOtaEvent(const OtaEspNowEvent& event) {
+    lastRxAt = millis();
+    ++rxCount;
+    rememberStatusPeer(event.mac);
+    lastCommandRxAt = lastRxAt;
+    sg98_ota_transport::AckFrame ack = {};
+    if(controller_ota_transport_handle(event.payload, event.length, &ack)) {
+        (void)sendBytes(event.mac, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
+    }
+}
+
 void processEvent(const EspNowEvent& event) {
     lastRxAt = millis();
     ++rxCount;
     rememberStatusPeer(event.mac);
-    if(sg98_ota_transport::isFrame(event.payload, event.length)) {
-        lastCommandRxAt = lastRxAt;
-        sg98_ota_transport::AckFrame ack = {};
-        if(controller_ota_transport_handle(event.payload, event.length, &ack)) {
-            (void)sendBytes(event.mac, reinterpret_cast<const uint8_t*>(&ack), sizeof(ack));
-        }
-        return;
-    }
     const char* command = reinterpret_cast<const char*>(event.payload);
     if(controller_ota_transport_active() &&
        !isGetStatusCommand(command) &&
@@ -309,8 +318,24 @@ void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, 
         return;
     }
 
-    EspNowEvent event = {};
     const uint8_t* mac_addr = recv_info != nullptr ? recv_info->src_addr : nullptr;
+    if(sg98_ota_transport::isFrame(data, static_cast<size_t>(data_len))) {
+        if(data_len > static_cast<int>(sizeof(pendingOtaEvent.payload))) {
+            portENTER_CRITICAL_ISR(&espnowIngressMux);
+            ++dropCount;
+            portEXIT_CRITICAL_ISR(&espnowIngressMux);
+            return;
+        }
+        portENTER_CRITICAL_ISR(&espnowIngressMux);
+        if(mac_addr != nullptr) memcpy(pendingOtaEvent.mac, mac_addr, sizeof(pendingOtaEvent.mac));
+        pendingOtaEvent.length = static_cast<uint16_t>(data_len);
+        memcpy(pendingOtaEvent.payload, data, data_len);
+        pendingOtaEventValid = true;
+        portEXIT_CRITICAL_ISR(&espnowIngressMux);
+        return;
+    }
+
+    EspNowEvent event = {};
     if(mac_addr != nullptr) {
         memcpy(event.mac, mac_addr, sizeof(event.mac));
     }
@@ -319,14 +344,6 @@ void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, 
     memcpy(event.payload, data, copyLen);
     event.payload[copyLen] = '\0';
     event.length = static_cast<uint16_t>(copyLen);
-
-    if(sg98_ota_transport::isFrame(event.payload, event.length)) {
-        portENTER_CRITICAL_ISR(&espnowIngressMux);
-        pendingOtaEvent = event;
-        pendingOtaEventValid = true;
-        portEXIT_CRITICAL_ISR(&espnowIngressMux);
-        return;
-    }
 
     const char* command = reinterpret_cast<const char*>(event.payload);
     if(isGetStatusCommand(command)) {
@@ -542,10 +559,11 @@ void espnow_control_poll() {
         return;
     }
 
-    EspNowEvent event = {};
-    if(takePendingOtaEvent(&event)) {
-        processEvent(event);
+    OtaEspNowEvent otaEvent = {};
+    if(takePendingOtaEvent(&otaEvent)) {
+        processOtaEvent(otaEvent);
     }
+    EspNowEvent event = {};
     const uint8_t queueBudget = controller_is_menu_state(state) ? 1 : ESPNOW_RX_QUEUE_LEN;
     uint8_t processed = 0;
     while(processed < queueBudget && xQueueReceive(espnowQueue, &event, 0) == pdTRUE) {
@@ -567,10 +585,11 @@ void espnow_control_poll() {
 
 void espnow_control_poll_probe_status() {
     if(!espnowActive || espnowWifiClientActive) return;
-    EspNowEvent event = {};
-    if(takePendingOtaEvent(&event)) {
-        processEvent(event);
+    OtaEspNowEvent otaEvent = {};
+    if(takePendingOtaEvent(&otaEvent)) {
+        processOtaEvent(otaEvent);
     }
+    EspNowEvent event = {};
     if(takeLatestEvent(&pendingDiscoveryEvent, &event)) {
         processEvent(event);
     }
