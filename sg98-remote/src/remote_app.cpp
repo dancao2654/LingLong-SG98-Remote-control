@@ -11202,8 +11202,12 @@ bool systemOtaShaMatches(const String& a, const String& b) {
 }
 
 void finishSystemOta(bool ok, const String& detail) {
-    if(ok) g_systemOta.flow.enter(sg98_system_ota::Stage::Complete, millis());
-    else g_systemOta.flow.fail(millis());
+    if(ok) {
+        g_systemOta.flow.controllerVerified = true;
+        g_systemOta.flow.enter(sg98_system_ota::Stage::Complete, millis());
+    } else {
+        g_systemOta.flow.fail(millis());
+    }
     g_systemOta.detail = detail;
     g_systemOta.remoteInstallRequested = false;
     if(g_statePrefsReady) g_statePrefs.remove("sysPending");
