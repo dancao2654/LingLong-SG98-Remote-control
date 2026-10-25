@@ -5,6 +5,7 @@
 
 #include "comm.h"
 #include "display.h"
+#include "espnow_control.h"
 #include "error_history.h"
 #include "main.h"
 #include "JMC/motorcontrol_jmc.h"
@@ -474,6 +475,8 @@ ProbeCycleResult runProbeCycleOnCurrentPort(bool logResult,
             continue;
         }
 
+        espnow_control_poll_probe_status();
+
         ++probeStep;
         if(logResult) {
             display_show_motor_probe_progress(descriptor.label, probeStep, probeTotal, false);
@@ -492,6 +495,8 @@ ProbeCycleResult runProbeCycleOnCurrentPort(bool logResult,
         cycle.report = candidateReport;
         cycle.detectedType = descriptor.driveType;
     }
+
+    espnow_control_poll_probe_status();
 
     comm_set_jmc_rate(initialPreferredJmcRate, false);
 

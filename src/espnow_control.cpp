@@ -47,7 +47,12 @@ wifi_interface_t espnowInterface = WIFI_IF_STA;
     unsigned long lastCommandRxAt = 0;
     unsigned long lastRecoveryRequestAt = 0;
     uint32_t rxCount = 0;
+volatile uint32_t ingressCount = 0;
+volatile uint32_t statusIngressCount = 0;
 uint32_t dropCount = 0;
+volatile uint32_t txDeliveredCount = 0;
+volatile uint32_t txFailedCount = 0;
+uint32_t txEnqueueFailedCount = 0;
 uint32_t gaugeStatusPushCount = 0;
 char lastCommand[ESPNOW_COMMAND_LEN] = "";
 bool lastStatusPeerValid = false;
@@ -56,6 +61,7 @@ uint32_t lastGaugeStatusPushSequence = 0;
 unsigned long lastGaugeStatusPushAt = 0;
 LatestEspNowEvent pendingStatusEvent;
 LatestEspNowEvent pendingTargetEvent;
+LatestEspNowEvent pendingDiscoveryEvent;
 portMUX_TYPE espnowIngressMux = portMUX_INITIALIZER_UNLOCKED;
 
 bool sendFrame(const uint8_t* mac_addr, const String& frame);
@@ -263,10 +269,19 @@ void processEvent(const EspNowEvent& event) {
     }
 }
 
+void onEspNowSent(const esp_now_send_info_t*, esp_now_send_status_t status) {
+    if(status == ESP_NOW_SEND_SUCCESS) {
+        ++txDeliveredCount;
+    } else {
+        ++txFailedCount;
+    }
+}
+
 void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, int data_len) {
     if(espnowQueue == nullptr || data == nullptr || data_len <= 0) {
         return;
     }
+    ++ingressCount;
     if(espnowWifiClientActive) {
         return;
     }
@@ -293,8 +308,16 @@ void onEspNowReceive(const esp_now_recv_info_t* recv_info, const uint8_t* data, 
 
     const char* command = reinterpret_cast<const char*>(event.payload);
     if(isGetStatusCommand(command)) {
+        ++statusIngressCount;
         portENTER_CRITICAL_ISR(&espnowIngressMux);
         storeLatestEvent(&pendingStatusEvent, event);
+        portEXIT_CRITICAL_ISR(&espnowIngressMux);
+        return;
+    }
+
+    if(isDiscoverCommand(command)) {
+        portENTER_CRITICAL_ISR(&espnowIngressMux);
+        storeLatestEvent(&pendingDiscoveryEvent, event);
         portEXIT_CRITICAL_ISR(&espnowIngressMux);
         return;
     }
@@ -381,7 +404,9 @@ bool sendFrame(const uint8_t* mac_addr, const String& frame) {
 bool sendBytes(const uint8_t* mac_addr, const uint8_t* data, size_t length) {
     if(mac_addr == nullptr || data == nullptr || length == 0 || length > 250) return false;
     if(!ensurePeer(mac_addr)) return false;
-    return esp_now_send(mac_addr, data, length) == ESP_OK;
+    const esp_err_t err = esp_now_send(mac_addr, data, length);
+    if(err != ESP_OK) ++txEnqueueFailedCount;
+    return err == ESP_OK;
 }
 }
 
@@ -431,11 +456,22 @@ bool espnow_control_start(bool coexistWithWifi) {
         esp_now_deinit();
         return false;
     }
+    if(esp_now_register_send_cb(onEspNowSent) != ESP_OK) {
+        esp_now_unregister_recv_cb();
+        esp_now_deinit();
+        return false;
+    }
 
     lastRxAt = 0;
     lastCommandRxAt = 0;
     lastRecoveryRequestAt = 0;
     rxCount = 0;
+    ingressCount = 0;
+    statusIngressCount = 0;
+    pendingDiscoveryEvent.valid = false;
+    txDeliveredCount = 0;
+    txFailedCount = 0;
+    txEnqueueFailedCount = 0;
     gaugeStatusPushCount = 0;
     lastCommand[0] = '\0';
     lastStatusPeerValid = false;
@@ -456,6 +492,7 @@ void espnow_control_stop() {
         return;
     }
 
+    esp_now_unregister_send_cb();
     esp_now_unregister_recv_cb();
     esp_now_deinit();
     if(espnowQueue != nullptr) {
@@ -494,6 +531,20 @@ void espnow_control_poll() {
         processEvent(event);
     }
 
+    if(takeLatestEvent(&pendingStatusEvent, &event)) {
+        processEvent(event);
+    }
+    if(takeLatestEvent(&pendingDiscoveryEvent, &event)) {
+        processEvent(event);
+    }
+}
+
+void espnow_control_poll_probe_status() {
+    if(!espnowActive || espnowWifiClientActive) return;
+    EspNowEvent event = {};
+    if(takeLatestEvent(&pendingDiscoveryEvent, &event)) {
+        processEvent(event);
+    }
     if(takeLatestEvent(&pendingStatusEvent, &event)) {
         processEvent(event);
     }
@@ -586,9 +637,21 @@ String espnow_control_status_text() {
         out += " rx ";
         out += String(static_cast<unsigned long>(rxCount));
     }
+    out += " ingress ";
+    out += String(static_cast<unsigned long>(ingressCount));
+    out += '/';
+    out += String(static_cast<unsigned long>(statusIngressCount));
     if(dropCount > 0) {
         out += " drop ";
         out += String(static_cast<unsigned long>(dropCount));
+    }
+    out += " tx ";
+    out += String(static_cast<unsigned long>(txDeliveredCount));
+    out += '/';
+    out += String(static_cast<unsigned long>(txFailedCount));
+    if(txEnqueueFailedCount > 0) {
+        out += " enqueue_fail ";
+        out += String(static_cast<unsigned long>(txEnqueueFailedCount));
     }
     if(gaugeStatusPushCount > 0) {
         out += " push ";

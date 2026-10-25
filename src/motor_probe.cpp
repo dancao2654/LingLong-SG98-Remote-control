@@ -2,11 +2,21 @@
 
 #include <HardwareSerial.h>
 
+#include "espnow_control.h"
 #include "motor_hal.h"
 
 namespace {
 constexpr unsigned long PROFILE_SETTLE_MS = 20;
 constexpr unsigned long BETWEEN_PROBE_ATTEMPTS_MS = 40;
+
+void serviceProbeLink() {
+    static unsigned long lastServiceAt = 0;
+    const unsigned long now = millis();
+    if(now - lastServiceAt >= 100) {
+        espnow_control_poll_probe_status();
+        lastServiceAt = now;
+    }
+}
 }
 
 bool motor_probe_set_profile(CommProfile profile) {
@@ -28,6 +38,7 @@ bool motor_probe_read_register(uint16_t regAddr,
         const unsigned long sendDeadline = millis() + comm_get_send_delay_ms() + 20;
         while(!readRegister(regAddr, regCount)) {
             if(millis() >= sendDeadline) break;
+            serviceProbeLink();
             delay(1);
         }
 
@@ -44,11 +55,13 @@ bool motor_probe_read_register(uint16_t regAddr,
                 commCounter = 0;
                 return true;
             }
+            serviceProbeLink();
             delay(1);
         }
 
         while(Serial2.available()) Serial2.read();
         commCounter = 0;
+        serviceProbeLink();
         delay(BETWEEN_PROBE_ATTEMPTS_MS);
     }
 

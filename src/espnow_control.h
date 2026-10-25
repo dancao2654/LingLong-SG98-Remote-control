@@ -5,6 +5,7 @@
 bool espnow_control_start(bool coexistWithWifi = false);
 void espnow_control_stop();
 void espnow_control_poll();
+void espnow_control_poll_probe_status();
 bool espnow_control_broadcast_wifi_config(const String& ssid, const String& password);
 bool espnow_control_push_status_if_due(uint32_t gaugeReadChangeSequence);
 void espnow_control_set_wifi_client_active(bool active);
