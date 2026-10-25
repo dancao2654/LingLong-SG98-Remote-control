@@ -11447,6 +11447,9 @@ void serviceSystemOtaTransfer(uint32_t now) {
             g_systemOta.transferOffset = ack.nextOffset;
             g_systemOta.transferPhase = 1;
         } else if(g_systemOta.transferPhase == 1 && ack.status == Status::Accepted) {
+            if(ack.nextOffset > g_systemOta.transferOffset) {
+                g_systemOta.flow.enteredAt = now;
+            }
             g_systemOta.transferOffset = ack.nextOffset;
             if(g_systemOta.transferOffset >= g_systemOta.controllerManifest.size) {
                 g_systemOta.transferPhase = 2;
