@@ -60,6 +60,64 @@
       }
     },
     {
+      "fileName": "SG98-Updater-2026.10.25.11-osx-arm64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.11-osx-arm64.zip.md5",
+      "runtime": "osx-arm64",
+      "role": "controller",
+      "envName": "controller-universal-s3",
+      "boardName": "controller-universal-s3",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 28589567,
+      "sha256": "f3c48f8c767524643c9634384ce4debdca8355621e79caedc9a7aa0d44719d35",
+      "md5": "d9326d8354d2bfc9e13f81180e4a4d12",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
+        "size": 2056416
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
+      "fileName": "SG98-Updater-2026.10.25.12-osx-arm64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.12-osx-arm64.zip.md5",
+      "runtime": "osx-arm64",
+      "role": "controller",
+      "envName": "controller-universal-s3",
+      "boardName": "controller-universal-s3",
+      "version": "2026.10.25.12",
+      "gitSha": "5362e0da",
+      "gitDirty": false,
+      "size": 28589878,
+      "sha256": "c90d5c162105c3f212941b6018994726e9be695f080b2a94f2641a04c2c988b6",
+      "md5": "19eee867713e15d2b4e2c6634f40df74",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "97ed2f8e78dda552fa4fec21a201ae61561f90244ffac556a7ccc6fefe8a55c6",
+        "size": 2056416
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
       "fileName": "SG98-Updater-2026.10.25.4-osx-arm64.zip",
       "md5FileName": "SG98-Updater-2026.10.25.4-osx-arm64.zip.md5",
       "runtime": "osx-arm64",
@@ -106,35 +164,6 @@
         "fileName": "flash-03-0x10000-firmware.bin",
         "sha256": "24ce918fbcbf5725651aa384b6fd5265478c933e34ec3bcc36a48e63df95b745",
         "size": 2071552
-      },
-      "updatePolicy": {
-        "schema": "sg98-update-policy-v1",
-        "defaultMode": "application",
-        "appOnlySince": "2026.04.28",
-        "applicationOffset": "0x10000",
-        "requiresDeviceCapability": "supportsAppOnlyUpdate",
-        "fallbackMode": "full",
-        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
-      }
-    },
-    {
-      "fileName": "SG98-Updater-2026.10.25.11-osx-arm64.zip",
-      "md5FileName": "SG98-Updater-2026.10.25.11-osx-arm64.zip.md5",
-      "runtime": "osx-arm64",
-      "role": "controller",
-      "envName": "controller-universal-s3",
-      "boardName": "controller-universal-s3",
-      "version": "2026.10.25.11",
-      "gitSha": "57d274b6",
-      "gitDirty": false,
-      "size": 28589567,
-      "sha256": "f3c48f8c767524643c9634384ce4debdca8355621e79caedc9a7aa0d44719d35",
-      "md5": "d9326d8354d2bfc9e13f81180e4a4d12",
-      "application": {
-        "offset": "0x10000",
-        "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
-        "size": 2056416
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -205,6 +234,64 @@
       }
     },
     {
+      "fileName": "SG98-Updater-2026.10.25.11-osx-x64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.11-osx-x64.zip.md5",
+      "runtime": "osx-x64",
+      "role": "controller",
+      "envName": "controller-universal-s3",
+      "boardName": "controller-universal-s3",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 33442037,
+      "sha256": "cac0730715aca94a305378f90b5740eb0630b0c3910d24a2fda3e37d7460c7c6",
+      "md5": "702fddce564a6e8a0529ed4fd714dc9c",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
+        "size": 2056416
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
+      "fileName": "SG98-Updater-2026.10.25.12-osx-x64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.12-osx-x64.zip.md5",
+      "runtime": "osx-x64",
+      "role": "controller",
+      "envName": "controller-universal-s3",
+      "boardName": "controller-universal-s3",
+      "version": "2026.10.25.12",
+      "gitSha": "5362e0da",
+      "gitDirty": false,
+      "size": 33442830,
+      "sha256": "07080bf4645ebcc8bbf6d67f3b515b34857abf82280012d00d74652b2d0a5107",
+      "md5": "41e209700236b97f85b9cca983a54134",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "97ed2f8e78dda552fa4fec21a201ae61561f90244ffac556a7ccc6fefe8a55c6",
+        "size": 2056416
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
       "fileName": "SG98-Updater-2026.10.25.4-osx-x64.zip",
       "md5FileName": "SG98-Updater-2026.10.25.4-osx-x64.zip.md5",
       "runtime": "osx-x64",
@@ -251,35 +338,6 @@
         "fileName": "flash-03-0x10000-firmware.bin",
         "sha256": "24ce918fbcbf5725651aa384b6fd5265478c933e34ec3bcc36a48e63df95b745",
         "size": 2071552
-      },
-      "updatePolicy": {
-        "schema": "sg98-update-policy-v1",
-        "defaultMode": "application",
-        "appOnlySince": "2026.04.28",
-        "applicationOffset": "0x10000",
-        "requiresDeviceCapability": "supportsAppOnlyUpdate",
-        "fallbackMode": "full",
-        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
-      }
-    },
-    {
-      "fileName": "SG98-Updater-2026.10.25.11-osx-x64.zip",
-      "md5FileName": "SG98-Updater-2026.10.25.11-osx-x64.zip.md5",
-      "runtime": "osx-x64",
-      "role": "controller",
-      "envName": "controller-universal-s3",
-      "boardName": "controller-universal-s3",
-      "version": "2026.10.25.11",
-      "gitSha": "57d274b6",
-      "gitDirty": false,
-      "size": 33442037,
-      "sha256": "cac0730715aca94a305378f90b5740eb0630b0c3910d24a2fda3e37d7460c7c6",
-      "md5": "702fddce564a6e8a0529ed4fd714dc9c",
-      "application": {
-        "offset": "0x10000",
-        "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
-        "size": 2056416
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -350,6 +408,64 @@
       }
     },
     {
+      "fileName": "SG98-Updater-2026.10.25.11-win-x64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.11-win-x64.zip.md5",
+      "runtime": "win-x64",
+      "role": "controller",
+      "envName": "controller-universal-s3",
+      "boardName": "controller-universal-s3",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 45745824,
+      "sha256": "f412724d8142980c5d563e8115f6963d17d387147184ff07b58d2eced14e65b0",
+      "md5": "d56594fa5c148393f0d82545fd51ba9a",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
+        "size": 2056416
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
+      "fileName": "SG98-Updater-2026.10.25.12-win-x64.zip",
+      "md5FileName": "SG98-Updater-2026.10.25.12-win-x64.zip.md5",
+      "runtime": "win-x64",
+      "role": "controller",
+      "envName": "controller-universal-s3",
+      "boardName": "controller-universal-s3",
+      "version": "2026.10.25.12",
+      "gitSha": "5362e0da",
+      "gitDirty": false,
+      "size": 45747141,
+      "sha256": "301d3983b33bdf3a4ac414dc3060a8aa54ffc64db20baf9e474cb64cdd7a3630",
+      "md5": "0d73321eda8f3ea83e592d11ad47553c",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "97ed2f8e78dda552fa4fec21a201ae61561f90244ffac556a7ccc6fefe8a55c6",
+        "size": 2056416
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
       "fileName": "SG98-Updater-2026.10.25.4-win-x64.zip",
       "md5FileName": "SG98-Updater-2026.10.25.4-win-x64.zip.md5",
       "runtime": "win-x64",
@@ -396,35 +512,6 @@
         "fileName": "flash-03-0x10000-firmware.bin",
         "sha256": "24ce918fbcbf5725651aa384b6fd5265478c933e34ec3bcc36a48e63df95b745",
         "size": 2071552
-      },
-      "updatePolicy": {
-        "schema": "sg98-update-policy-v1",
-        "defaultMode": "application",
-        "appOnlySince": "2026.04.28",
-        "applicationOffset": "0x10000",
-        "requiresDeviceCapability": "supportsAppOnlyUpdate",
-        "fallbackMode": "full",
-        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
-      }
-    },
-    {
-      "fileName": "SG98-Updater-2026.10.25.11-win-x64.zip",
-      "md5FileName": "SG98-Updater-2026.10.25.11-win-x64.zip.md5",
-      "runtime": "win-x64",
-      "role": "controller",
-      "envName": "controller-universal-s3",
-      "boardName": "controller-universal-s3",
-      "version": "2026.10.25.11",
-      "gitSha": "57d274b6",
-      "gitDirty": false,
-      "size": 45745824,
-      "sha256": "f412724d8142980c5d563e8115f6963d17d387147184ff07b58d2eced14e65b0",
-      "md5": "d56594fa5c148393f0d82545fd51ba9a",
-      "application": {
-        "offset": "0x10000",
-        "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "c20923d6fa0d5b58834b246477b2a59ba0bacd97480614cfd367ba46a340076f",
-        "size": 2056416
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -495,6 +582,64 @@
       }
     },
     {
+      "fileName": "SG98-Remote-Updater-2026.10.25.11-osx-arm64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-osx-arm64.zip.md5",
+      "runtime": "osx-arm64",
+      "role": "remote",
+      "envName": "remote-universal-s3",
+      "boardName": "remote-universal-s3",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 28614088,
+      "sha256": "ce4c6cb46844976f45b5ec29ddeeeed98349e58a257b63eeb4adafe8c64a8e67",
+      "md5": "7a096865932991c7331fee134ec66533",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
+        "size": 2112384
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
+      "fileName": "SG98-Remote-Updater-2026.10.25.12-osx-arm64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.12-osx-arm64.zip.md5",
+      "runtime": "osx-arm64",
+      "role": "remote",
+      "envName": "remote-universal-s3",
+      "boardName": "remote-universal-s3",
+      "version": "2026.10.25.12",
+      "gitSha": "5362e0da",
+      "gitDirty": false,
+      "size": 28612899,
+      "sha256": "825194b779bc4b6b76438d53fb5f0352f33ffdf8ad66d54692014025fc6c24ee",
+      "md5": "a84a3475cc908c3462e5837f023c86d6",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "8c100e3b054ca113232f9cbbf11123d733cead4c9764df81ac65b385177d149d",
+        "size": 2113072
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
       "fileName": "SG98-Remote-Updater-2026.10.25.4-osx-arm64.zip",
       "md5FileName": "SG98-Remote-Updater-2026.10.25.4-osx-arm64.zip.md5",
       "runtime": "osx-arm64",
@@ -541,35 +686,6 @@
         "fileName": "flash-03-0x10000-firmware.bin",
         "sha256": "e61468872fe8177a79f393edce43f54eb29e4fd8805d9c59d64da396e5482333",
         "size": 2109776
-      },
-      "updatePolicy": {
-        "schema": "sg98-update-policy-v1",
-        "defaultMode": "application",
-        "appOnlySince": "2026.04.28",
-        "applicationOffset": "0x10000",
-        "requiresDeviceCapability": "supportsAppOnlyUpdate",
-        "fallbackMode": "full",
-        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
-      }
-    },
-    {
-      "fileName": "SG98-Remote-Updater-2026.10.25.11-osx-arm64.zip",
-      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-osx-arm64.zip.md5",
-      "runtime": "osx-arm64",
-      "role": "remote",
-      "envName": "remote-universal-s3",
-      "boardName": "remote-universal-s3",
-      "version": "2026.10.25.11",
-      "gitSha": "57d274b6",
-      "gitDirty": false,
-      "size": 28614088,
-      "sha256": "ce4c6cb46844976f45b5ec29ddeeeed98349e58a257b63eeb4adafe8c64a8e67",
-      "md5": "7a096865932991c7331fee134ec66533",
-      "application": {
-        "offset": "0x10000",
-        "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
-        "size": 2112384
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -640,6 +756,64 @@
       }
     },
     {
+      "fileName": "SG98-Remote-Updater-2026.10.25.11-osx-x64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-osx-x64.zip.md5",
+      "runtime": "osx-x64",
+      "role": "remote",
+      "envName": "remote-universal-s3",
+      "boardName": "remote-universal-s3",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 33464531,
+      "sha256": "c779bf6697e3f2485e99c908d5e1d08fae63ac5258a63883913e3bbdad477566",
+      "md5": "0a310fd0cb602028eb15488f92767e27",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
+        "size": 2112384
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
+      "fileName": "SG98-Remote-Updater-2026.10.25.12-osx-x64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.12-osx-x64.zip.md5",
+      "runtime": "osx-x64",
+      "role": "remote",
+      "envName": "remote-universal-s3",
+      "boardName": "remote-universal-s3",
+      "version": "2026.10.25.12",
+      "gitSha": "5362e0da",
+      "gitDirty": false,
+      "size": 33465552,
+      "sha256": "35475c4ce2f576963f4e1004f1397d7f159cf73ed54d0bfd3c40c8719ae2f73d",
+      "md5": "188a0dfd5a4aa4f057556e90d22cce58",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "8c100e3b054ca113232f9cbbf11123d733cead4c9764df81ac65b385177d149d",
+        "size": 2113072
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
       "fileName": "SG98-Remote-Updater-2026.10.25.4-osx-x64.zip",
       "md5FileName": "SG98-Remote-Updater-2026.10.25.4-osx-x64.zip.md5",
       "runtime": "osx-x64",
@@ -686,35 +860,6 @@
         "fileName": "flash-03-0x10000-firmware.bin",
         "sha256": "e61468872fe8177a79f393edce43f54eb29e4fd8805d9c59d64da396e5482333",
         "size": 2109776
-      },
-      "updatePolicy": {
-        "schema": "sg98-update-policy-v1",
-        "defaultMode": "application",
-        "appOnlySince": "2026.04.28",
-        "applicationOffset": "0x10000",
-        "requiresDeviceCapability": "supportsAppOnlyUpdate",
-        "fallbackMode": "full",
-        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
-      }
-    },
-    {
-      "fileName": "SG98-Remote-Updater-2026.10.25.11-osx-x64.zip",
-      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-osx-x64.zip.md5",
-      "runtime": "osx-x64",
-      "role": "remote",
-      "envName": "remote-universal-s3",
-      "boardName": "remote-universal-s3",
-      "version": "2026.10.25.11",
-      "gitSha": "57d274b6",
-      "gitDirty": false,
-      "size": 33464531,
-      "sha256": "c779bf6697e3f2485e99c908d5e1d08fae63ac5258a63883913e3bbdad477566",
-      "md5": "0a310fd0cb602028eb15488f92767e27",
-      "application": {
-        "offset": "0x10000",
-        "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
-        "size": 2112384
       },
       "updatePolicy": {
         "schema": "sg98-update-policy-v1",
@@ -785,6 +930,64 @@
       }
     },
     {
+      "fileName": "SG98-Remote-Updater-2026.10.25.11-win-x64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-win-x64.zip.md5",
+      "runtime": "win-x64",
+      "role": "remote",
+      "envName": "remote-universal-s3",
+      "boardName": "remote-universal-s3",
+      "version": "2026.10.25.11",
+      "gitSha": "57d274b6",
+      "gitDirty": false,
+      "size": 45765634,
+      "sha256": "d117bc588c89cb5c45ed823f8fea8c240f444002200672e70907e742f2a2795c",
+      "md5": "d0953854da003d4b378b5fb95a8e79e4",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
+        "size": 2112384
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
+      "fileName": "SG98-Remote-Updater-2026.10.25.12-win-x64.zip",
+      "md5FileName": "SG98-Remote-Updater-2026.10.25.12-win-x64.zip.md5",
+      "runtime": "win-x64",
+      "role": "remote",
+      "envName": "remote-universal-s3",
+      "boardName": "remote-universal-s3",
+      "version": "2026.10.25.12",
+      "gitSha": "5362e0da",
+      "gitDirty": false,
+      "size": 45765593,
+      "sha256": "11720e4d8c9260a263c8891d2a335b4bb738583b601a3883a2120dd69b02b7d8",
+      "md5": "769e4583cc23affa131533e02e8ca185",
+      "application": {
+        "offset": "0x10000",
+        "fileName": "flash-03-0x10000-firmware.bin",
+        "sha256": "8c100e3b054ca113232f9cbbf11123d733cead4c9764df81ac65b385177d149d",
+        "size": 2113072
+      },
+      "updatePolicy": {
+        "schema": "sg98-update-policy-v1",
+        "defaultMode": "application",
+        "appOnlySince": "2026.04.28",
+        "applicationOffset": "0x10000",
+        "requiresDeviceCapability": "supportsAppOnlyUpdate",
+        "fallbackMode": "full",
+        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
+      }
+    },
+    {
       "fileName": "SG98-Remote-Updater-2026.10.25.4-win-x64.zip",
       "md5FileName": "SG98-Remote-Updater-2026.10.25.4-win-x64.zip.md5",
       "runtime": "win-x64",
@@ -841,38 +1044,9 @@
         "fallbackMode": "full",
         "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
       }
-    },
-    {
-      "fileName": "SG98-Remote-Updater-2026.10.25.11-win-x64.zip",
-      "md5FileName": "SG98-Remote-Updater-2026.10.25.11-win-x64.zip.md5",
-      "runtime": "win-x64",
-      "role": "remote",
-      "envName": "remote-universal-s3",
-      "boardName": "remote-universal-s3",
-      "version": "2026.10.25.11",
-      "gitSha": "57d274b6",
-      "gitDirty": false,
-      "size": 45765634,
-      "sha256": "d117bc588c89cb5c45ed823f8fea8c240f444002200672e70907e742f2a2795c",
-      "md5": "d0953854da003d4b378b5fb95a8e79e4",
-      "application": {
-        "offset": "0x10000",
-        "fileName": "flash-03-0x10000-firmware.bin",
-        "sha256": "6ba65961d90a5e715c50b03a2ffc1b0eb33ced871055ded971ed2df6ef1226c7",
-        "size": 2112384
-      },
-      "updatePolicy": {
-        "schema": "sg98-update-policy-v1",
-        "defaultMode": "application",
-        "appOnlySince": "2026.04.28",
-        "applicationOffset": "0x10000",
-        "requiresDeviceCapability": "supportsAppOnlyUpdate",
-        "fallbackMode": "full",
-        "fallbackReason": "Use full flash when the running firmware cannot report SG98 app-only capability, the role/env is incompatible, or the board is in recovery."
-      }
     }
   ],
-  "generatedAtUtc": "2026-10-25T22:00:01Z",
-  "version": "2026.10.25.11",
-  "gitSha": "57d274b6"
+  "generatedAtUtc": "2026-10-26T03:58:13Z",
+  "version": "2026.10.25.12",
+  "gitSha": "5362e0da"
 }
