@@ -4,6 +4,16 @@
 
 namespace sg98_system_ota {
 
+struct UpdatePlan {
+    bool remoteNeeded;
+    bool controllerNeeded;
+    bool anyNeeded() const { return remoteNeeded || controllerNeeded; }
+};
+
+inline UpdatePlan planUpdates(bool remoteCurrent, bool controllerCurrent) {
+    return {!remoteCurrent, !controllerCurrent};
+}
+
 enum class Stage : uint8_t {
     Idle, Connect, WifiConnect, DownloadFiles, LocalConnect,
     LegacyControllerUpdate, ControllerTransfer, ControllerVerify,

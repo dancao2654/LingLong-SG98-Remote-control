@@ -588,6 +588,7 @@ void serviceSystemOta();
 void serviceSystemRemoteInstall();
 void finishSystemOta(bool ok, const String& detail);
 bool handleSystemOtaAck(const sg98_protocol::AckFrame& ack);
+bool systemOtaShaMatches(const String& a, const String& b);
 
 template <size_t N>
 constexpr size_t arrayCount(const SettingItem (&)[N]) {
@@ -747,6 +748,9 @@ struct SystemOtaState {
     LinkTransport previousTransport = LinkTransport::None;
     bool previousOverride = false;
     bool remoteInstallRequested = false;
+    volatile bool remoteUpdateNeeded = false;
+    volatile bool controllerUpdateNeeded = false;
+    volatile bool updatePlanKnown = false;
     uint32_t lastProbeAt = 0;
     uint32_t lastProgressAt = 0;
     String detail;
@@ -793,6 +797,8 @@ struct BackgroundNetworkRequest {
     String payload;
     int httpCode = -1;
     bool ok = false;
+    bool remoteUpdateNeeded = false;
+    bool controllerUpdateNeeded = false;
     sg98_ota_download::ManifestSpec manifest;
     sg98_ota_download::ManifestSpec controllerManifest;
     sg98_ota_download::Result result;
@@ -2475,19 +2481,37 @@ void backgroundNetworkWorker(void*) {
                 request->ok = false;
                 request->result.message = "controller and remote releases differ";
             }
-            const esp_partition_t* partition = request->ok
+            if(request->ok) {
+                const bool remoteCurrent = request->manifest.version == sg98_version::release() &&
+                    systemOtaShaMatches(request->manifest.gitSha, sg98_version::gitSha()) &&
+                    (!request->manifest.gitDirtyPresent ||
+                     request->manifest.gitDirty == sg98_version::dirty());
+                const bool controllerCurrent =
+                    request->controllerManifest.version == g_systemOta.controllerVersion &&
+                    systemOtaShaMatches(request->controllerManifest.gitSha, g_systemOta.controllerSha);
+                const auto plan = sg98_system_ota::planUpdates(remoteCurrent, controllerCurrent);
+                request->remoteUpdateNeeded = plan.remoteNeeded;
+                request->controllerUpdateNeeded = plan.controllerNeeded;
+                g_systemOta.remoteUpdateNeeded = plan.remoteNeeded;
+                g_systemOta.controllerUpdateNeeded = plan.controllerNeeded;
+                g_systemOta.updatePlanKnown = true;
+            }
+            const esp_partition_t* partition = request->ok &&
+                                               (request->remoteUpdateNeeded || request->controllerUpdateNeeded)
                                                    ? esp_ota_get_next_update_partition(nullptr)
                                                    : nullptr;
-            request->controllerImageOffset = request->ok
+            request->controllerImageOffset = request->ok && request->remoteUpdateNeeded
                                                  ? (request->manifest.size + 4095U) & ~4095U
                                                  : 0;
-            if(request->ok &&
+            if(request->ok && (request->remoteUpdateNeeded || request->controllerUpdateNeeded) &&
                (partition == nullptr || request->controllerImageOffset > partition->size ||
-                request->controllerManifest.size > partition->size - request->controllerImageOffset)) {
+                (request->remoteUpdateNeeded && request->manifest.size > partition->size) ||
+                (request->controllerUpdateNeeded &&
+                 request->controllerManifest.size > partition->size - request->controllerImageOffset))) {
                 request->ok = false;
-                request->result.message = "inactive slot cannot stage both images";
+                request->result.message = "inactive slot cannot stage update images";
             }
-            if(request->ok) {
+            if(request->ok && request->remoteUpdateNeeded) {
                 sg98_ota_download::DownloadOptions options;
                 options.expectedSize = request->manifest.size;
                 options.expectedSha256 = request->manifest.sha256;
@@ -2499,7 +2523,7 @@ void backgroundNetworkWorker(void*) {
                 request->ok = sg98_ota_download::downloadHttpsToPartition(
                     request->manifest.imageUrl, partition, 0, options, &request->result);
             }
-            if(request->ok) {
+            if(request->ok && request->controllerUpdateNeeded) {
                 sg98_ota_download::DownloadOptions options;
                 options.expectedSize = request->controllerManifest.size;
                 options.expectedSha256 = request->controllerManifest.sha256;
@@ -2602,13 +2626,19 @@ void serviceBackgroundNetworkResults() {
                 if(request->ok) {
                     g_systemOta.remoteManifest = request->manifest;
                     g_systemOta.controllerManifest = request->controllerManifest;
+                    g_systemOta.remoteUpdateNeeded = request->remoteUpdateNeeded;
+                    g_systemOta.controllerUpdateNeeded = request->controllerUpdateNeeded;
                     g_systemOta.controllerImageOffset = request->controllerImageOffset;
                     g_systemOta.expectedVersion = request->controllerManifest.version;
                     g_systemOta.expectedSha = request->controllerManifest.gitSha;
-                    g_systemOta.detail = "Files verified; reconnecting controller";
-                    g_systemOta.flow.receive(sg98_system_ota::Event::FilesReady, millis());
-                    switchTransportNow(LinkTransport::EspNow);
-                    app.transportOverrideActive = true;
+                    if(!request->remoteUpdateNeeded && !request->controllerUpdateNeeded) {
+                        finishSystemOta(true, "Already up to date");
+                    } else {
+                        g_systemOta.detail = "Files verified; reconnecting controller";
+                        g_systemOta.flow.receive(sg98_system_ota::Event::FilesReady, millis());
+                        switchTransportNow(LinkTransport::EspNow);
+                        app.transportOverrideActive = true;
+                    }
                 } else {
                     finishSystemOta(false, String("Download: ") + request->result.message);
                 }
@@ -8904,6 +8934,8 @@ String systemOtaControllerLine() {
     if(stage == Stage::Connect) return "Checking controller state";
     if(stage == Stage::WifiConnect) return "Waiting while remote joins Wi-Fi";
     if(stage == Stage::DownloadFiles) {
+        if(!g_systemOta.updatePlanKnown) return "Checking latest release";
+        if(!g_systemOta.controllerUpdateNeeded) return "Controller already current";
         if(g_systemOta.downloadPart < 2) return "Waiting for controller file";
         return String("Downloading ") + systemOtaPercent(g_systemOta.downloadWritten,
                                                           g_systemOta.downloadTotal) + "%";
@@ -8922,6 +8954,8 @@ String systemOtaRemoteLine() {
     const Stage stage = g_systemOta.flow.stage;
     if(stage == Stage::WifiConnect) return "Connecting home Wi-Fi";
     if(stage == Stage::DownloadFiles) {
+        if(!g_systemOta.updatePlanKnown) return "Checking latest release";
+        if(!g_systemOta.remoteUpdateNeeded) return "Remote already current";
         if(g_systemOta.downloadPart == 1) {
             return String("Downloading ") + systemOtaPercent(g_systemOta.downloadWritten,
                                                               g_systemOta.downloadTotal) + "%";
@@ -8929,6 +8963,8 @@ String systemOtaRemoteLine() {
         return "Remote file verified";
     }
     if(stage == Stage::RemoteInstall) return "Installing staged firmware";
+    if(stage > Stage::DownloadFiles && g_systemOta.updatePlanKnown &&
+       !g_systemOta.remoteUpdateNeeded) return "Already current";
     if(stage > Stage::DownloadFiles) return "Firmware staged and verified";
     return "Waiting for download";
 }
@@ -11261,11 +11297,14 @@ void confirmSystemOta() {
     g_systemOta.expectedVersion = "";
     g_systemOta.expectedSha = "";
     g_systemOta.sentStage = sg98_system_ota::Stage::Idle;
-    g_systemOta.detail = "Download both, update locally";
+    g_systemOta.detail = "Checking latest release";
     g_systemOta.lastProbeAt = 0;
     g_systemOta.lastProgressAt = 0;
     g_systemOta.restoreTransportPending = false;
     g_systemOta.remoteBootVerificationPending = false;
+    g_systemOta.remoteUpdateNeeded = false;
+    g_systemOta.controllerUpdateNeeded = false;
+    g_systemOta.updatePlanKnown = false;
     g_systemOta.downloadPart = 0;
     g_systemOta.downloadWritten = 0;
     g_systemOta.downloadTotal = 0;
@@ -11316,9 +11355,13 @@ bool handleSystemOtaAck(const sg98_protocol::AckFrame& ack) {
             } else if(g_systemOta.flow.stage == Stage::LocalConnect) {
                 if(version == g_systemOta.expectedVersion &&
                    systemOtaShaMatches(sha, g_systemOta.expectedSha)) {
-                    g_systemOta.flow.enter(Stage::ControllerVerify, now);
-                    g_systemOta.flow.receive(Event::ControllerVerified, now);
-                    g_systemOta.detail = "Controller already current";
+                    if(g_systemOta.remoteUpdateNeeded) {
+                        g_systemOta.flow.enter(Stage::ControllerVerify, now);
+                        g_systemOta.flow.receive(Event::ControllerVerified, now);
+                        g_systemOta.detail = "Controller already current";
+                    } else {
+                        finishSystemOta(true, "Both devices verified current");
+                    }
                 } else if(g_systemOta.controllerLocalPush) {
                     g_systemOta.flow.receive(Event::LocalConnected, now);
                     g_systemOta.detail = "Controller connected; sending firmware";
@@ -11338,6 +11381,8 @@ bool handleSystemOtaAck(const sg98_protocol::AckFrame& ack) {
                       systemOtaShaMatches(sha, g_systemOta.expectedSha)) {
                 if(g_systemOta.remoteBootVerificationPending) {
                     g_systemOta.remoteBootVerificationPending = false;
+                    finishSystemOta(true, "Both devices verified current");
+                } else if(!g_systemOta.remoteUpdateNeeded) {
                     finishSystemOta(true, "Both devices verified current");
                 } else {
                     g_systemOta.flow.receive(Event::ControllerVerified, now);
@@ -11521,7 +11566,9 @@ void serviceSystemOta() {
     }
     const Stage stage = g_systemOta.flow.stage;
     if(g_systemOta.lastProgressAt == 0 || now - g_systemOta.lastProgressAt >= 1000 || g_systemOta.sentStage != stage) {
-        showFlashScreen("SYSTEM UPDATE", label(stage), 250000, kColorAccent2);
+        const char* stageLabel = stage == Stage::DownloadFiles && !g_systemOta.updatePlanKnown
+                                     ? "Checking latest release" : label(stage);
+        showFlashScreen("SYSTEM UPDATE", stageLabel, 250000, kColorAccent2);
         g_systemOta.lastProgressAt = now;
     }
     if(stage == Stage::Connect) {

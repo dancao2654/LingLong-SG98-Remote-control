@@ -5,6 +5,14 @@
 using namespace sg98_system_ota;
 
 int main() {
+    const auto none = planUpdates(true, true);
+    assert(!none.anyNeeded());
+    const auto controllerOnly = planUpdates(true, false);
+    assert(!controllerOnly.remoteNeeded && controllerOnly.controllerNeeded);
+    const auto remoteOnly = planUpdates(false, true);
+    assert(remoteOnly.remoteNeeded && !remoteOnly.controllerNeeded);
+    const auto both = planUpdates(false, false);
+    assert(both.remoteNeeded && both.controllerNeeded);
     Flow flow;
     assert(!flow.busy());
     flow.start(100);
@@ -37,5 +45,5 @@ int main() {
     flow.start(UINT32_MAX - 1000);
     assert(!flow.expired(28000));
     assert(flow.expired(29000));
-    std::puts("PASS: coordinated local-push OTA sequencing and timeouts");
+    std::puts("PASS: coordinated local-push OTA plans, sequencing and timeouts");
 }
