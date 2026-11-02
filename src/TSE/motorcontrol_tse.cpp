@@ -23,7 +23,7 @@ enum class Setup : uint8_t {
     Mode, Source, SpeedLimit, CommStop, Complete
 };
 
-Setup setup = Setup::Identity;
+Setup setupState = Setup::Identity;
 bool pending = false;
 bool pendingWrite = false;
 uint16_t pendingReg = 0;
@@ -96,7 +96,7 @@ void retrySetup(uint8_t code) {
     alarmValid = false;
     commStatus = COMM_DISCONNECTED;
     currentStatus = MOTOR_NOT_CONNECTED;
-    setup = Setup::Identity;
+    setupState = Setup::Identity;
     nextAttemptAt = millis();
     retryWaiting = true;
 }
@@ -134,7 +134,7 @@ void initTse() {
     cachedCcw = -1;
     cachedCw = 1;
     driveAlarm = 0;
-    setup = Setup::Identity;
+    setupState = Setup::Identity;
     motor_setRPM = 0;
     motor_currentRPM = 0;
     motor_currentTorque = 0;
@@ -157,7 +157,7 @@ bool inputsSafe() {
 void setupRejected() {
     cancelRun(4);
     currentStatus = MOTOR_NOT_READY;
-    setup = Setup::Inputs;
+    setupState = Setup::Inputs;
     nextAttemptAt = millis();
     retryWaiting = true;
 }
@@ -165,14 +165,14 @@ void setupRejected() {
 void acceptResponse() {
     commCounter = 0;
     commStatus = COMM_CONNECTED;
-    if(setup != Setup::Complete) {
-        if(setup == Setup::StopSpeed) cachedSpeed = 0;
-        if(setup == Setup::StopEnable) cachedEnable = 0;
-        if(setup == Setup::Inputs && !inputsSafe()) {
+    if(setupState != Setup::Complete) {
+        if(setupState == Setup::StopSpeed) cachedSpeed = 0;
+        if(setupState == Setup::StopEnable) cachedEnable = 0;
+        if(setupState == Setup::Inputs && !inputsSafe()) {
             setupRejected();
             return;
         }
-        if(setup == Setup::ForcedInputs) {
+        if(setupState == Setup::ForcedInputs) {
             for(uint8_t i = 0; i < 5; ++i) {
                 if(lastRead[i] != 0) {
                     setupRejected();
@@ -180,11 +180,11 @@ void acceptResponse() {
                 }
             }
         }
-        if(setup == Setup::VirtualInputs && (lastRead[0] != 0 || lastRead[1] != 0)) {
+        if(setupState == Setup::VirtualInputs && (lastRead[0] != 0 || lastRead[1] != 0)) {
             setupRejected();
             return;
         }
-        setup = static_cast<Setup>(static_cast<uint8_t>(setup) + 1);
+        setupState = static_cast<Setup>(static_cast<uint8_t>(setupState) + 1);
         currentStatus = MOTOR_NOT_READY;
         return;
     }
@@ -252,7 +252,7 @@ bool tick() {
     newData = false;
     if(pending) {
         // A user stop must not wait for a telemetry or run acknowledgement.
-        if(setup == Setup::Complete && motor_setRPM == 0 &&
+        if(setupState == Setup::Complete && motor_setRPM == 0 &&
            (cachedSpeed != 0 || cachedEnable != 0 ||
             (pendingWrite && (pendingReg == SPEED || pendingReg == ENABLE) && pendingValue != 0))) {
             return off();
@@ -276,15 +276,15 @@ bool tick() {
         if(static_cast<uint32_t>(millis() - nextAttemptAt) < RETRY_MS) return false;
         retryWaiting = false;
     }
-    if(setup != Setup::Complete) {
+    if(setupState != Setup::Complete) {
         motor_setRPM = 0;
-        switch(setup) {
+        switch(setupState) {
             case Setup::Identity: {
                 MotorProbeReport report = {};
                 if(!probe(&report)) retrySetup(1);
                 else {
                     identified = true;
-                    setup = Setup::StopSpeed;
+                    setupState = Setup::StopSpeed;
                 }
                 break;
             }
@@ -343,7 +343,7 @@ bool off() {
     if(disabled) cachedEnable = 0;
     if(!speedStopped || !disabled) retrySetup(2);
     else if(driveAlarm == 0) currentStatus =
-        setup == Setup::Complete && monitorValid && alarmValid ? MOTOR_READY : MOTOR_NOT_READY;
+        setupState == Setup::Complete && monitorValid && alarmValid ? MOTOR_READY : MOTOR_NOT_READY;
     return speedStopped && disabled;
 }
 
@@ -359,7 +359,7 @@ bool motor_tse_is_kfm() {
 }
 
 bool motor_tse_stationary_ready_for_baud_change() {
-    return setup == Setup::Complete && !pending && cachedSpeed == 0 &&
+    return setupState == Setup::Complete && !pending && cachedSpeed == 0 &&
            cachedEnable == 0 && monitorValid && alarmValid && driveAlarm == 0;
 }
 
