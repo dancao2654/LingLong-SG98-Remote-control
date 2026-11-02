@@ -296,7 +296,7 @@ uint32_t getActiveMotorCommBaud() {
     case COMM_PROFILE_KRS:
       return COMM_BAUD_RATE_KRS;
     case COMM_PROFILE_TSE:
-      return COMM_BAUD_RATE_TSE;
+      return comm_get_tse_baud();
     case COMM_PROFILE_SEW_MOVILINK:
       return COMM_BAUD_RATE_SEW_MOVILINK;
     case COMM_PROFILE_RT:
@@ -1878,7 +1878,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
         tft->setTextColor(ST77XX_WHITE);
         int16_t x1, y1; uint16_t w, h;
         char title[24];
-        snprintf(title, sizeof(title), "JMC %lu?", static_cast<unsigned long>(baudForJmcMenuItem(selectedIdx)));
+        snprintf(title, sizeof(title), "%s %lu?", motor_kfm_tools_supported() ? "KFM" : "JMC", static_cast<unsigned long>(baudForJmcMenuItem(selectedIdx)));
         tft->getTextBounds(title, 0, 0, &x1, &y1, &w, &h);
         tft->setCursor((SCREEN_WIDTH - w) / 2, HEADER_HEIGHT + h + 4);
         tft->print(title);
@@ -1886,7 +1886,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
         tft->setFont(&FreeSans9pt7b);
         char msg1[48];
         char msg2[48];
-        snprintf(msg1, sizeof(msg1), "Set drive comm to %lu profile.", static_cast<unsigned long>(baudForJmcMenuItem(selectedIdx)));
+        snprintf(msg1, sizeof(msg1), "Set drive baud to %lu.", static_cast<unsigned long>(baudForJmcMenuItem(selectedIdx)));
         snprintf(msg2, sizeof(msg2), "Board stores %lu for next boot.", static_cast<unsigned long>(baudForJmcMenuItem(selectedIdx)));
         const char* msg3 = "Press encoder. Then power cycle.";
         const char* msg4 = "Press Start to exit";
@@ -1924,6 +1924,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
       static bool prevBaudConnected = false;
       static String prevUartLabel = "";
       static String prevDriveLabel = "";
+      static String prevKfmBaudStatus = "";
 
       const JmcBaudTrialStatus trialStatus = motor_get_jmc_baud_trial_status();
       const uint32_t trialBaud = motor_get_jmc_baud_trial_result_baud();
@@ -1932,12 +1933,14 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
       const String uartLabel = comm_get_profile_label();
       const String driveLabel = motor_get_type_label();
       const uint32_t targetBaud = baudForJmcMenuItem(selectedIdx);
-      const bool baudConnected =
-          motor_get_drive_type() == DRIVE_TYPE_JMC &&
-          commStatus == COMM_CONNECTED &&
-          comm_get_jmc_baud() == targetBaud;
+      const bool kfmBaudMenu = motor_kfm_tools_supported();
+      const String kfmBaudStatus = motor_get_tse_baud_status_text();
+      const bool baudConnected = commStatus == COMM_CONNECTED &&
+          ((kfmBaudMenu && comm_get_tse_baud() == targetBaud) ||
+           (!kfmBaudMenu && motor_get_drive_type() == DRIVE_TYPE_JMC &&
+            comm_get_jmc_baud() == targetBaud));
 
-      if(prevValue == 0xFFFF || prevTrialStatus != trialStatus || prevTrialBaud != trialBaud || prevReadBeforeBaud != readBeforeBaud || prevReadAfterBaud != readAfterBaud || prevTargetBaud != targetBaud || prevBaudConnected != baudConnected || prevUartLabel != uartLabel || prevDriveLabel != driveLabel) {
+      if(prevValue == 0xFFFF || prevTrialStatus != trialStatus || prevTrialBaud != trialBaud || prevReadBeforeBaud != readBeforeBaud || prevReadAfterBaud != readAfterBaud || prevTargetBaud != targetBaud || prevBaudConnected != baudConnected || prevUartLabel != uartLabel || prevDriveLabel != driveLabel || prevKfmBaudStatus != kfmBaudStatus) {
         tft->fillRect(0, 166, SCREEN_WIDTH, SCREEN_HEIGHT - 166, ST77XX_BLACK);
 
         uint16_t statusColor = ST77XX_WHITE;
@@ -1959,6 +1962,11 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
           default:
             statusColor = ST77XX_WHITE;
             break;
+        }
+        if(kfmBaudMenu) {
+          if(kfmBaudStatus == "SET BAUD REBOOT" || kfmBaudStatus == "ALREADY SET") statusColor = COLOR_GREEN;
+          else if(kfmBaudStatus == "IDLE") statusColor = ST77XX_WHITE;
+          else statusColor = COLOR_RED;
         }
 
         char detailLine[48];
@@ -1999,7 +2007,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
           tft->setCursor(34, 206);
           tft->print(okLine);
         } else {
-          tft->print(motor_get_jmc_baud_trial_status_text());
+          tft->print(kfmBaudMenu ? kfmBaudStatus.c_str() : motor_get_jmc_baud_trial_status_text());
         }
 
         tft->setFont(&FreeSans9pt7b);
@@ -2018,6 +2026,7 @@ void drawMenuValueScreen(int menuNum, int selectedIdx) {
         prevBaudConnected = baudConnected;
         prevUartLabel = uartLabel;
         prevDriveLabel = driveLabel;
+        prevKfmBaudStatus = kfmBaudStatus;
       }
       prevValue = item.value;
     }

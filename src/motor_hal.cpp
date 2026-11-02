@@ -40,6 +40,9 @@ JmcBaudTrialStatus jmcBaudTrialStatus = JMC_BAUD_SWITCH_IDLE;
 uint32_t jmcBaudTrialResultBaud = 0;
 uint32_t jmcBaudTrialReadBeforeBaud = 0;
 uint32_t jmcBaudTrialReadAfterBaud = 0;
+uint32_t preferredTseBaud = COMM_BAUD_RATE_TSE;
+enum TseBaudSwitchStatus : uint8_t { TSE_BAUD_IDLE, TSE_BAUD_SET_REBOOT, TSE_BAUD_ALREADY_SET, TSE_BAUD_WRITE_FAIL, TSE_BAUD_VERIFY_FAIL, TSE_BAUD_LINK_LOST, TSE_BAUD_NOT_READY };
+TseBaudSwitchStatus tseBaudSwitchStatus = TSE_BAUD_IDLE;
 
 const MotorCommandDescriptor UNKNOWN_COMMANDS[] = {
     {MOTOR_COMMAND_SET_RPM, MOTOR_MENU_NONE, MOTOR_MENU_NONE, 1, false, "Set RPM", "rpm", "No live drive detected yet.", "Run AUTO detect or force a drive first."},
@@ -649,6 +652,8 @@ void detectDriveTypeIfNeeded(bool force) {
 void motor_init() {
     resetMotorState();
     rememberPreferredJmcRate(jmcRateFromBaud(pdata_read_jmc_baud()), false, false);
+    preferredTseBaud = pdata_read_tse_baud();
+    comm_set_tse_baud(preferredTseBaud, false);
     comm_set_rs485_port(storedRs485Port(), true);
     autoProbeDone = false;
     const DriveType savedDriveType = static_cast<DriveType>(pdata_read_drive_type());
@@ -794,6 +799,14 @@ bool motor_jmc_tools_supported() {
     return motor_get_drive_type() == DRIVE_TYPE_JMC;
 }
 
+bool motor_kfm_tools_supported() {
+    return motor_get_drive_type() == DRIVE_TYPE_TSE && motor_tse_is_kfm();
+}
+
+bool motor_baud_tools_supported() {
+    return motor_jmc_tools_supported() || motor_kfm_tools_supported();
+}
+
 bool motor_menu_item_visible(uint8_t menuNum, uint8_t itemIdx) {
     if(menuNum == 1 &&
        (itemIdx == static_cast<uint8_t>(RESETNETWORK) ||
@@ -806,11 +819,11 @@ bool motor_menu_item_visible(uint8_t menuNum, uint8_t itemIdx) {
     }
 
     if(menuNum == 1 && itemIdx == static_cast<uint8_t>(JMCBAUDMENU)) {
-        return motor_jmc_tools_supported();
+        return motor_baud_tools_supported();
     }
 
     if(menuNum == 4) {
-        return motor_jmc_tools_supported();
+        return motor_baud_tools_supported();
     }
 
     return true;
@@ -1063,4 +1076,111 @@ const char* motor_get_jmc_baud_trial_status_text() {
         default:
             return "READY";
     }
+}
+
+uint32_t motor_get_tse_baud() {
+    return comm_get_tse_baud();
+}
+
+uint32_t motor_get_preferred_tse_baud() {
+    return preferredTseBaud;
+}
+
+bool motor_run_tse_baud_switch(uint32_t targetBaud) {
+    const uint32_t oldBaud = comm_get_tse_baud();
+    const uint16_t targetSetting = static_cast<uint16_t>(targetBaud / 100U);
+    tseBaudSwitchStatus = TSE_BAUD_VERIFY_FAIL;
+
+    if((targetBaud != 9600 && targetBaud != 19200 && targetBaud != 38400 &&
+        targetBaud != 57600 && targetBaud != 115200) || targetSetting == 0) {
+        return false;
+    }
+    if(!motor_kfm_tools_supported() || commStatus != COMM_CONNECTED ||
+       !motor_tse_stationary_ready_for_baud_change() ||
+       (state != IDLE && state != IDLE_GBW && state != MENU1 && state != MENU4) ||
+       motor_setRPM != 0 || motor_currentRPM != 0 || currentStatus != MOTOR_READY) {
+        tseBaudSwitchStatus = TSE_BAUD_NOT_READY;
+        return false;
+    }
+
+    const uint16_t oldSetting = static_cast<uint16_t>(oldBaud / 100U);
+    const int16_t settingBefore = readReturn(72, 1);
+    if(settingBefore < 0 || static_cast<uint16_t>(settingBefore) != oldSetting) {
+        tseBaudSwitchStatus = TSE_BAUD_VERIFY_FAIL;
+        return false;
+    }
+    if(targetBaud == oldBaud) {
+        preferredTseBaud = targetBaud;
+        pdata_write_tse_baud(targetBaud);
+        tseBaudSwitchStatus = TSE_BAUD_ALREADY_SET;
+        return true;
+    }
+
+    if(!writeConfirm(72, targetSetting)) {
+        tseBaudSwitchStatus = TSE_BAUD_WRITE_FAIL;
+        return false;
+    }
+
+    // Some drives apply PA72 after a restart; others change the UART as soon
+    // as the write is accepted. Verify at the current rate, then at the target.
+    const int16_t readAtOldRate = readReturn(72, 1);
+    if(readAtOldRate >= 0 && static_cast<uint16_t>(readAtOldRate) == targetSetting) {
+        preferredTseBaud = targetBaud;
+        pdata_write_tse_baud(targetBaud);
+        tseBaudSwitchStatus = TSE_BAUD_SET_REBOOT;
+        return true;
+    }
+
+    comm_set_tse_baud(targetBaud, true);
+    const int16_t readAtTargetRate = readReturn(72, 1);
+    if(readAtTargetRate >= 0 && static_cast<uint16_t>(readAtTargetRate) == targetSetting) {
+        preferredTseBaud = targetBaud;
+        pdata_write_tse_baud(targetBaud);
+        tseBaudSwitchStatus = TSE_BAUD_SET_REBOOT;
+        return true;
+    }
+
+    comm_set_tse_baud(oldBaud, true);
+    const int16_t recoveryRead = readReturn(72, 1);
+    if(recoveryRead >= 0 && static_cast<uint16_t>(recoveryRead) == targetSetting) {
+        preferredTseBaud = targetBaud;
+        pdata_write_tse_baud(targetBaud);
+        tseBaudSwitchStatus = TSE_BAUD_SET_REBOOT;
+        return true;
+    }
+    if(recoveryRead >= 0) {
+        tseBaudSwitchStatus = TSE_BAUD_VERIFY_FAIL;
+    } else {
+        // The drive acknowledged the new value but is no longer reachable at
+        // either rate. Keep that acknowledged target as the next-boot fallback.
+        preferredTseBaud = targetBaud;
+        pdata_write_tse_baud(targetBaud);
+        tseBaudSwitchStatus = TSE_BAUD_LINK_LOST;
+    }
+    return false;
+}
+
+bool motor_run_baud_switch(uint32_t baud_rate) {
+    if(motor_jmc_tools_supported()) return motor_run_jmc_baud_switch(baud_rate);
+    if(motor_kfm_tools_supported()) return motor_run_tse_baud_switch(baud_rate);
+    return false;
+}
+
+const char* motor_get_tse_baud_status_text() {
+    switch(tseBaudSwitchStatus) {
+        case TSE_BAUD_SET_REBOOT: return "SET BAUD REBOOT";
+        case TSE_BAUD_ALREADY_SET: return "ALREADY SET";
+        case TSE_BAUD_WRITE_FAIL: return "WRITE FAIL";
+        case TSE_BAUD_LINK_LOST: return "LINK LOST";
+        case TSE_BAUD_NOT_READY: return "MOTOR NOT IDLE";
+        case TSE_BAUD_VERIFY_FAIL: return "VERIFY FAIL";
+        case TSE_BAUD_IDLE:
+        default: return "IDLE";
+    }
+}
+
+const char* motor_get_baud_switch_status_text() {
+    return motor_jmc_tools_supported()
+        ? motor_get_jmc_baud_trial_status_text()
+        : motor_get_tse_baud_status_text();
 }

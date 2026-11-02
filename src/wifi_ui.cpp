@@ -669,7 +669,7 @@ const char kPage[] PROGMEM = R"HTML(
       } else if (item.kind === 'danger_action') {
         body = `<div class="actions"><button data-reset="1">Reset Defaults</button></div>`;
       } else if (item.kind === 'baud_action') {
-        body = `<div class="actions"><button data-jmc-baud="${item.baud}">Switch</button><span class="chip ${item.activeBaud ? 'active' : ''}">${item.activeBaud ? '✓ ' : ''}${item.baud}</span></div>`;
+        body = `<div class="actions"><button data-motor-baud="${item.baud}">Switch</button><span class="chip ${item.activeBaud ? 'active' : ''}">${item.activeBaud ? '✓ ' : ''}${item.baud}</span></div>`;
       }
       return `<div class="menu-item"><div class="menu-head"><h3 class="menu-title">${item.name}</h3><div class="menu-meta">${meta}</div></div>${body}</div>`;
     }
@@ -698,10 +698,10 @@ const char kPage[] PROGMEM = R"HTML(
         };
       });
 
-      document.querySelectorAll('[data-jmc-baud]').forEach((button) => {
+      document.querySelectorAll('[data-motor-baud]').forEach((button) => {
         button.onclick = async () => {
-          const response = await postForm('/api/action', { action: 'jmc_baud', arg0: button.dataset.jmcBaud });
-          log(`[jmc_baud] ${button.dataset.jmcBaud} ${response.ok ? 'ok' : 'fail'} ${response.message || ''}`.trim());
+          const response = await postForm('/api/action', { action: 'motor_baud', arg0: button.dataset.motorBaud });
+          log(`[motor_baud] ${button.dataset.motorBaud} ${response.ok ? 'ok' : 'fail'} ${response.message || ''}`.trim());
           await refresh();
         };
       });

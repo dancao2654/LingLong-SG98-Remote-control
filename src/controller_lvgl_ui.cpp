@@ -617,7 +617,7 @@ String menuPathForNum(int menuNum) {
         case 1: return "Only grinder setup. Rotate to browse.";
         case 2: return "Purge Settings. Rotate to browse.";
         case 3: return "GbW Settings. Rotate to browse.";
-        case 4: return "JMC Baud. Rotate to browse.";
+        case 4: return "Baud rate. Rotate to browse.";
         case 5: return "Wireless. Rotate to browse.";
         default: return "Rotate to browse.";
     }

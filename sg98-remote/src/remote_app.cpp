@@ -8912,112 +8912,161 @@ void drawFlashScreen(RemoteCanvas& canvas, const Layout& layout) {
                             face);
 }
 
-uint8_t systemOtaStep(sg98_system_ota::Stage stage) {
-    using sg98_system_ota::Stage;
-    if(stage == Stage::Connect) return 1;
-    if(stage <= Stage::DownloadFiles) return 2;
-    if(stage <= Stage::ControllerTransfer) return 3;
-    if(stage == Stage::ControllerVerify) return 4;
-    return 5;
-}
-
 uint8_t systemOtaPercent(uint32_t written, uint32_t total) {
     return total == 0 ? 0 : static_cast<uint8_t>(min<uint32_t>(100, (written * 100ULL) / total));
 }
 
-String systemOtaControllerLine() {
+uint8_t systemOtaPhase(sg98_system_ota::Stage stage) {
     using sg98_system_ota::Stage;
-    const Stage stage = g_systemOta.flow.stage;
-    if(g_systemOta.flow.controllerVerified) {
-        return String("Verified v") + g_systemOta.controllerVersion;
-    }
-    if(stage == Stage::Connect) return "Checking controller state";
-    if(stage == Stage::WifiConnect) return "Waiting while remote joins Wi-Fi";
-    if(stage == Stage::DownloadFiles) {
-        if(!g_systemOta.updatePlanKnown) return "Checking latest release";
-        if(!g_systemOta.controllerUpdateNeeded) return "Controller already current";
-        if(g_systemOta.downloadPart < 2) return "Waiting for controller file";
-        return String("Downloading ") + systemOtaPercent(g_systemOta.downloadWritten,
-                                                          g_systemOta.downloadTotal) + "%";
-    }
-    if(stage == Stage::LocalConnect) return "Reconnecting over ESP-NOW";
-    if(stage == Stage::LegacyControllerUpdate) return "Downloading compatibility update";
-    if(stage == Stage::ControllerTransfer) {
-        return String("Transferring ") + systemOtaPercent(g_systemOta.transferOffset,
-                                                           g_systemOta.controllerManifest.size) + "%";
-    }
-    return "Restarting and verifying";
+    if(stage <= Stage::WifiConnect) return 0;
+    if(stage == Stage::DownloadFiles) return 1;
+    if(stage <= Stage::ControllerVerify) return 2;
+    return 3;
 }
 
-String systemOtaRemoteLine() {
+const char* systemOtaHeadline(sg98_system_ota::Stage stage, bool compact) {
     using sg98_system_ota::Stage;
-    const Stage stage = g_systemOta.flow.stage;
-    if(stage == Stage::WifiConnect) return "Connecting home Wi-Fi";
+    if(stage == Stage::Connect) return compact ? "Checking" : "Checking grinder";
+    if(stage == Stage::WifiConnect) return compact ? "Connecting" : "Connecting Wi-Fi";
     if(stage == Stage::DownloadFiles) {
-        if(!g_systemOta.updatePlanKnown) return "Checking latest release";
-        if(!g_systemOta.remoteUpdateNeeded) return "Remote already current";
-        if(g_systemOta.downloadPart == 1) {
-            return String("Downloading ") + systemOtaPercent(g_systemOta.downloadWritten,
-                                                              g_systemOta.downloadTotal) + "%";
-        }
-        return "Remote file verified";
+        if(!g_systemOta.updatePlanKnown) return compact ? "Checking" : "Checking updates";
+        return compact ? "Downloading" : "Downloading updates";
     }
-    if(stage == Stage::RemoteInstall) return "Installing staged firmware";
-    if(stage > Stage::DownloadFiles && g_systemOta.updatePlanKnown &&
-       !g_systemOta.remoteUpdateNeeded) return "Already current";
-    if(stage > Stage::DownloadFiles) return "Firmware staged and verified";
-    return "Waiting for download";
+    if(stage == Stage::LocalConnect) return compact ? "Connecting" : "Connecting grinder";
+    if(stage == Stage::ControllerVerify) return compact ? "Verifying" : "Verifying grinder";
+    if(stage == Stage::RemoteInstall) return compact ? "Finishing" : "Updating remote";
+    return compact ? "Updating" : "Updating grinder";
+}
+
+bool systemOtaByteProgress(uint8_t* percent) {
+    using sg98_system_ota::Stage;
+    if(percent == nullptr) return false;
+    if(g_systemOta.flow.stage == Stage::DownloadFiles && g_systemOta.downloadPart != 0 &&
+       g_systemOta.downloadTotal != 0) {
+        *percent = systemOtaPercent(g_systemOta.downloadWritten, g_systemOta.downloadTotal);
+        return true;
+    }
+    if(g_systemOta.flow.stage == Stage::ControllerTransfer &&
+       g_systemOta.controllerManifest.size != 0) {
+        *percent = systemOtaPercent(g_systemOta.transferOffset, g_systemOta.controllerManifest.size);
+        return true;
+    }
+    return false;
+}
+
+void drawSystemOtaDevice(RemoteCanvas& canvas, int16_t x, int16_t y, int16_t radius,
+                         bool grinder, bool done, bool active) {
+    const uint16_t color = done ? kColorGood : (active ? kColorAccent2 : kColorMuted);
+    canvas.drawCircle(x, y, radius, color);
+    if(done) {
+        drawThickLine(canvas, x - 6, y, x - 1, y + 5, 1, color);
+        drawThickLine(canvas, x - 1, y + 5, x + 7, y - 6, 1, color);
+    } else if(grinder) {
+        canvas.drawRect(x - 6, y - 3, 12, 9, color);
+        canvas.drawLine(x - 4, y - 7, x + 4, y - 7, color);
+        canvas.drawLine(x - 4, y - 7, x - 6, y - 3, color);
+        canvas.drawLine(x + 4, y - 7, x + 6, y - 3, color);
+        canvas.fillCircle(x, y + 1, 2, color);
+    } else {
+        canvas.drawRoundRect(x - 5, y - 8, 10, 16, 2, color);
+        canvas.fillCircle(x, y + 5, 1, color);
+    }
+}
+
+void drawSystemOtaRing(RemoteCanvas& canvas, int16_t cx, int16_t cy, int16_t radius,
+                       bool compact) {
+    uint8_t percent = 0;
+    const bool measured = systemOtaByteProgress(&percent);
+    const int16_t segments = compact ? 36 : 56;
+    const int16_t lit = measured ? static_cast<int16_t>((segments * percent + 99) / 100) : 9;
+    const int16_t head = static_cast<int16_t>((millis() / 180) % segments);
+    for(int16_t i = 0; i < segments; ++i) {
+        const float angle = -1.5707963f + 6.2831853f * i / segments;
+        const int16_t x0 = static_cast<int16_t>(lroundf(cx + cosf(angle) * (radius - 5)));
+        const int16_t y0 = static_cast<int16_t>(lroundf(cy + sinf(angle) * (radius - 5)));
+        const int16_t x1 = static_cast<int16_t>(lroundf(cx + cosf(angle) * radius));
+        const int16_t y1 = static_cast<int16_t>(lroundf(cy + sinf(angle) * radius));
+        const bool on = measured ? i < lit : (i - head + segments) % segments < lit;
+        canvas.drawLine(x0, y0, x1, y1, on ? kColorAccent2 : kColorPanelHi);
+    }
+    if(measured) {
+        canvas.drawCenteredText(String(percent) + "%", cx, cy,
+                                compact ? RemoteTextStyle::Medium : RemoteTextStyle::Hero,
+                                kColorText, kColorBg);
+    } else {
+        const int16_t gap = compact ? 11 : 17;
+        const int16_t dot = compact ? 3 : 4;
+        for(int16_t i = -1; i <= 1; ++i) {
+            const bool bright = (millis() / 380) % 3 == static_cast<uint32_t>(i + 1);
+            canvas.fillCircle(cx + i * gap, cy, dot, bright ? kColorAccent2 : kColorMuted);
+        }
+    }
 }
 
 void drawSystemOtaProgress(RemoteCanvas& canvas, const Layout& layout) {
     canvas.fillScreen(kColorBg);
+    using sg98_system_ota::Stage;
+    const bool compact = !useRoundNavigation();
     const int16_t centerX = layout.width / 2;
-    const int16_t width = min<int16_t>(useRoundNavigation() ? 330 : layout.width - 40,
-                                       layout.width - 32);
-    const int16_t left = centerX - width / 2;
-    const uint8_t step = systemOtaStep(g_systemOta.flow.stage);
-    const uint16_t active = blendColor565(kColorAccent, kColorText, 0.12f);
-    canvas.drawCenteredText("SYSTEM UPDATE", centerX, useRoundNavigation() ? 62 : 38,
-                            RemoteTextStyle::Small, active, kColorBg);
-    canvas.drawCenteredText(String("STEP ") + step + " OF 5", centerX,
-                            useRoundNavigation() ? 91 : 65,
-                            RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+    // Scale the 466px round composition vertically for taller remote displays.
+    const auto largeY = [&](int16_t y) {
+        return static_cast<int16_t>((static_cast<int32_t>(layout.height) * y + 233) / 466);
+    };
+    const Stage stage = g_systemOta.flow.stage;
+    const int16_t titleY = compact ? 24 : largeY(56);
+    const int16_t headlineY = compact ? 51 : largeY(93);
+    canvas.drawCenteredText("SYSTEM UPDATE", centerX, titleY, RemoteTextStyle::Tiny,
+                            kColorMuted, kColorBg);
+    const String headline = systemOtaHeadline(stage, compact);
+    const int16_t headlineWidth = min<int16_t>(layout.width - 28, compact ? 170 : 340);
+    const RemoteTextStyle headlineStyle = chooseLabelTextStyle(headline, headlineWidth);
+    canvas.drawCenteredText(headline, centerX, headlineY, headlineStyle, kColorText, kColorBg);
 
-    const int16_t barY = useRoundNavigation() ? 116 : 88;
-    canvas.fillRoundRect(left, barY, width, 8, 4, kColorPanelHi);
-    canvas.fillRoundRect(left, barY, max<int16_t>(8, width * step / 5), 8, 4, active);
+    const int16_t trackWidth = compact ? 140 : 220;
+    const int16_t trackX = centerX - trackWidth / 2;
+    const int16_t trackY = compact ? 75 : largeY(124);
+    const int16_t gap = compact ? 5 : 9;
+    const int16_t segmentWidth = (trackWidth - gap * 3) / 4;
+    const uint8_t phase = systemOtaPhase(stage);
+    for(uint8_t i = 0; i < 4; ++i) {
+        const uint16_t color = i < phase ? kColorGood : (i == phase ? kColorAccent2 : kColorPanelHi);
+        canvas.fillRoundRect(trackX + i * (segmentWidth + gap), trackY,
+                             segmentWidth, compact ? 4 : 6, 2, color);
+    }
 
-    const int16_t controllerY = useRoundNavigation() ? 162 : 126;
-    canvas.drawTextTopLeft("CONTROLLER", left, controllerY,
-                           RemoteTextStyle::Tiny, kColorMuted, kColorBg);
-    canvas.drawTextTopLeft(fitTextToWidthNoTilde(systemOtaControllerLine(), width,
-                                                 RemoteTextStyle::Small, 0),
-                           left, controllerY + 23, RemoteTextStyle::Small,
-                           g_systemOta.flow.controllerVerified ? kColorGood : kColorText, kColorBg);
-    String controllerKind = g_systemOta.controllerUi;
-    if(!g_systemOta.controllerEnv.isEmpty()) controllerKind += String("  ") + g_systemOta.controllerEnv;
-    canvas.drawTextTopLeft(fitTextToWidthNoTilde(controllerKind, width, RemoteTextStyle::Tiny, 0),
-                           left, controllerY + 51, RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+    drawSystemOtaRing(canvas, centerX, compact ? 130 : largeY(225),
+                      compact ? 43 : min<int16_t>(layout.width, layout.height) / 6, compact);
 
-    const int16_t dividerY = controllerY + 79;
-    canvas.drawLine(left, dividerY, left + width, dividerY, kColorPanelHi);
-    const int16_t remoteY = dividerY + 20;
-    canvas.drawTextTopLeft("REMOTE", left, remoteY,
-                           RemoteTextStyle::Tiny, kColorMuted, kColorBg);
-    canvas.drawTextTopLeft(fitTextToWidthNoTilde(systemOtaRemoteLine(), width,
-                                                 RemoteTextStyle::Small, 0),
-                           left, remoteY + 23, RemoteTextStyle::Small, kColorText, kColorBg);
-    canvas.drawTextTopLeft(fitTextToWidthNoTilde(String("v") + sg98_version::release() + "  " +
-                                                 sg98_version::buildEnv(), width,
-                                                 RemoteTextStyle::Tiny, 0),
-                           left, remoteY + 51, RemoteTextStyle::Tiny, kColorMuted, kColorBg);
-
-    const int16_t statusY = min<int16_t>(layout.height - 48, remoteY + 96);
-    canvas.drawCenteredText(fitTextToWidthNoTilde(String(sg98_system_ota::label(g_systemOta.flow.stage)),
-                                                  width, RemoteTextStyle::Small, 0),
-                            centerX, statusY, RemoteTextStyle::Small, active, kColorBg);
-    canvas.drawCenteredText("Keep both devices powered", centerX, statusY + 25,
-                            RemoteTextStyle::Tiny, kColorMuted, kColorBg);
+    const bool grinderDone = g_systemOta.flow.controllerVerified ||
+                             (g_systemOta.updatePlanKnown && !g_systemOta.controllerUpdateNeeded);
+    const bool remoteDone = g_systemOta.updatePlanKnown && !g_systemOta.remoteUpdateNeeded;
+    const bool grinderActive = phase == 2 && !grinderDone;
+    const bool remoteActive = (stage == Stage::RemoteInstall ||
+                               (stage == Stage::DownloadFiles && g_systemOta.downloadPart == 1)) && !remoteDone;
+    const int16_t deviceY = compact ? 190 : largeY(341);
+    const int16_t grinderX = centerX - (compact ? 67 : 82);
+    const int16_t remoteX = centerX + (compact ? 25 : 82);
+    const int16_t deviceRadius = compact ? 12 : 18;
+    if(!compact) {
+        canvas.drawLine(grinderX + deviceRadius + 9, deviceY,
+                        remoteX - deviceRadius - 9, deviceY, kColorPanelHi);
+    }
+    drawSystemOtaDevice(canvas, grinderX, deviceY, deviceRadius, true, grinderDone, grinderActive);
+    drawSystemOtaDevice(canvas, remoteX, deviceY, deviceRadius, false, remoteDone, remoteActive);
+    if(compact) {
+        canvas.drawCenteredText("GRINDER", centerX - 30, deviceY, RemoteTextStyle::Tiny,
+                                grinderDone ? kColorGood : kColorText, kColorBg);
+        canvas.drawCenteredText("REMOTE", centerX + 58, deviceY, RemoteTextStyle::Tiny,
+                                remoteDone ? kColorGood : kColorText, kColorBg);
+    } else {
+        canvas.drawCenteredText("GRINDER", grinderX, deviceY + largeY(34), RemoteTextStyle::Small,
+                                grinderDone ? kColorGood : kColorText, kColorBg);
+        canvas.drawCenteredText("REMOTE", remoteX, deviceY + largeY(34), RemoteTextStyle::Small,
+                                remoteDone ? kColorGood : kColorText, kColorBg);
+    }
+    canvas.drawCenteredText(compact ? "Keep both on" : "Keep both devices on",
+                            centerX, compact ? 220 : largeY(416), RemoteTextStyle::Tiny,
+                            kColorMuted, kColorBg);
 }
 
 void redrawUi() {

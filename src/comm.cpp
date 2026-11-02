@@ -17,6 +17,7 @@ uint16_t crc = 0;
 uint16_t lastRegAddr = 0;
 CommProfile activeCommProfile = COMM_PROFILE_JMC;
 JmcCommRate activeJmcRate = JMC_COMM_RATE_9600;
+uint32_t activeTseBaud = COMM_BAUD_RATE_TSE;
 
 namespace {
 constexpr uint32_t RS485_TURNAROUND_US = 50;
@@ -106,7 +107,7 @@ uint32_t baudRateForProfile(CommProfile profile) {
     case COMM_PROFILE_KRS:
       return COMM_BAUD_RATE_KRS;
     case COMM_PROFILE_TSE:
-      return COMM_BAUD_RATE_TSE;
+      return activeTseBaud;
     case COMM_PROFILE_RT:
     default:
       return COMM_BAUD_RATE_RT;
@@ -564,6 +565,29 @@ uint32_t comm_get_jmc_baud() {
   return baudRateForJmcRate(activeJmcRate);
 }
 
+bool comm_set_tse_baud(uint32_t baud_rate, bool reapply_active) {
+  switch(baud_rate) {
+    case 9600:
+    case 19200:
+    case 38400:
+    case 57600:
+    case 115200:
+      break;
+    default:
+      return false;
+  }
+  if(activeTseBaud == baud_rate && !reapply_active) return false;
+  activeTseBaud = baud_rate;
+  if(reapply_active && activeCommProfile == COMM_PROFILE_TSE) {
+    comm_set_profile(COMM_PROFILE_TSE, true);
+  }
+  return true;
+}
+
+uint32_t comm_get_tse_baud() {
+  return activeTseBaud;
+}
+
 const char* comm_get_jmc_rate_label() {
   switch (activeJmcRate) {
     case JMC_COMM_RATE_57600:
@@ -623,7 +647,14 @@ const char* comm_get_profile_label() {
     case COMM_PROFILE_KRS:
       return "9600-8O1";
     case COMM_PROFILE_TSE:
-      return "9600-8N2";
+      switch(activeTseBaud) {
+        case 19200: return "19200-8N2";
+        case 38400: return "38400-8N2";
+        case 57600: return "57600-8N2";
+        case 115200: return "115200-8N2";
+        case 9600:
+        default: return "9600-8N2";
+      }
     case COMM_PROFILE_SEW_MOVILINK:
       return "9600-8E1";
     case COMM_PROFILE_RT:

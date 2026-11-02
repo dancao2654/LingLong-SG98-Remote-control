@@ -12,6 +12,7 @@ Preferences preferences;
 
 namespace {
 constexpr uint32_t DEFAULT_JMC_BAUD = 9600;
+constexpr uint32_t DEFAULT_TSE_BAUD = 9600;
 constexpr int16_t DEFAULT_DRIVE_TYPE = DRIVE_TYPE_UNKNOWN;
 constexpr int16_t DEFAULT_RS485_PORT = COMM_RS485_PORT_ONBOARD;
 
@@ -32,6 +33,19 @@ uint32_t sanitize_jmc_baud(uint32_t baud_rate) {
             return baud_rate;
         default:
             return DEFAULT_JMC_BAUD;
+    }
+}
+
+uint32_t sanitize_tse_baud(uint32_t baud_rate) {
+    switch(baud_rate) {
+        case 9600:
+        case 19200:
+        case 38400:
+        case 57600:
+        case 115200:
+            return baud_rate;
+        default:
+            return DEFAULT_TSE_BAUD;
     }
 }
 
@@ -218,6 +232,7 @@ void pdata_write(uint8_t what) { // 0 = ALL SETTIGNS , 1 = Calibration array, 2 
         preferences.putULong("setWeight", default_setWeight);
         preferences.putFloat("speedModifier", speedModifier);
         preferences.putULong("jmcBaud", DEFAULT_JMC_BAUD);
+        preferences.putULong("tseBaud", DEFAULT_TSE_BAUD);
         preferences.putShort("driveType", DEFAULT_DRIVE_TYPE);
         preferences.putBool(DRIVE_FORCE_KEY, false);
         preferences.putShort(RS485_PORT_KEY, DEFAULT_RS485_PORT);
@@ -316,6 +331,14 @@ uint32_t pdata_read_jmc_baud() {
 
 void pdata_write_jmc_baud(uint32_t baud_rate) {
     preferences.putULong("jmcBaud", sanitize_jmc_baud(baud_rate));
+}
+
+uint32_t pdata_read_tse_baud() {
+    return sanitize_tse_baud(preferences.getULong("tseBaud", DEFAULT_TSE_BAUD));
+}
+
+void pdata_write_tse_baud(uint32_t baud_rate) {
+    preferences.putULong("tseBaud", sanitize_tse_baud(baud_rate));
 }
 
 int16_t pdata_read_rs485_port() {

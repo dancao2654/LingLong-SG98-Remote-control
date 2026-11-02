@@ -21,6 +21,11 @@ uint8_t error = 0;
 uint16_t errorCode = 0;
 bool newData = false;
 bool disp_updateRequired = false;
+uint32_t testTseBaud = 9600;
+
+uint32_t comm_get_tse_baud() {
+    return testTseBaud;
+}
 
 namespace {
 struct Write { uint16_t reg; uint16_t value; };
@@ -46,6 +51,7 @@ void recordWrite(uint16_t reg, uint16_t value) {
 }
 
 void fixture() {
+    testTseBaud = 9600;
     registers.clear();
     registers[1] = 80;
     registers[2] = 123;
@@ -81,6 +87,7 @@ void pump(int count = 1) {
 void ready() {
     for(int i = 0; i < 200 && currentStatus != MOTOR_READY; ++i) pump();
     assert(currentStatus == MOTOR_READY);
+    assert(motor_tse_stationary_ready_for_baud_change());
 }
 
 bool wrote(uint16_t reg, int16_t value) {
@@ -167,12 +174,48 @@ int main() {
     }
     assert(writes.empty());
 
+    // Captured FC03 reply: 01 03 04 00 06 1F 5C 12 3B (CRC valid).
+    fixture();
+    registers[1] = 6;
+    registers[2] = 0x1F5C;
+    assert(api.probe(&report) && report.tse_signature);
+    assert(motor_tse_is_kfm());
+    assert(writes.empty());
+    registers[2] = 0x1F5D;
+    assert(!api.probe(&report) && !report.tse_signature);
+    assert(!motor_tse_is_kfm());
+    registers[2] = 0x1F5C;
+    registers[72] = 192;
+    assert(!api.probe(&report) && !report.tse_signature);
+    testTseBaud = 19200;
+    assert(api.probe(&report) && report.tse_signature);
+    assert(motor_tse_is_kfm());
+    testTseBaud = 9600;
+    assert(writes.empty());
+
     fixture();
     registers[1] = 20; // A KRS model code is not a TSE fingerprint.
     pump(80);
     assert(writes.empty());
     assert(!api.off());
     assert(writes.empty());
+
+    fixture();
+    registers[1] = 6;
+    registers[2] = 0x1F5C;
+    registers[0x0100] = 1;
+    registers[0x0110] = 2;
+    pump(100);
+    assert(currentStatus == MOTOR_NOT_READY && error == 4);
+    assert(!wrote(0x00B5, 1));
+
+    fixture();
+    registers[1] = 6;
+    registers[2] = 0x1F5C;
+    registers[0x0110] = 2;
+    pump(100);
+    assert(currentStatus == MOTOR_NOT_READY && error == 4);
+    assert(!wrote(0x00B5, 1));
 
     fixture();
     registers[0x0100] = 1; // Default physical SON must be unassigned first.

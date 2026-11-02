@@ -63,6 +63,8 @@ bool comm_set_jmc_rate(JmcCommRate rate, bool reapply_active = false);
 JmcCommRate comm_get_jmc_rate();
 uint32_t comm_get_jmc_baud();
 const char* comm_get_jmc_rate_label();
+bool comm_set_tse_baud(uint32_t baud_rate, bool reapply_active = false);
+uint32_t comm_get_tse_baud();
 uint16_t comm_get_send_delay_ms();
 uint16_t comm_get_receive_delay_ms();
 uint16_t comm_get_idle_delay_ms();

@@ -43,7 +43,7 @@ menuEntry Menu1[NUM_MENU1_ITEMS] = {
     {"Motor ramp", default_motor_ramp, 0, 12, 1, "MOTORRMP", "lvl"}, // 6
     {"Motor direction", default_motor_direction_reversed, 0, 1, 1, "MOTORDIR", ""}, // 7
     {"Drive", 0, 0, 0, 0, "DRIVESEL", ""},                // 8
-    {"JMC Baud", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 9
+    {"Baud rate", 0, 0, 0, 0, "JMCBAUDMENU", ""},               // 9
     {"Calibrate", 0, 0 ,0, 0, "CALIBRATE", ""},           // 10
     {"Gauge Set", 0, -1200, 1200, 1, "GAUGESET", ""},     // 11, value is 10um/count
     {"Wireless", default_radio_mode, 0, 2, 1, "RADIOMODE", ""}, // 12
@@ -87,11 +87,11 @@ menuEntry Menu3[NUM_MENU3_ITEMS] = {
 
 menuEntry Menu4[NUM_MENU4_ITEMS] = {
     {"BACK", 0, 0, 0, 0, "RETURN4", ""},
-    {"JMC 9600", 0, 0 ,0, 0, "JMC9600", ""},
-    {"JMC 19200", 0, 0 ,0, 0, "JMC19200", ""},
-    {"JMC 38400", 0, 0 ,0, 0, "JMC38400", ""},
-    {"JMC 57600", 0, 0 ,0, 0, "JMC57600", ""},
-    {"JMC 115200", 0, 0 ,0, 0, "JMC115200", ""},
+    {"9600", 0, 0 ,0, 0, "BAUD9600", ""},
+    {"19200", 0, 0 ,0, 0, "BAUD19200", ""},
+    {"38400", 0, 0 ,0, 0, "BAUD38400", ""},
+    {"57600", 0, 0 ,0, 0, "BAUD57600", ""},
+    {"115200", 0, 0 ,0, 0, "BAUD115200", ""},
 };
 
 menuEntry Menu5[NUM_MENU5_ITEMS] = {

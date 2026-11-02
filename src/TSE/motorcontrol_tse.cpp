@@ -42,23 +42,31 @@ int16_t cachedEnable = 0;
 int16_t cachedCcw = -1;
 int16_t cachedCw = 1;
 uint16_t driveAlarm = 0;
+bool kfmSignatureDetected = false;
 
 bool probe(MotorProbeReport* report) {
     if(report == nullptr) return false;
+    kfmSignatureDetected = false;
     report->tse_signature = false;
     motor_probe_set_profile(COMM_PROFILE_TSE);
     uint16_t model[2] = {};
     uint16_t comm[3] = {};
     uint16_t encoder[1] = {};
     // No write-based identification, including when the family is forced.
+    const bool modelRead = motor_probe_read_register(1, 2, 1, model, 2);
+    const bool familyModel = model[0] >= 40 && model[0] <= 80 &&
+                             model[1] != 0 && model[1] != 0xFFFF;
+    const bool capturedKfmModel = model[0] == 6 && model[1] == 0x1F5C;
     const bool matched =
-        motor_probe_read_register(1, 2, 1, model, 2) &&
-        model[0] >= 40 && model[0] <= 80 && model[1] != 0 && model[1] != 0xFFFF &&
+        modelRead && (familyModel || capturedKfmModel) &&
         motor_probe_read_register(71, 3, 1, comm, 3) &&
-        comm[0] == SLAVE_ID && comm[1] == 96 && comm[2] == 0 &&
+        comm[0] == SLAVE_ID &&
+        comm[1] == static_cast<uint16_t>(comm_get_tse_baud() / 100U) &&
+        comm[2] == 0 &&
         motor_probe_read_register(62, 1, 1, encoder, 1) &&
         (encoder[0] == 4 || encoder[0] == 5);
     report->tse_signature = matched;
+    kfmSignatureDetected = matched && capturedKfmModel;
     return matched;
 }
 
@@ -114,6 +122,7 @@ bool sendWrite(uint16_t reg, int16_t value) {
 }
 
 void initTse() {
+    kfmSignatureDetected = false;
     pending = false;
     retryWaiting = false;
     monitorValid = false;
@@ -345,10 +354,19 @@ void resetTse() {
 }
 }
 
+bool motor_tse_is_kfm() {
+    return kfmSignatureDetected;
+}
+
+bool motor_tse_stationary_ready_for_baud_change() {
+    return setup == Setup::Complete && !pending && cachedSpeed == 0 &&
+           cachedEnable == 0 && monitorValid && alarmValid && driveAlarm == 0;
+}
+
 const MotorBackendDefinition MOTOR_BACKEND_TSE = {
     "tse", "TSE servo backend",
-    "TSD/TSE family speed-mode backend; KFM variant follows the family manual, not hardware-validated.",
-    "Read-only fingerprint: PA1 model 40..80, PA2 software, PA62 encoder 4/5, PA71/72/73 = 1/96/0 (9600 8N2).",
+    "TSD/TSE family speed-mode backend; KFM identity observed, run control not hardware-validated.",
+    "Read-only fingerprint: PA1 model 40..80 with PA2 software, or observed KFM 6/0x1F5C; PA62 encoder 4/5, PA71=1, PA72 matches selected baud, PA73=0.",
     "PA4=1, PA22=1, volatile PA24 speed, PA34/35 signed torque limits, PA53 software enable. Physical SON/SP inputs must be unassigned; see TSE setup guide.",
     "0x1000 signed rpm, 0x1007 torque percent (reported as magnitude), 0x1009 mode, 0x1013 fault. No automatic alarm reset.",
     {probe, initTse, tick, off, nullptr, sleepTse, resetTse},

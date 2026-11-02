@@ -652,10 +652,10 @@ void do_io() {
                 if(menu1Selected == Menu1Items::PURGESETTINGS) state = MENU2;
                 if(menu1Selected == Menu1Items::GBWSETTINGS) state = MENU3;
                 if(menu1Selected == Menu1Items::JMCBAUDMENU) {
-                    if(motor_jmc_tools_supported()) {
+                    if(motor_baud_tools_supported()) {
                         state = MENU4;
                     } else {
-                        display_show_action_feedback("JMC only");
+                        display_show_action_feedback("Detected drive only");
                     }
                 }
                 if(menu1Selected == Menu1Items::DRIVESETTINGS) openDriveSelector(MENU1);
@@ -946,12 +946,12 @@ void do_io() {
     }
 
     if(state == MENU4) {
-        if(!motor_jmc_tools_supported()) {
+        if(!motor_baud_tools_supported()) {
             enterMenu = false;
             menu4Selected = Menu4Items::RETURN_FROM_JMC_BAUD;
             state = MENU1;
             disp_updateRequired = true;
-            display_show_action_feedback("JMC only");
+            display_show_action_feedback("Detected drive only");
             return;
         }
 
@@ -981,8 +981,8 @@ void do_io() {
                 }
             } else {
                 enterMenu = false;
-                motor_run_jmc_baud_switch(baudForJmcMenuItem(menu4Selected));
-                display_show_action_feedback("Baud applied");
+                motor_run_baud_switch(baudForJmcMenuItem(menu4Selected));
+                display_show_action_feedback(motor_get_baud_switch_status_text());
                 disp_updateRequired = true;
                 update_display();
             }

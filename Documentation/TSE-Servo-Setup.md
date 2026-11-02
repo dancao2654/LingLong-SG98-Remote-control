@@ -14,10 +14,23 @@ ports. Confirm connector orientation and labeling on the actual drive before wir
 Do not connect or rewire an energized drive; follow the drive's discharge warnings.
 
 Configure PA71=1 (slave ID), PA72=96 (9600 baud), PA73=0 (8N2).
-AUTO uses read-only checks of PA1 (model 40..80), PA2 (nonzero software
-version), PA62 (encoder 4 or 5), and PA71/72/73. This is a family fingerprint,
-not a unique manufacturer ID. Other baud/parity configurations are not searched.
+AUTO uses read-only checks of PA1 (family model 40..80 with nonzero PA2, or the
+observed KFM pair PA1=6 and PA2=0x1F5C), PA62 (encoder 4 or 5), and PA71/72/73.
+The KFM pair comes from a single drive's CRC-verified October 26, 2026 capture;
+it does not establish compatibility with other KFM firmware versions. AUTO
+uses the stored TSE baud and does not scan other baud/parity configurations.
 The existing external-RS485-first probe order is unchanged.
+
+After the exact KFM fingerprint is confirmed, the Baud rate menu offers
+9600/19200/38400/57600/115200 in 8N2. It writes PA72 as baud/100, verifies the
+drive parameter and the live UART when the drive switches immediately, then
+stores the controller's preferred rate for startup. The operation is rejected
+unless the drive is connected and stationary. A reboot may be required to
+apply both sides consistently. If the drive acknowledges the change but cannot
+be reached at either rate, the acknowledged target is saved for next-boot
+recovery and the operation reports link loss. The menu does not change PA71 or
+PA73, search other rates, or claim physical KFM validation of non-default baud
+rates.
 
 Select AUTO or TSE in the controller/remote drive menu. USB/API also accepts
 `api action drive tse`; raw Modbus diagnostics accept profile `tse`.

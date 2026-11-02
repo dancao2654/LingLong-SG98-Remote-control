@@ -11,3 +11,4 @@ bool writeSingleRegister(uint16_t reg, uint16_t value);
 bool writeConfirm(uint16_t reg, uint16_t value);
 int16_t receive();
 uint16_t comm_get_active_interval_ms();
+uint32_t comm_get_tse_baud();

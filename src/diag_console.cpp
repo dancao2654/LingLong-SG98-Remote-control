@@ -462,7 +462,7 @@ const char* menuLabel(uint8_t menuNum) {
         case 1: return "Main";
         case 2: return "Purge Settings";
         case 3: return "GbW Settings";
-        case 4: return "JMC Baud";
+        case 4: return "Baud rate";
         case 5: return "Wireless";
         default: return "Unknown";
     }
@@ -936,7 +936,7 @@ const char* apiMenuItemAction(uint8_t menuNum, uint8_t itemIdx) {
     }
 
     if(menuNum == 4 && itemIdx >= Menu4Items::JMCBAUD9600 && itemIdx <= Menu4Items::JMCBAUD115200) {
-        return "jmc_baud";
+        return "motor_baud";
     }
 
     return nullptr;
@@ -1118,6 +1118,10 @@ void apiPrintStatus() {
     Serial.print(static_cast<unsigned long>(comm_get_jmc_baud()));
     Serial.print(",\"jmcPreferredBaud\":");
     Serial.print(static_cast<unsigned long>(motor_get_preferred_jmc_baud()));
+    Serial.print(",\"tseBaud\":");
+    Serial.print(static_cast<unsigned long>(comm_get_tse_baud()));
+    Serial.print(",\"tsePreferredBaud\":");
+    Serial.print(static_cast<unsigned long>(motor_get_preferred_tse_baud()));
     Serial.print(",\"comm\":");
     jsonPrintQuoted(commText(commStatus));
     Serial.print(",\"motor\":");
@@ -1268,10 +1272,9 @@ void apiPrintMenu(uint8_t menuNum) {
             Serial.print(",\"baud\":");
             Serial.print(static_cast<unsigned long>(baud));
             Serial.print(",\"activeBaud\":");
-            const bool activeBaud =
-                motor_get_drive_type() == DRIVE_TYPE_JMC &&
-                commStatus == COMM_CONNECTED &&
-                comm_get_jmc_baud() == baud;
+            const bool activeBaud = commStatus == COMM_CONNECTED &&
+                ((motor_get_drive_type() == DRIVE_TYPE_JMC && comm_get_jmc_baud() == baud) ||
+                 (motor_kfm_tools_supported() && comm_get_tse_baud() == baud));
             Serial.print(activeBaud ? "true" : "false");
         }
 
@@ -1724,6 +1727,10 @@ void appendStatusJson(String& out) {
     out += String(static_cast<unsigned long>(comm_get_jmc_baud()));
     out += ",\"jmcPreferredBaud\":";
     out += String(static_cast<unsigned long>(motor_get_preferred_jmc_baud()));
+    out += ",\"tseBaud\":";
+    out += String(static_cast<unsigned long>(comm_get_tse_baud()));
+    out += ",\"tsePreferredBaud\":";
+    out += String(static_cast<unsigned long>(motor_get_preferred_tse_baud()));
     out += ",\"comm\":";
     appendJsonQuoted(out, commText(commStatus));
     out += ",\"motor\":";
@@ -1879,10 +1886,9 @@ void appendMenuSnapshotJson(String& out, uint8_t menuNum) {
             out += ",\"baud\":";
             out += String(static_cast<unsigned long>(baud));
             out += ",\"activeBaud\":";
-            const bool activeBaud =
-                motor_get_drive_type() == DRIVE_TYPE_JMC &&
-                commStatus == COMM_CONNECTED &&
-                comm_get_jmc_baud() == baud;
+            const bool activeBaud = commStatus == COMM_CONNECTED &&
+                ((motor_get_drive_type() == DRIVE_TYPE_JMC && comm_get_jmc_baud() == baud) ||
+                 (motor_kfm_tools_supported() && comm_get_tse_baud() == baud));
             out += (activeBaud ? "true" : "false");
         }
 
@@ -1894,7 +1900,8 @@ void appendMenuSnapshotJson(String& out, uint8_t menuNum) {
 
 void printHelp() {
     Serial.println("[diag] commands: ?=status, h=help, v=toggle stream, g=force IDLE_GBW, i=force IDLE, a=redetect, j=force JMC, r=force RT, k=force KRS, x=force XB130, s=force SEW, p=probe, l=dump log");
-    Serial.println("[diag] jmc: jbaud <9600|19200|38400|57600|115200> (write drive profile and store same baud for next boot; reboot required)");
+    Serial.println("[diag] motor baud: mbaud <9600|19200|38400|57600|115200> (JMC or detected KFM)");
+    Serial.println("[diag] jmc: jbaud <9600|19200|38400|57600|115200> (legacy JMC-only command)");
     Serial.println("[diag] config: jb <9600|19200|38400|57600|115200> (set preferred JMC boot baud, takes effect on redetect/reboot)");
     Serial.println("[diag] rs485: rs485 <onboard|ex_i2c> [save] (force active RS-485 port for raw tests/probe)");
     Serial.println("[diag] gpio: gpio ui | gpio ui float (raw front-panel button GPIO levels / GPIO42 bias test)");
@@ -1904,7 +1911,7 @@ void printHelp() {
     Serial.println("[diag] api: api device | api status | api env | api wifi | api wifi_save <ssid> <password> | api wifi_forget");
     Serial.println("[diag] api: api ota boot <next|running|app0|app1> [reboot] | api ota apply_ready [reboot] | api ota invalidate_inactive | api ota check [url|latest] | api ota download_if_available [url|latest] | api ota download <url> [boot|reboot] | api ota manifest <url|latest> [boot|reboot] | api reboot");
     Serial.println("[diag] api: api snapshot | api set <menu> <item> <value> | api setrpm <rpm> | api setweight <mg>");
-    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|drive tse|jmc_baud <baud>|reset_network|reset_defaults confirm|ota_check [latest]|ota_download_if_available [latest]|ota_manifest [latest]|ota_apply_ready_reboot>");
+    Serial.println("[diag] api: api action <start|stop|idle|idle_gbw|redetect|calibrate|network_info|about|drive auto|drive jmc|drive rt|drive krs|drive xb130|drive sew|drive tse|motor_baud <baud>|reset_network|reset_defaults confirm|ota_check [latest]|ota_download_if_available [latest]|ota_manifest [latest]|ota_apply_ready_reboot>");
 }
 
 void printStatus() {
@@ -2830,18 +2837,19 @@ void handleLineCommand(char* line) {
                 ok = apiActionDrive(strtok_r(nullptr, " \t", &savePtr), &message);
             } else if(strcmp(action, "calibrate") == 0) {
                 ok = apiActionCalibrate(&message);
-            } else if(strcmp(action, "jmc_baud") == 0) {
+            } else if(strcmp(action, "jmc_baud") == 0 || strcmp(action, "motor_baud") == 0) {
+                const bool jmcOnly = strcmp(action, "jmc_baud") == 0;
                 uint32_t baud = 0;
                 if(!parseUnsignedToken(strtok_r(nullptr, " \t", &savePtr), &baud)) {
-                    apiPrintAck("action", false, "usage: api action jmc_baud <baud>");
+                    apiPrintAck("action", false, "usage: api action motor_baud <baud>");
                     return;
                 }
-                if(!motor_jmc_tools_supported()) {
-                    ok = false;
-                    message = "JMC baud unavailable for active drive";
+                if((jmcOnly && !motor_jmc_tools_supported()) ||
+                   (!jmcOnly && !motor_baud_tools_supported())) {
+                    message = "baud change unavailable for active drive";
                 } else {
-                    ok = motor_run_jmc_baud_switch(baud);
-                    message = motor_get_jmc_baud_trial_status_text();
+                    ok = motor_run_baud_switch(baud);
+                    message = motor_get_baud_switch_status_text();
                     disp_updateRequired = true;
                 }
             } else if(strcmp(action, "reset_network") == 0) {
@@ -3089,6 +3097,26 @@ void handleLineCommand(char* line) {
                                 static_cast<uint16_t>(value),
                                 "value",
                                 transaction);
+        return;
+    }
+
+    if(strcmp(cmd, "mbaud") == 0 || strcmp(cmd, "MBAUD") == 0) {
+        uint32_t baud = 0;
+        if(!parseUnsignedToken(strtok_r(nullptr, " \t", &savePtr), &baud)) {
+            Serial.println("[diag] usage: mbaud <9600|19200|38400|57600|115200>");
+            return;
+        }
+        if(!motor_baud_tools_supported()) {
+            Serial.println("[diag] baud change requires a detected JMC or KFM");
+            return;
+        }
+        const bool ok = motor_run_baud_switch(baud);
+        Serial.printf("[diag] motor baud target=%lu ok=%s status=%s uart=%s\n",
+                      static_cast<unsigned long>(baud),
+                      ok ? "yes" : "no",
+                      motor_get_baud_switch_status_text(),
+                      comm_get_profile_label());
+        printStatus();
         return;
     }
 
@@ -3356,16 +3384,23 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
         ok = apiActionDrive(arg0, &rawMessage);
     } else if(strcmp(action, "calibrate") == 0) {
         ok = apiActionCalibrate(&rawMessage);
-    } else if(strcmp(action, "jmc_baud") == 0) {
+    } else if(strcmp(action, "jmc_baud") == 0 || strcmp(action, "motor_baud") == 0) {
+        const bool jmcOnly = strcmp(action, "jmc_baud") == 0;
         if(arg0 == nullptr) {
             rawMessage = "missing baud";
-        } else if(!motor_jmc_tools_supported()) {
-            rawMessage = "JMC baud unavailable for active drive";
         } else {
-            const uint32_t baud = static_cast<uint32_t>(strtoul(arg0, nullptr, 10));
-            ok = motor_run_jmc_baud_switch(baud);
-            rawMessage = motor_get_jmc_baud_trial_status_text();
-            disp_updateRequired = true;
+            char* end = nullptr;
+            const unsigned long parsed = strtoul(arg0, &end, 10);
+            if(end == arg0 || end == nullptr || *end != '\0' || parsed > 115200UL) {
+                rawMessage = "invalid baud";
+            } else if((jmcOnly && !motor_jmc_tools_supported()) ||
+                      (!jmcOnly && !motor_baud_tools_supported())) {
+                rawMessage = "baud change unavailable for active drive";
+            } else {
+                ok = motor_run_baud_switch(static_cast<uint32_t>(parsed));
+                rawMessage = motor_get_baud_switch_status_text();
+                disp_updateRequired = true;
+            }
         }
     } else if(strcmp(action, "reset_network") == 0) {
         ok = apiActionResetNetwork(&rawMessage);
