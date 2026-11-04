@@ -42,8 +42,10 @@ struct CommDebugTransaction {
   uint8_t response_len;
   uint8_t exception_code;
   bool response_crc_ok;
+  bool response_crc_checked;
   bool timed_out;
   bool success;
+  bool blocked; // refused locally; no request sent, not a wire timeout
   int16_t parsed_reg;
 };
 
@@ -83,6 +85,7 @@ bool comm_debug_raw_write_single_uart(uint32_t baud_rate, uint32_t serial_config
 
 void rs485_poll();
 
+bool comm_last_response_was_exception();
 extern int16_t receive(); 
 extern uint16_t lastRead[]; 
 extern uint8_t lastRequestType; //0 = writeSingle, 101 = readSingleRegister, 102 = read two registers etc, 201 writeMultiperRg(1pc), 202 writeMultipleReg(2pcs)
@@ -93,7 +96,7 @@ extern bool rs485Sending;
 
 
 uint16_t modbus_crc16(uint8_t* buf, int length);
-bool receiveError(uint8_t msgLength); 
+int16_t receiveError(uint8_t msgLength);
 
 void setTXmode();
 void setRXmode();

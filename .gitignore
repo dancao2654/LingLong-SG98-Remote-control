@@ -10,3 +10,5 @@ __pycache__/
 .vscode/launch-*.json
 .vscode/ipch
 firmware-backups/
+# Local captures, device flash backups and generated firmware handoff archives
+outputs/

@@ -11,6 +11,28 @@ For a full project walkthrough, architecture guide, workflow explanation, and mo
 - `Documentation/New-Motor-Backend-Guide.md`
 - `Documentation/New-Motor-Backend-Implementation-Template.md`
 
+#### TSE-B-D-100-KFM commissioning
+
+**Partially hardware-tested replacement candidate 2026.11.03.1:** paired Controller/Waveshare1.75 builds
+prepare explicit Start without PC, manual speed up to2000rpm and existing GBW/timed
+purge controls. Both paired devices were flashed and supervised tests passed;
+full acceptance remains pending. See the [hardware checkpoint](Documentation/TSE-KFM-Pruefstand-20261103.md).
+See [scope, limitations and acceptance work](Documentation/TSE-KFM-Ersatzsteuerung-20261103-DE.md).
+
+Earlier hardware-tested local candidate: **2026.10.28.6**. A real supervised shot at
+800/300 rpm reached18.0g for an18g target and stopped without errors. Earlier
+manual, purge, remote-loss and scale-loss tests retain their version labels.
+This remains a bounded commissioning build: explicit USB arm per run,30-second
+arm/run windows and800rpm maximum. It is not a standalone production release.
+Factory input mapping and persistent PA24 are preserved by the candidate;
+uncalibrated torque-based purge/learning remains excluded for KFM.
+
+- [Historical results and settings for 2026.10.28.6 (German)](Documentation/TSE-KFM-Stand-20261028-DE.md)
+- [Historical functional check plan](Documentation/TSE-KFM-Funktionspruefung-DE.md)
+- [Earlier commissioning implementation](Documentation/TSE-KFM-Commissioning.md)
+- Offline regression: `python3 tools/run_kfm_checks.py`
+- Offline log report: `python3 tools/kfm_session_report.py SESSION_DIRECTORY --output NEW_REPORT_DIRECTORY`
+
 #### Firmware targets
 
 This repo contains two different ESP32-S3 firmware projects:

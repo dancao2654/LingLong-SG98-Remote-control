@@ -197,17 +197,7 @@ bool BLEScale::connectToServer() {
 
     if(NimBLEDevice::getCreatedClientCount()) {
         client = NimBLEDevice::getClientByPeerAddress(advDevice->getAddress());
-        if(client) {
-            if(!client->connect(advDevice, false)) {
-                if(_debug) {
-                    Serial.println("Reconnect failed");
-                }
-                return false;
-            }
-            if(_debug) {
-                Serial.println("Reconnected existing client");
-            }
-        } else {
+        if(!client) {
             client = NimBLEDevice::getDisconnectedClient();
         }
     }
@@ -242,15 +232,25 @@ bool BLEScale::connectToServer() {
         Serial.printf("Trying to connect. AddrType=%d\n", advDevice->getAddressType());
     }
 
-    if(!client->connect(advDevice)) {
+    // A reused client must connect only once. NimBLE rejects connect() on an
+    // already connected client; the former reuse path connected twice.
+    if(!client->isConnected() && !client->connect(advDevice)) {
         if(_debug) {
             Serial.println("Connect failed with advertised-device overload");
         }
 
-        if(!client->connect(advDevice->getAddress(), advDevice->getAddressType())) {
+        if(!client->isConnected() && !client->connect(advDevice->getAddress())) {
             if(_debug) {
-                Serial.println("Connect failed (explicit type). Deleting client.");
+                Serial.println("Connect failed with peer address. Deleting client.");
             }
+            // onConnect may already have assigned the parent pointer. Never
+            // leave a pointer to a deleted client for manage() to dereference.
+            _pClient = nullptr;
+            _pChrREAD = nullptr;
+            _pChrWRITE = nullptr;
+            _connected = false;
+            _isConnecting = false;
+            _type = ScaleType::UNKNOWN;
             NimBLEDevice::deleteClient(client);
             return false;
         }

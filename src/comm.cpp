@@ -1,4 +1,6 @@
 #include "definitions.h"
+#include "TSE/kfm_commissioning_policy.h"
+#include "TSE/motorcontrol_tse.h"
 #include "HardwareSerial.h"
 #include "comm.h"  
 #include "controller_board.h"
@@ -19,6 +21,7 @@ CommProfile activeCommProfile = COMM_PROFILE_JMC;
 JmcCommRate activeJmcRate = JMC_COMM_RATE_9600;
 
 namespace {
+bool lastResponseWasException = false;
 constexpr uint32_t RS485_TURNAROUND_US = 50;
 
 struct Rs485PortPins {
@@ -269,6 +272,7 @@ bool readResponseMatches(int16_t received, uint16_t expectedReg) {
 }
 
 void debugSendFrame(const uint8_t* data, size_t length) {
+  if(!kfm_commissioning::frameAllowed(data, length, motor_tse_commissioning_write_windows())) return;
   setTXmode();
   delayMicroseconds(RS485_TURNAROUND_US);
   Serial2.write(data, length);
@@ -319,7 +323,7 @@ void debugInitTransaction(CommDebugTransaction* transaction) {
 
   memset(transaction, 0, sizeof(*transaction));
   transaction->parsed_reg = -1;
-  transaction->timed_out = true;
+  transaction->timed_out = false;
 }
 
 bool debugFinalizeRead(uint8_t slave,
@@ -337,11 +341,13 @@ bool debugFinalizeRead(uint8_t slave,
 
   transaction->timed_out = false;
 
-  if(transaction->response_len == 5 && (transaction->response[1] & 0x80U) != 0) {
-    transaction->exception_code = transaction->response[2];
+  if(transaction->response_len == 5 && transaction->response[0] == slave &&
+     transaction->response[1] == (FUNC_READ_HOLDING_REGISTERS | 0x80U)) {
+    transaction->response_crc_checked = true;
     transaction->response_crc_ok =
         modbus_crc16(transaction->response, 3) ==
         static_cast<uint16_t>(transaction->response[3] | (transaction->response[4] << 8));
+    if(transaction->response_crc_ok) transaction->exception_code = transaction->response[2];
     return false;
   }
 
@@ -352,6 +358,7 @@ bool debugFinalizeRead(uint8_t slave,
   const uint16_t crcResp =
       static_cast<uint16_t>(transaction->response[transaction->response_len - 2] |
                             (transaction->response[transaction->response_len - 1] << 8));
+  transaction->response_crc_checked = true;
   transaction->response_crc_ok =
       modbus_crc16(transaction->response, transaction->response_len - 2) == crcResp;
   if(!transaction->response_crc_ok) {
@@ -363,7 +370,7 @@ bool debugFinalizeRead(uint8_t slave,
   }
 
   const uint8_t byteCount = transaction->response[2];
-  if(byteCount != regCount * 2 || transaction->response_len < static_cast<uint8_t>(byteCount + 5)) {
+  if(byteCount != regCount * 2 || transaction->response_len != static_cast<uint8_t>(byteCount + 5)) {
     return false;
   }
 
@@ -385,21 +392,24 @@ bool debugFinalizeWriteSingle(uint8_t slave,
 
   transaction->timed_out = false;
 
-  if(transaction->response_len == 5 && (transaction->response[1] & 0x80U) != 0) {
-    transaction->exception_code = transaction->response[2];
+  if(transaction->response_len == 5 && transaction->response[0] == slave &&
+     transaction->response[1] == (FUNC_WRITE_SINGLE_REGISTER | 0x80U)) {
+    transaction->response_crc_checked = true;
     transaction->response_crc_ok =
         modbus_crc16(transaction->response, 3) ==
         static_cast<uint16_t>(transaction->response[3] | (transaction->response[4] << 8));
+    if(transaction->response_crc_ok) transaction->exception_code = transaction->response[2];
     return false;
   }
 
-  if(transaction->response_len < 8) {
+  if(transaction->response_len != 8) {
     return false;
   }
 
   const uint16_t crcResp =
       static_cast<uint16_t>(transaction->response[transaction->response_len - 2] |
                             (transaction->response[transaction->response_len - 1] << 8));
+  transaction->response_crc_checked = true;
   transaction->response_crc_ok =
       modbus_crc16(transaction->response, transaction->response_len - 2) == crcResp;
   if(!transaction->response_crc_ok) {
@@ -410,6 +420,8 @@ bool debugFinalizeWriteSingle(uint8_t slave,
     return false;
   }
 
+  // FC06 must echo this request's address AND value, not another valid frame.
+  if(memcmp(transaction->response + 2, transaction->request + 2, 4) != 0) return false;
   transaction->parsed_reg = static_cast<int16_t>((transaction->response[2] << 8) | transaction->response[3]);
   transaction->success = true;
   return true;
@@ -473,6 +485,7 @@ bool comm_set_profile(CommProfile profile, bool force) {
   errorCode = 0;
   lastRequestType = 0;
   lastRegAddr = 0;
+  lastResponseWasException = false;
   lastSend = 0;
   lastReceived = 0;
   activeCommProfile = profile;
@@ -672,6 +685,7 @@ int16_t readReturn(uint16_t reg_addr, uint16_t reg_count) { //returns 0xFFFF if 
 }
 
 void rs485_send(uint8_t* data, size_t length) {
+  if(!kfm_commissioning::frameAllowed(data, length, motor_tse_commissioning_write_windows())) return;
   #ifdef DEBUG_COMM
   Serial.print("sending: ");
     for(int i = 0; i < length; i++) { 
@@ -692,6 +706,8 @@ void rs485_send(uint8_t* data, size_t length) {
 
 bool writeSingleRegister(uint16_t reg_addr, uint16_t value) { //returns true when succesfully SEND
   if(lastSend + comm_get_send_delay_ms() > millis()) { return false; }
+  const uint8_t candidate[8] = {SLAVE_ID, FUNC_WRITE_SINGLE_REGISTER, static_cast<uint8_t>(reg_addr >> 8), static_cast<uint8_t>(reg_addr), static_cast<uint8_t>(value >> 8), static_cast<uint8_t>(value), 0, 0};
+  if(!kfm_commissioning::frameAllowed(candidate, 8, motor_tse_commissioning_write_windows())) return false;
   request[0] = SLAVE_ID;
   request[1] = FUNC_WRITE_SINGLE_REGISTER;
   request[2] = reg_addr >> 8;
@@ -702,6 +718,7 @@ bool writeSingleRegister(uint16_t reg_addr, uint16_t value) { //returns true whe
   request[6] = crc & 0xFF;
   request[7] = crc >> 8;
 
+  if(!kfm_commissioning::frameAllowed(request, 8, motor_tse_commissioning_write_windows())) return false;
   while (Serial2.available()) Serial2.read();
   rs485_send(request, 8);
 
@@ -716,6 +733,8 @@ bool writeMultipleRegisters(uint16_t reg_addr_start, uint16_t reg_count,
     if (lastSend + comm_get_send_delay_ms() > millis()) return false;
     if (reg_count < 1 || reg_count > 4) return false;
 
+    const uint8_t candidate[8] = {SLAVE_ID, FUNC_WRITE_MULTIPLE_REGISTERS, 0, 0, 0, 0, 0, 0};
+    if(!kfm_commissioning::frameAllowed(candidate, 8, motor_tse_commissioning_write_windows())) return false;
     request[0] = SLAVE_ID;
     request[1] = FUNC_WRITE_MULTIPLE_REGISTERS;
     request[2] = reg_addr_start >> 8;
@@ -735,6 +754,7 @@ bool writeMultipleRegisters(uint16_t reg_addr_start, uint16_t reg_count,
     request[msgLen]     = crc & 0xFF;
     request[msgLen + 1] = crc >> 8;
 
+    if(!kfm_commissioning::frameAllowed(request, msgLen + 2, motor_tse_commissioning_write_windows())) return false;
     while (Serial2.available()) Serial2.read();
     rs485_send(request, msgLen + 2);
 
@@ -743,7 +763,9 @@ bool writeMultipleRegisters(uint16_t reg_addr_start, uint16_t reg_count,
     return true;
 }
 
-bool receiveError(uint8_t msgLength) {
+bool comm_last_response_was_exception() { return lastResponseWasException; }
+
+int16_t receiveError(uint8_t msgLength) {
   // Serial2.readBytes(response, 5);
 
   //DEBUG COMM
@@ -758,10 +780,13 @@ bool receiveError(uint8_t msgLength) {
     Serial.print(" < end > "), Serial.print("bytes: "), Serial.println(5);
   #endif
 
-  if(msgLength == 5 && response[1] >= 0x80 && response[1] <= 0x90) { //error frame
+  const uint8_t expectedFunction = lastRequestType == 0 ? FUNC_WRITE_SINGLE_REGISTER :
+      lastRequestType > 200 ? FUNC_WRITE_MULTIPLE_REGISTERS : FUNC_READ_HOLDING_REGISTERS;
+  if(msgLength == 5 && response[0] == SLAVE_ID && response[1] == (expectedFunction | 0x80U)) {
     uint16_t crc_resp = response[3] | (response[4] << 8);
     if(crc_resp != modbus_crc16(response, 3)) return 0;
 
+    lastResponseWasException = true;
     errorCode = response[2];
     error = 3; 
     if(commCounter > 0) {
@@ -788,6 +813,7 @@ int16_t receive() {  // Returns 0 when nothing is read. returns the read registe
   }
 
   Serial2.readBytes(response, len);
+  lastResponseWasException = false;
   memset(lastRead, 0, sizeof(lastRead));
 
   //DEBUG COMM
@@ -811,7 +837,8 @@ int16_t receive() {  // Returns 0 when nothing is read. returns the read registe
   
 
   // >>>>>>>>>>>> Last comm request was a writeSingleReg
-  if(lastRequestType == 0) { 
+  if(lastRequestType == 0) {
+    if(len != 8 || response[0] != SLAVE_ID || response[1] != FUNC_WRITE_SINGLE_REGISTER) return 0;
     uint16_t crc_resp = response[6] | (response[7] << 8);
     if (modbus_crc16(response, 6) != crc_resp) {
       #ifdef DEBUG_COMM
@@ -825,7 +852,7 @@ int16_t receive() {  // Returns 0 when nothing is read. returns the read registe
       lastReceived = millis();
     }
 
-    if(crc == crc_resp) { //SEND CRC matches received -> messages match -> Succes!
+    if(memcmp(response, request, 6) == 0) { // FC06 must echo the exact request.
       commCounter--;
       lastRead[0] = (response[4] << 8) | response[5];
       return (response[2] << 8) | response[3];
@@ -860,9 +887,14 @@ int16_t receive() {  // Returns 0 when nothing is read. returns the read registe
       return 0;
     }
 
+    // A valid CRC is insufficient: the count must match this outstanding
+    // read exactly and fit both buffers before copying any register values.
+    const uint8_t byteCount = response[2];
+    const uint16_t expectedWords = lastRequestType - 100;
+    if(expectedWords == 0 || expectedWords > sizeof(lastRead) / sizeof(lastRead[0]) ||
+       byteCount != expectedWords * 2 || len != byteCount + 5) return 0;
     // SAVE DATA FROM RESPONSE
     memset(lastRead, 0, sizeof(lastRead));
-    uint8_t byteCount = response[2];
     #ifdef DEBUG_COMM
       Serial.print("Registers read: ");
       Serial.println(byteCount / 2);
@@ -872,14 +904,14 @@ int16_t receive() {  // Returns 0 when nothing is read. returns the read registe
       #ifdef DEBUG_COMM
         Serial.print("Lastread #" + i/2), Serial.print(" : "), Serial.println(lastRead[i/2]);
       #endif
-    if((lastRequestType-100)*2 != byteCount) lastRequestType = byteCount/2 + 100;
     }
     commCounter--;
     return lastRegAddr;
   }
 
   //  >>>>>>>>>>>> receive multiplewrites
-  if(lastRequestType > 200) { 
+  if(lastRequestType > 200) {
+    if(len != 8) return 0;
     // Validate CRC
     uint16_t crc_resp = response[len - 2] | (response[len - 1] << 8);
     if (modbus_crc16(response, len - 2) != crc_resp) {
@@ -921,7 +953,10 @@ int16_t receive() {  // Returns 0 when nothing is read. returns the read registe
 }
 
 bool readRegister(uint16_t reg_addr, uint16_t reg_count) { //returns true when succesfully SEND
+  if(reg_count == 0 || reg_count > (sizeof(response) - 5) / 2) return false;
   if(lastSend + comm_get_send_delay_ms() > millis()) { return false; }
+  const uint8_t candidate[8] = {SLAVE_ID, FUNC_READ_HOLDING_REGISTERS, static_cast<uint8_t>(reg_addr >> 8), static_cast<uint8_t>(reg_addr), static_cast<uint8_t>(reg_count >> 8), static_cast<uint8_t>(reg_count), 0, 0};
+  if(!kfm_commissioning::frameAllowed(candidate, 8, motor_tse_commissioning_write_windows())) return false;
   request[0] = SLAVE_ID;
   request[1] = FUNC_READ_HOLDING_REGISTERS;
   request[2] = reg_addr >> 8;
@@ -933,6 +968,7 @@ bool readRegister(uint16_t reg_addr, uint16_t reg_count) { //returns true when s
   request[6] = crc & 0xFF;
   request[7] = crc >> 8;
 
+  if(!kfm_commissioning::frameAllowed(request, 8, motor_tse_commissioning_write_windows())) return false;
   // Clear previous data
   while (Serial2.available()) Serial2.read();
 
@@ -979,11 +1015,6 @@ bool comm_debug_raw_read_uart(uint32_t baud_rate,
     return false;
   }
 
-  const CommProfile savedProfile = activeCommProfile;
-  debugApplyUart(baud_rate, serial_config);
-  delay(20);
-  while(Serial2.available()) Serial2.read();
-
   transaction->request[0] = slave;
   transaction->request[1] = FUNC_READ_HOLDING_REGISTERS;
   transaction->request[2] = reg_addr >> 8;
@@ -993,6 +1024,20 @@ bool comm_debug_raw_read_uart(uint32_t baud_rate,
   const uint16_t crcReq = modbus_crc16(transaction->request, 6);
   transaction->request[6] = crcReq & 0xFF;
   transaction->request[7] = crcReq >> 8;
+  if(!kfm_commissioning::frameAllowed(transaction->request, 8, motor_tse_commissioning_write_windows())) {
+    transaction->blocked = true;
+    return false;
+  }
+  if(motor_get_drive_type() == DRIVE_TYPE_TSE && !motor_tse_begin_diagnostic_read()) {
+    transaction->blocked = true;
+    return false;
+  }
+  const CommProfile savedProfile = activeCommProfile;
+  const uint16_t savedDriveErrorCode = errorCode;
+  debugApplyUart(baud_rate, serial_config);
+  delay(20);
+  while(Serial2.available()) Serial2.read();
+
   transaction->request_len = 8;
 
   debugSendFrame(transaction->request, transaction->request_len);
@@ -1004,6 +1049,7 @@ bool comm_debug_raw_read_uart(uint32_t baud_rate,
 
   while(Serial2.available()) Serial2.read();
   comm_set_profile(savedProfile, true);
+  errorCode = savedDriveErrorCode;
   delay(20);
   return success;
 }
@@ -1019,11 +1065,6 @@ bool comm_debug_raw_write_single_uart(uint32_t baud_rate,
     return false;
   }
 
-  const CommProfile savedProfile = activeCommProfile;
-  debugApplyUart(baud_rate, serial_config);
-  delay(20);
-  while(Serial2.available()) Serial2.read();
-
   transaction->request[0] = slave;
   transaction->request[1] = FUNC_WRITE_SINGLE_REGISTER;
   transaction->request[2] = reg_addr >> 8;
@@ -1033,6 +1074,22 @@ bool comm_debug_raw_write_single_uart(uint32_t baud_rate,
   const uint16_t crcReq = modbus_crc16(transaction->request, 6);
   transaction->request[6] = crcReq & 0xFF;
   transaction->request[7] = crcReq >> 8;
+  if(!kfm_commissioning::frameAllowed(transaction->request, 8, motor_tse_commissioning_write_windows())) {
+    transaction->blocked = true;
+    return false;
+  }
+  // Direct writes bypass the backend cache/acknowledgement state. Use an
+  // explicit guarded TSE action instead of interleaving raw control commands.
+  if(motor_get_drive_type() == DRIVE_TYPE_TSE) {
+    transaction->blocked = true;
+    return false;
+  }
+  const CommProfile savedProfile = activeCommProfile;
+  const uint16_t savedDriveErrorCode = errorCode;
+  debugApplyUart(baud_rate, serial_config);
+  delay(20);
+  while(Serial2.available()) Serial2.read();
+
   transaction->request_len = 8;
 
   debugSendFrame(transaction->request, transaction->request_len);
@@ -1044,6 +1101,7 @@ bool comm_debug_raw_write_single_uart(uint32_t baud_rate,
 
   while(Serial2.available()) Serial2.read();
   comm_set_profile(savedProfile, true);
+  errorCode = savedDriveErrorCode;
   delay(20);
   return success;
 }

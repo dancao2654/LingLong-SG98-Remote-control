@@ -31,6 +31,9 @@ struct AckFrame {
 };
 
 struct StatusFrame {
+  String actionToken;
+  int32_t runMaxRpm = 0;
+  int32_t runMaxMs = 0;
   String state;
   String drive;
   String comm;
@@ -370,6 +373,13 @@ inline bool parseStatusFrame(const String& frame, StatusFrame* out) {
   if(detail::nextToken(frame, start, kFrameSeparator, &token) && detail::parseIntToken(token, &parsed)) {
     out->controllerOtaReadyFieldsPresent = true;
     out->controllerOtaReady = parsed != 0;
+  }
+  out->actionToken="";
+  out->runMaxRpm=0;out->runMaxMs=0;
+  if(detail::nextToken(frame,start,kFrameSeparator,&token) && token.length()==24) {
+    out->actionToken=token;
+    if(detail::nextToken(frame,start,kFrameSeparator,&token) && detail::parseIntToken(token,&parsed))out->runMaxRpm=parsed;
+    if(detail::nextToken(frame,start,kFrameSeparator,&token) && detail::parseIntToken(token,&parsed))out->runMaxMs=parsed;
   }
   return true;
 }

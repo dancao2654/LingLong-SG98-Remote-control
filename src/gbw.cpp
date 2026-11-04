@@ -5,6 +5,9 @@
 #include "display.h"
 #include "motor_hal.h"
 #include "ble_console.h"
+#include <atomic>
+#include "TSE/motorcontrol_tse.h"
+#include "TSE/kfm_commissioning_policy.h"
 
 // #define DEBUG_GBW
 unsigned long startOfShot = 0;
@@ -30,6 +33,26 @@ GBW_WEIGHT _shot[300];
 uint16_t last_shot_updated;
 
 namespace {
+#if defined(SG98_TSE_KFM_RUN_CANDIDATE) && SG98_TSE_KFM_RUN_CANDIDATE && (!defined(SG98_TSE_KFM_STANDALONE) || !SG98_TSE_KFM_STANDALONE)
+std::atomic<bool> scaleLinkTestRequested{false};
+#endif
+bool shotHistoryTruncated = false;
+bool gbwStartRequested = false;
+bool gbwPredictionResetRequested = false;
+
+// Keep chronological samples in bounds. A long shot may discard its oldest
+// samples; do not use an incomplete history to retune the next shot.
+void append_shot_sample(int32_t weight, uint32_t time) {
+    constexpr uint16_t capacity = sizeof(_shot) / sizeof(_shot[0]);
+    if(last_shot_updated >= capacity - 1) {
+        for(uint16_t i = 1; i < capacity; ++i) _shot[i - 1] = _shot[i];
+        last_shot_updated = capacity - 1;
+        shotHistoryTruncated = true;
+    } else ++last_shot_updated;
+    _shot[last_shot_updated].weight = weight;
+    _shot[last_shot_updated].time = time;
+}
+
 constexpr int32_t kGbwGoodShotBandMg = 200;
 constexpr int32_t kGbwAdjustBandMg = 200;
 constexpr int32_t kGbwStrongAdjustBandMg = 400;
@@ -264,6 +287,49 @@ void markScaleUnavailable() {
 }
 }
 
+// USB-only commissioning fault injection. The BLE task owns disconnect(),
+// avoiding concurrent NimBLE operations from the main/console task.
+bool gbw_request_scale_link_test() {
+#if defined(SG98_TSE_KFM_RUN_CANDIDATE) && SG98_TSE_KFM_RUN_CANDIDATE && (!defined(SG98_TSE_KFM_STANDALONE) || !SG98_TSE_KFM_STANDALONE)
+    const auto& d = motor_tse_diagnostics();
+    if(state != GRINDING_GBW || motor_get_drive_type() != DRIVE_TYPE_TSE ||
+       !d.runCandidate || !d.motionArmed || commStatus != COMM_CONNECTED ||
+       scaleStatus != SCALE_CONNECTED || motor_setRPM <= 0 ||
+       motor_currentRPM > kfm_commissioning::maxRpm || motor_currentRPM < -kfm_commissioning::maxRpm ||
+       (motor_currentRPM < 5 && motor_currentRPM > -5)) return false;
+    bool expected = false;
+    return scaleLinkTestRequested.compare_exchange_strong(expected, true);
+#else
+    return false;
+#endif
+}
+
+bool gbw_service_scale_link_test() {
+#if defined(SG98_TSE_KFM_RUN_CANDIDATE) && SG98_TSE_KFM_RUN_CANDIDATE && (!defined(SG98_TSE_KFM_STANDALONE) || !SG98_TSE_KFM_STANDALONE)
+    static bool scaleLinkTestHolding = false;
+    static uint32_t scaleLinkTestAt = 0;
+    if(scaleLinkTestRequested.exchange(false)) {
+        // This request expires at consumption: it must never cut a later shot.
+        if(state == GRINDING_GBW && motor_setRPM > 0 && scaleBleReady) {
+            scale.disconnect();
+            markScaleUnavailable();
+            scaleLinkTestAt = millis();
+            scaleLinkTestHolding = true;
+            Serial.println("{\"type\":\"scale_link_test\",\"event\":\"disconnected\",\"holdMs\":5000}");
+        }
+    }
+    if(scaleLinkTestHolding) {
+        if(uint32_t(millis() - scaleLinkTestAt) < 5000) {
+            markScaleUnavailable();
+            return true;
+        }
+        scaleLinkTestHolding = false;
+        Serial.println("{\"type\":\"scale_link_test\",\"event\":\"reconnect_allowed\"}");
+    }
+#endif
+    return false;
+}
+
 //SEPARATE TASK!!
 void scales_init() { 
     if (xSemaphoreTake(scaleMutex, portMAX_DELAY)) {
@@ -293,6 +359,7 @@ void gbwVitals()
     static unsigned long lastConnected;
     static int32_t prevWeight;
     const bool scaleModeActive = (state == IDLE_GBW || state == GRINDING_GBW);
+    if(gbw_service_scale_link_test()) return;
 
     if(scaleBlePausedForWifi) {
         markScaleUnavailable();
@@ -372,6 +439,14 @@ void disconnect_for_sleep() {
     scale.disconnect();
 }
 
+void gbw_prepare_for_grinding() {
+    gbwStartRequested = true;
+    gbwPredictionResetRequested = true;
+    // These are weighing-attempt outcomes, not drive alarms. A new explicit
+    // attempt gets its own outcome after the existing Start gates pass.
+    if(error >= 104 && error <= 106) error = 0;
+}
+
 void do_gbw() { 
     static unsigned long lastCall;
     static unsigned long lastUpdate;
@@ -387,7 +462,9 @@ void do_gbw() {
     #endif
 
     //reset route & start route
-    if(lastCall + 1000 < millis()) { //reset after last call 1000ms ago
+    if(gbwStartRequested || lastCall + 1000 < millis()) { // Also reset on an explicit new Start.
+        gbwStartRequested = false;
+        shotHistoryTruncated = false;
         if(motor_setRPM != 0) motor_setRPM = 0;
         //Set starting values properly
         gbw_started = false;
@@ -445,19 +522,13 @@ static int32_t lastWeight;
     if(grindingComplete == false) {
         if(state == GRINDING_GBW && gbw_started == true && lastWeight != currentWeight) { 
             lastWeight = currentWeight;
-            last_shot_updated++;
-            _shot[last_shot_updated].weight = abs(currentWeight);
-            _shot[last_shot_updated].time = millis() - startOfShot;
-            if(last_shot_updated >= sizeof(_shot)/sizeof(_shot[0])) last_shot_updated = 0;
+            append_shot_sample(abs(currentWeight), millis() - startOfShot);
         }
     } else { 
         if(lastUpdate + 600 > millis()) { 
             if(state == GRINDING_GBW && gbw_started == true && lastWeight != currentWeight) { 
                 lastWeight = currentWeight;
-                last_shot_updated++;
-                _shot[last_shot_updated].weight = abs(currentWeight);
-                _shot[last_shot_updated].time = millis() - startOfShot;
-                if(last_shot_updated >= sizeof(_shot)/sizeof(_shot[0])) last_shot_updated = 0;
+                append_shot_sample(abs(currentWeight), millis() - startOfShot);
             }
         }
     }
@@ -638,7 +709,11 @@ int32_t gbw_predict() {
     static unsigned long lastPredictionAt;
     speedModifier = Menu3[GBW_SPEEDMOD].value / 10000.0f;
 
-    if(lastCall + 1000 < millis()) { 
+    // Taring is not grinding time. Also reset on every explicit new shot,
+    // including a quick retry that never reaches the one-second idle gap.
+    if(gbwPredictionResetRequested || !gbw_started || lastCall + 1000 < millis()) {
+        gbwPredictionResetRequested = false;
+        lastKnownWeight = currentWeight;
         lastActualPrediction = 5000;
         lastPredictionAt = millis();
         predictedTime = 5000;
@@ -680,6 +755,7 @@ int32_t gbw_predict() {
 
 
 void gbw_learn() {
+    if(shotHistoryTruncated) return;
     const int32_t finalWeight = abs_mg(currentWeight);
     const int32_t targetWeight = static_cast<int32_t>(setWeight);
     const int32_t overshoot = finalWeight - targetWeight;

@@ -1,6 +1,6 @@
 #pragma once
 #include <cstdint>
-enum States { IDLE, GRINDING, MENU1 };
+enum States { IDLE, GRINDING, MENU1, IDLE_GBW, GRINDING_GBW, PURGING };
 extern States state;
 extern uint8_t error;
 extern uint16_t errorCode;

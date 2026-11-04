@@ -12,6 +12,7 @@
 #include "diag_console.h"
 #include "error_history.h"
 #include "motor_hal.h"
+#include "TSE/motorcontrol_tse.h"
 #include "pdata.h"
 #include "display.h"
 #include "io.h"
@@ -231,6 +232,9 @@ int16_t purgeClampedRpm(int32_t rpm) {
     if(rpm <= 0) return 0;
 
     int32_t maxRpm = Menu1[SETMAX].value;
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(maxRpm <= 0)return 0;
+#endif
     if(maxRpm <= 0 || maxRpm > absolute_max_rpm) maxRpm = absolute_max_rpm;
 
     int32_t minRpm = Menu1[SETMIN].value;
@@ -314,6 +318,7 @@ void finishPurgeSequence() {
 }
 
 void smartPurgeLearnFromMotor(int16_t targetRpm) {
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE && motor_tse_diagnostics().kfm) return;
     if(Menu2[AUTO_PURGE_ENABLED].value != true || newData != true || targetRpm == 0) return;
 
     const uint16_t baselineTorque = purgeBaselineTorqueForRpm(targetRpm);
@@ -597,8 +602,15 @@ void loop() {
     }
 
     if(state == GRINDING)
-    { 
+    {
+#if defined(SG98_TSE_KFM_TOUCH_TEST) && SG98_TSE_KFM_TOUCH_TEST
+        if(motor_get_drive_type()==DRIVE_TYPE_TSE){
+            if(motor_tse_touch_test_view().runActive){motor_setRPM=100;lastActivity=millis();}
+            else {motor_setRPM=0;state=IDLE;}
+        }else checkPurge();
+#else
         checkPurge();
+#endif
     }
 
     if(state == PURGING) { 
@@ -695,7 +707,7 @@ void checkPurge() {
     }
 
     //Auto purge sequence
-    if(Menu2[AUTO_PURGE_ENABLED].value == true && purgeStartTime + Menu2[SETPURGESTABILTIME].value < millis() && lastActivity + 1000 < millis() && newData == true) 
+    if(!(motor_get_drive_type()==DRIVE_TYPE_TSE && motor_tse_diagnostics().kfm) && Menu2[AUTO_PURGE_ENABLED].value == true && purgeStartTime + Menu2[SETPURGESTABILTIME].value < millis() && lastActivity + 1000 < millis() && newData == true)
     { 
 
       if(setRPM > 500) { //High values

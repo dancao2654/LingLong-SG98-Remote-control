@@ -8,6 +8,7 @@
 #include "controller_ota.h"
 #include "comm.h"
 #include "diag_console.h"
+#include "TSE/kfm_commissioning_policy.h"
 #include "display.h"
 #include "gbw.h"
 #include "main.h"
@@ -284,9 +285,15 @@ String remote_link_build_status_frame() {
     out += burr_gap_live() ? '1' : '0';
     out += sg98_protocol::kFrameSeparator;
     out += String(static_cast<long>(burr_gap_display_lcd_um()));
-    if(controller_ota_ready_for_remote()) {
+    const String actionToken=diag_api_action_token();
+    if(controller_ota_ready_for_remote() || actionToken.length()) {
         out += sg98_protocol::kFrameSeparator;
-        out += '1';
+        out += controller_ota_ready_for_remote()?'1':'0';
+    }
+    if(actionToken.length()) {
+        out += sg98_protocol::kFrameSeparator;out += actionToken;
+        out += sg98_protocol::kFrameSeparator;out += String(kfm_commissioning::maxRpm);
+        out += sg98_protocol::kFrameSeparator;out += String(static_cast<unsigned long>(kfm_commissioning::maxOperationMs));
     }
     return out;
 }

@@ -1,3 +1,4 @@
+#include "TSE/motorcontrol_tse.h"
 #include "definitions.h"
 #include "burr_gap.h"
 #include "controller_board.h"
@@ -192,6 +193,17 @@ bool controllerStartAllowed(const char** message) {
         return false;
     }
 
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE && !motor_tse_request_user_start()) {
+        *message = motor_tse_stop_ack_required() ? "Confirm stop on idle page" : "KFM stop/setup not ready";
+        return false;
+    }
+#endif
+#if defined(SG98_TSE_KFM_RUN_CANDIDATE) && SG98_TSE_KFM_RUN_CANDIDATE
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE && currentStatus != MOTOR_READY) {
+        *message = "KFM not armed/ready"; return false;
+    }
+#endif
     *message = nullptr;
     return true;
 }
@@ -532,7 +544,7 @@ void do_io() {
                 motor_ensure_drive_detected(true);
             }
             if(shouldOpenDriveSelector()) openDriveSelector(IDLE_GBW);
-            else if(!showStartBlockedIfNeeded()) state = GRINDING_GBW;
+            else if(!showStartBlockedIfNeeded()) { gbw_prepare_for_grinding(); state = GRINDING_GBW; }
         }
 
         if(pressedLong() == true && dimmed == false) {

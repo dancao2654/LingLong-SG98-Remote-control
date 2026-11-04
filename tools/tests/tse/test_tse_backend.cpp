@@ -32,6 +32,10 @@ bool responseWaiting = false;
 bool responseWrite = false;
 bool corruptAck = false;
 bool corruptCount = false;
+bool exceptionReply = false;
+bool simulateSpeedSendGap = false;
+bool deferSpeedOnce = false;
+unsigned deferredSpeedWrites = 0;
 uint16_t responseReg = 0;
 uint16_t responseCount = 0;
 uint16_t responseValue = 0;
@@ -43,6 +47,7 @@ const auto& api = MOTOR_BACKEND_TSE.api;
 void recordWrite(uint16_t reg, uint16_t value) {
     writes.push_back({reg, value});
     if(linkUp && reg >= 0x80 && reg < 0x100) registers[reg - 0x80] = value;
+    if(linkUp && reg >= 0x100 && reg < 0x120) registers[reg] = value;
 }
 
 void fixture() {
@@ -62,6 +67,8 @@ void fixture() {
     responseWaiting = false;
     corruptAck = false;
     corruptCount = false;
+    exceptionReply = false;
+    simulateSpeedSendGap = false; deferSpeedOnce = false; deferredSpeedWrites = 0;
     direction = 1;
     forwardTorque = 100;
     reverseTorque = 35;
@@ -128,6 +135,9 @@ bool readRegister(uint16_t reg, uint16_t count) {
     return true;
 }
 bool writeSingleRegister(uint16_t reg, uint16_t value) {
+    if(simulateSpeedSendGap && reg == 0x99 && value != 0 && deferSpeedOnce) {
+        deferSpeedOnce = false; ++deferredSpeedWrites; return false;
+    }
     recordWrite(reg, value);
     responseWaiting = linkUp;
     responseWrite = true;
@@ -143,6 +153,7 @@ bool writeConfirm(uint16_t reg, uint16_t value) {
 int16_t receive() {
     if(!responseWaiting || !linkUp) return 0;
     responseWaiting = false;
+    if(exceptionReply) { errorCode = 2; return 0x603F; }
     if(responseWrite) {
         lastRequestType = 0;
         lastRead[0] = corruptAck ? responseValue + 1 : responseValue;
@@ -150,6 +161,7 @@ int16_t receive() {
         lastRequestType = 100 + responseCount - (corruptCount ? 1 : 0);
         for(uint16_t i = 0; i < responseCount; ++i) lastRead[i] = registers[responseReg + i];
         if(responseReg == 0x1000) lastRead[9] = registers[4];
+        if(simulateSpeedSendGap && responseReg == 0x11E) deferSpeedOnce = true;
     }
     return responseReg;
 }
@@ -305,4 +317,5 @@ int main() {
     assert(wrote(0x0098, 0) && wrote(0x00B5, 0));
 
     std::puts("TSE backend regression tests passed");
+    return 0;
 }

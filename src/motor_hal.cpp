@@ -14,6 +14,7 @@
 #include "KRS/motorcontrol_krs_130st_m07725.h"
 #include "SEW/motorcontrol_sew_movilink.h"
 #include "TSE/motorcontrol_tse.h"
+#include "TSE/kfm_commissioning_policy.h"
 #include "pdata.h"
 
 int16_t motor_setRPM = 0;
@@ -74,6 +75,12 @@ const MotorCommandDescriptor SEW_MOVILINK_COMMANDS[] = {
     {MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 10, true, "Motor torque", "%", "MOVILINK process-data current limit.", "Requires PO3 configured as MAX. CURRENT or equivalent current-limit process data."},
     {MOTOR_COMMAND_RAMP_LEVEL, 1, static_cast<uint8_t>(SETMOTORRAMP), 1, false, "Motor ramp", "lvl", "SEW MOVILINK ramp process-data mapping is not enabled in this backend.", "Use MOVITOOLS or drive parameters for ramp setup until the process ramp mapping is validated on hardware."},
     {MOTOR_COMMAND_DIRECTION, 1, static_cast<uint8_t>(SETMOTORDIRECTION), 1, true, "Motor direction", "", "Sets the primary grind direction.", "Normal keeps forward positive. Reversed flips the signed MOVILINK speed setpoint."},
+};
+
+const MotorCommandDescriptor KFM_UNAPPLIED_TORQUE = {
+    MOTOR_COMMAND_TORQUE_LIMIT, 1, static_cast<uint8_t>(SETMOTORTORQUE), 1, false,
+    "Motor torque", "%", "KFM commissioning preserves factory torque limits.",
+    "KFM torque scaling and live torque-limit changes are not hardware-validated."
 };
 
 const MotorCommandDescriptor TSE_COMMANDS[] = {
@@ -173,8 +180,8 @@ const MotorDescriptor MOTOR_DESCRIPTORS[] = {
         DRIVE_TYPE_TSE,
         "tse",
         "TSE",
-        "TSE family 1 kW speed-mode profile (KFM uses the family manual).",
-        "9600 8N2, slave 1. Requires software-enable commissioning; see Documentation/TSE-Servo-Setup.md.",
+        "TSE family profile with KFM factory SON/SP1 commissioning.",
+        "9600 8N2, slave 1. KFM commissioning keeps factory inputs; normal TSE uses PA53 software enable.",
         COMM_PROFILE_TSE,
         3000,
         100,
@@ -472,6 +479,9 @@ ProbeCycleResult runProbeCycleOnCurrentPort(bool logResult,
     int bestPriority = -1;
 
     for(const MotorDescriptor& descriptor : MOTOR_DESCRIPTORS) {
+#if defined(SG98_TSE_KFM_COMMISSIONING) && SG98_TSE_KFM_COMMISSIONING
+        if(descriptor.driveType != DRIVE_TYPE_TSE) continue;
+#endif
         if(controller_ota_transport_active()) break;
         if(descriptor.backend == nullptr || descriptor.backend->api.probe == nullptr) {
             continue;
@@ -600,6 +610,13 @@ void applyDriveProfile(bool persist) {
     if (lastProfileType == motorDriveType) return;
 
     Menu1[SETMAX].maxValue = motor_get_max_rpm();
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(motorDriveType == DRIVE_TYPE_TSE) {
+        Menu2[SETPURGERPM].maxValue = kfm_commissioning::maxRpm;
+        Menu2[SETPURGEREVERSE].maxValue = kfm_commissioning::maxRpm;
+        Menu2[AUTO_OFF_TIME].maxValue = kfm_commissioning::maxOperationMs / 1000;
+    }
+#endif
     if (!motor_command_supported(MOTOR_COMMAND_RAMP_LEVEL)) {
         Menu1[SETMOTORRAMP].value = default_motor_ramp;
     }
@@ -610,6 +627,9 @@ void applyDriveProfile(bool persist) {
 }
 
 void selectDriveType(DriveType detectedType, bool persist) {
+#if defined(SG98_TSE_KFM_COMMISSIONING) && SG98_TSE_KFM_COMMISSIONING
+    detectedType = DRIVE_TYPE_TSE;
+#endif
     motorDriveType = detectedType;
     motor_currentRPM = 0;
     motor_currentTorque = 0;
@@ -649,6 +669,13 @@ void detectDriveTypeIfNeeded(bool force) {
 void motor_init() {
     resetMotorState();
     rememberPreferredJmcRate(jmcRateFromBaud(pdata_read_jmc_baud()), false, false);
+#if defined(SG98_TSE_KFM_COMMISSIONING) && SG98_TSE_KFM_COMMISSIONING
+    comm_set_rs485_port(COMM_RS485_PORT_ONBOARD, true);
+    selectDriveType(DRIVE_TYPE_TSE, false);
+    autoProbeDone = true;
+    lastProbeAt = millis();
+    return;
+#endif
     comm_set_rs485_port(storedRs485Port(), true);
     autoProbeDone = false;
     const DriveType savedDriveType = static_cast<DriveType>(pdata_read_drive_type());
@@ -727,6 +754,8 @@ const MotorBackendDefinition* motor_get_current_backend_definition() {
 }
 
 const MotorCommandDescriptor* motor_get_command_descriptor(DriveType driveType, MotorCommandId commandId) {
+    if(driveType == DRIVE_TYPE_TSE && motorDriveType == DRIVE_TYPE_TSE &&
+       motor_tse_diagnostics().kfm && commandId == MOTOR_COMMAND_TORQUE_LIMIT) return &KFM_UNAPPLIED_TORQUE;
     return findCommandDescriptor(findMotorDescriptor(driveType), commandId);
 }
 
@@ -735,7 +764,8 @@ const MotorCommandDescriptor* motor_get_current_command_descriptor(MotorCommandI
 }
 
 const MotorCommandDescriptor* motor_get_command_descriptor_for_menu(DriveType driveType, uint8_t menuNum, uint8_t itemIdx) {
-    return findCommandDescriptorForMenu(findMotorDescriptor(driveType), menuNum, itemIdx);
+    const MotorCommandDescriptor* command = findCommandDescriptorForMenu(findMotorDescriptor(driveType), menuNum, itemIdx);
+    return command ? motor_get_command_descriptor(driveType, command->id) : nullptr;
 }
 
 const MotorCommandDescriptor* motor_get_current_command_descriptor_for_menu(uint8_t menuNum, uint8_t itemIdx) {
@@ -783,6 +813,9 @@ const char* motor_get_backend_telemetry_guidance() {
 }
 
 int16_t motor_get_max_rpm() {
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(motorDriveType == DRIVE_TYPE_TSE) return kfm_commissioning::maxRpm;
+#endif
     return motor_get_current_descriptor()->maxRpm;
 }
 
@@ -795,10 +828,22 @@ bool motor_jmc_tools_supported() {
 }
 
 bool motor_menu_item_visible(uint8_t menuNum, uint8_t itemIdx) {
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(motorDriveType==DRIVE_TYPE_TSE) {
+        if(menuNum==1 && itemIdx==CALIBRATE)return false;
+        if(menuNum==2 && (itemIdx==AUTO_PURGE_ENABLED || itemIdx==SETPURGESTABILTIME ||
+           itemIdx==SETPURGEFRAMESHIGH || itemIdx==SETPURGEFRAMESLOW ||
+           itemIdx==SETPURGEPRCTHIGH || itemIdx==SETPURGEPRCTLOW))return false;
+    }
+#endif
     if(menuNum == 1 &&
        (itemIdx == static_cast<uint8_t>(RESETNETWORK) ||
         itemIdx == static_cast<uint8_t>(NETWORKINFO))) {
         return false;
+    }
+
+    if(menuNum == 1 && itemIdx == static_cast<uint8_t>(SETMOTORTORQUE)) {
+        return motor_command_supported(MOTOR_COMMAND_TORQUE_LIMIT);
     }
 
     if(menuNum == 1 && itemIdx == static_cast<uint8_t>(SETMOTORRAMP)) {

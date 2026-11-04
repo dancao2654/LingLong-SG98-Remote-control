@@ -34,10 +34,12 @@ extern volatile SCALE_STATUS scaleStatus;
 void scales_init();
 void gbw_set_ble_paused_for_wifi(bool paused);
 void gbwVitals();
+bool gbw_request_scale_link_test();
 int16_t fakeScale();
 bool scale_connected();
 int32_t gbw_predict();
 void gbw_learn();
+void gbw_prepare_for_grinding();
 void do_gbw();
 
 #endif

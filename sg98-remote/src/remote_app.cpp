@@ -1,3 +1,4 @@
+#include <sg98_intent_token.h>
 #include "remote_app.h"
 
 #include <math.h>
@@ -377,7 +378,7 @@ struct PendingAction {
     uint32_t queuedAt = 0;
     uint32_t lastSendAt = 0;
     uint16_t attempts = 0;
-    char arg0[16] = {};
+    char arg0[32] = {};
     char expectedText[24] = {};
 };
 
@@ -3254,6 +3255,14 @@ bool activeDriveIsJmc() {
 }
 
 bool settingItemVisible(const SettingItem& item) {
+    // The paired KFM profile has not established torque scaling/calibration.
+    if(app.controllerStatus.actionToken.length()) {
+        if(item.action && strcmp(item.action,"calibrate")==0)return false;
+        if(item.menuNum==1 && item.itemIdx==SETMOTORTORQUE)return false;
+        if(item.menuNum==2 && (item.itemIdx==AUTO_PURGE_ENABLED || item.itemIdx==SETPURGESTABILTIME ||
+           item.itemIdx==SETPURGEFRAMESHIGH || item.itemIdx==SETPURGEFRAMESLOW ||
+           item.itemIdx==SETPURGEPRCTHIGH || item.itemIdx==SETPURGEPRCTLOW))return false;
+    }
     if(item.menuNum == 1 && item.itemIdx == SETMOTORRAMP) {
         return activeDriveIsJmc();
     }
@@ -3268,7 +3277,18 @@ const SettingItem* filteredSettingItems(const SettingItem* rawItems, size_t rawC
     size_t visibleCount = 0;
     for(size_t idx = 0; idx < rawCount && visibleCount < arrayCount(filtered); ++idx) {
         if(settingItemVisible(rawItems[idx])) {
-            filtered[visibleCount++] = rawItems[idx];
+            SettingItem item=rawItems[idx];
+            if(app.controllerStatus.actionToken.length()) {
+                const int32_t cap=app.controllerStatus.runMaxRpm;
+                if(cap>0 && item.menuNum==1 && item.itemIdx==SETMAX)item.maxValue=cap;
+                if(cap>0 && item.menuNum==2 && (item.itemIdx==SETPURGERPM || item.itemIdx==SETPURGEREVERSE)) {
+                    const int32_t menuMax=app.menuValues[1][SETMAX];
+                    item.maxValue=menuMax>=0 && menuMax<cap?menuMax:cap;
+                }
+                if(item.menuNum==2 && item.itemIdx==AUTO_OFF_TIME && app.controllerStatus.runMaxMs>0)
+                    item.maxValue=app.controllerStatus.runMaxMs/1000;
+            }
+            filtered[visibleCount++] = item;
         }
     }
     if(count != nullptr) {
@@ -9835,6 +9855,14 @@ void stagePendingAction(PendingActionKind kind,
     app.pendingAction.queuedAt = millis();
     if(arg0 != nullptr) {
         copyStringToBuffer(String(arg0), app.pendingAction.arg0);
+    }
+    if((kind==PendingActionKind::Start || kind==PendingActionKind::Stop || kind==PendingActionKind::Idle || kind==PendingActionKind::IdleGbw) && app.controllerStatus.actionToken.length()) {
+        static sg98_intent::Client userActions;
+        char token[25];
+        if(!userActions.next(app.controllerStatus.actionToken.c_str(),token)) {
+            app.pendingAction={};return;
+        }
+        copyStringToBuffer(String(token),app.pendingAction.arg0);
     }
     if(expectedText != nullptr) {
         copyStringToBuffer(String(expectedText), app.pendingAction.expectedText);

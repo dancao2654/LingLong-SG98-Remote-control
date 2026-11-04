@@ -48,7 +48,8 @@ bool motor_probe_read_register(uint16_t regAddr,
         const unsigned long receiveDeadline = millis() + comm_get_receive_delay_ms() + 250;
         while(millis() < receiveDeadline) {
             const int16_t received = receive();
-            if(received == regAddr) {
+            if(received == 0x603F && comm_last_response_was_exception()) break;
+            if(received == regAddr && lastRequestType == 100 + regCount) {
                 if(values != nullptr && maxValues > 0) {
                     const uint16_t copyCount = (regCount < maxValues) ? regCount : maxValues;
                     for(uint16_t i = 0; i < copyCount; ++i) {

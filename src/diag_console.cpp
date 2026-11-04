@@ -1,6 +1,8 @@
 #include "diag_console.h"
 
 #include <cstdlib>
+#include <esp_random.h>
+#include <sg98_intent_token.h>
 #include <cstring>
 
 #include <WiFi.h>
@@ -22,6 +24,8 @@
 #include "controller_ota.h"
 #include "espnow_control.h"
 #include "motor_hal.h"
+#include "TSE/motorcontrol_tse.h"
+#include "TSE/kfm_commissioning_policy.h"
 #include "pdata.h"
 #include "radio_mode.h"
 #include "remote_ws.h"
@@ -31,6 +35,26 @@
 #include "wifi_ui.h"
 
 namespace {
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+sg98_intent::Ledger userIntentLedger;
+portMUX_TYPE userIntentMux = portMUX_INITIALIZER_UNLOCKED;
+void seedIntentLedgerLocked() {
+    if(!userIntentLedger.seeded())userIntentLedger.seed((uint64_t(esp_random())<<32)|esp_random());
+}
+sg98_intent::Decision beginUserIntent(const char* token,char action) {
+    portENTER_CRITICAL(&userIntentMux);seedIntentLedgerLocked();
+    auto result=userIntentLedger.begin(token,action);
+    portEXIT_CRITICAL(&userIntentMux);return result;
+}
+void rotateUserIntentEpoch() {
+    portENTER_CRITICAL(&userIntentMux);
+    userIntentLedger.reset((uint64_t(esp_random())<<32)|esp_random());
+    portEXIT_CRITICAL(&userIntentMux);
+}
+void finishUserIntent(bool ok) {
+    portENTER_CRITICAL(&userIntentMux);userIntentLedger.finish(ok);portEXIT_CRITICAL(&userIntentMux);
+}
+#endif
 bool streamEnabled = false;
 unsigned long lastStreamAt = 0;
 bool pendingApiReboot = false;
@@ -1108,6 +1132,8 @@ void apiPrintStatus() {
 
     Serial.print("{\"type\":\"status\",\"state\":");
     jsonPrintQuoted(stateText(state));
+    const String actionToken = diag_api_action_token();
+    if(actionToken.length()) {Serial.print(",\"actionToken\":");jsonPrintQuoted(actionToken.c_str());}
     Serial.print(",\"drive\":");
     jsonPrintQuoted(motor_get_type_label());
     Serial.print(",\"uart\":");
@@ -1519,10 +1545,30 @@ bool apiActionStart(const char** message) {
         return false;
     }
 
+    if(state != IDLE && state != IDLE_GBW) {
+        *message = "start only works from idle states"; return false;
+    }
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE && !motor_tse_request_user_start()) {
+        *message = motor_tse_stop_ack_required() ? "Return to Idle to acknowledge verified stop" : "KFM stop/setup not ready";
+        return false;
+    }
+#endif
+#if defined(SG98_TSE_KFM_RUN_CANDIDATE) && SG98_TSE_KFM_RUN_CANDIDATE
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE && currentStatus != MOTOR_READY) {
+        *message="KFM candidate not armed/ready"; return false;
+    }
+#endif
+#if defined(SG98_TSE_KFM_TOUCH_TEST) && SG98_TSE_KFM_TOUCH_TEST
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE&&!motor_tse_touch_test_request_start()){
+        *message="Touch test not armed or state not ready";return false;
+    }
+#endif
     if(state == IDLE) {
         purge_prepare_for_grinding();
         state = GRINDING;
     } else if(state == IDLE_GBW) {
+        gbw_prepare_for_grinding();
         state = GRINDING_GBW;
     } else {
         *message = "start only works from idle states";
@@ -1535,6 +1581,12 @@ bool apiActionStart(const char** message) {
 }
 
 bool apiActionStop(const char** message) {
+#if defined(SG98_TSE_KFM_TOUCH_TEST) && SG98_TSE_KFM_TOUCH_TEST
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE){
+        const bool ok=motor_tse_touch_test_request_stop();
+        *message=ok?"Touch test stop verified":"Stop requested; verify zero readback or use main switch";return ok;
+    }
+#endif
     if(state == GRINDING) {
         purge_mark_started();
         state = (Menu2[SETBUTTONPURGE].value == true ? PURGING : IDLE);
@@ -1565,12 +1617,62 @@ bool apiActionIdle(States nextState, const char** message) {
     menu5Selected = RETURN_FROM_WIRELESS;
     motor_setRPM = 0;
     state = nextState;
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE) motor_tse_acknowledge_stop();
+#endif
     controller_note_activity();
     *message = "ok";
     return true;
 }
 
+bool apiIntentAction(bool start,const char* token,const char** message) {
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    auto hardStop=[&]() {
+        // An emergency cancel invalidates even an unseen Start already in flight.
+        rotateUserIntentEpoch();
+        const States resting=(state==GRINDING_GBW||state==IDLE_GBW)?IDLE_GBW:IDLE;
+        motor_setRPM=0;purge_cancel_pending();
+        const bool ok=motorOff();
+        apiActionIdle(resting,message);
+        *message="Emergency stop requested; inspect zero readback";return ok;
+    };
+    if(!start && (!token || !*token))return hardStop();
+    const auto decision=beginUserIntent(token,start?'S':'T');
+    if(decision==sg98_intent::Decision::DuplicateAccepted){*message="User action already accepted";return true;}
+    if(decision!=sg98_intent::Decision::New) {
+        // Unknown/stale Stop always retains an emergency-stop path. A duplicate
+        // accepted Stop above must not abort the Purge it just requested.
+        if(!start)return hardStop();
+        *message="Start token missing, stale or processed; refresh status and press again";return false;
+    }
+    const bool ok=start?apiActionStart(message):apiActionStop(message);
+    finishUserIntent(ok);return ok;
+#else
+    return start?apiActionStart(message):apiActionStop(message);
+#endif
+}
+
+bool apiIntentIdle(States nextState,const char* token,const char** message) {
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(!token || !*token) {
+        rotateUserIntentEpoch();return apiActionIdle(nextState,message);
+    }
+    const auto decision=beginUserIntent(token,nextState==IDLE?'I':'W');
+    if(decision==sg98_intent::Decision::DuplicateAccepted){*message="Idle action already accepted";return true;}
+    if(decision!=sg98_intent::Decision::New) {
+        // Cancels remain fail-safe; never permit a delayed Start after a cancel.
+        rotateUserIntentEpoch();return apiActionIdle(nextState,message);
+    }
+    const bool ok=apiActionIdle(nextState,message);finishUserIntent(ok);return ok;
+#else
+    return apiActionIdle(nextState,message);
+#endif
+}
+
 bool apiActionDrive(const char* mode, const char** message) {
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    rotateUserIntentEpoch();
+#endif
     if(mode == nullptr) {
         *message = "missing drive mode";
         return false;
@@ -1605,6 +1707,9 @@ bool apiActionDrive(const char* mode, const char** message) {
 }
 
 bool apiActionCalibrate(const char** message) {
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    if(motor_get_drive_type()==DRIVE_TYPE_TSE){*message="KFM torque calibration is not verified";return false;}
+#endif
     if(motor_get_drive_type() == DRIVE_TYPE_UNKNOWN) {
         *message = "drive not detected";
         return false;
@@ -1633,6 +1738,9 @@ bool apiActionResetDefaults(const char* confirmToken, const char** message) {
         return false;
     }
 
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    rotateUserIntentEpoch();
+#endif
     Menu1[Menu1Items::RESET].value = 1;
     pdata_write(8);
     motorReset();
@@ -1716,6 +1824,8 @@ void appendStatusJson(String& out) {
     out += '{';
     out += "\"state\":";
     appendJsonQuoted(out, stateText(state));
+    const String actionToken = diag_api_action_token();
+    if(actionToken.length()) {out += ",\"actionToken\":";appendJsonQuoted(out,actionToken);}
     out += ",\"drive\":";
     appendJsonQuoted(out, motor_get_type_label());
     out += ",\"uart\":";
@@ -2471,7 +2581,7 @@ void printRawTransaction(const char* opLabel,
                          const char* argLabel,
                          const CommDebugTransaction& transaction) {
     Serial.printf(
-        "[diag] raw %s profile=%s slave=%u reg=0x%04X %s=%u ok=%s timeout=%s crc=%s parsed=0x%04X exc=%u req_len=%u rsp_len=%u\n",
+        "[diag] raw %s profile=%s slave=%u reg=0x%04X %s=%u ok=%s timeout=%s crc=%s parsed=0x%04X exc=%u req_len=%u rsp_len=%u blocked=%s\n",
         opLabel,
         profileText(profile),
         static_cast<unsigned>(slave),
@@ -2480,11 +2590,12 @@ void printRawTransaction(const char* opLabel,
         static_cast<unsigned>(arg),
         transaction.success ? "yes" : "no",
         transaction.timed_out ? "yes" : "no",
-        transaction.response_crc_ok ? "ok" : "bad",
+        transaction.response_crc_checked ? (transaction.response_crc_ok ? "ok" : "bad") : "not_checked",
         static_cast<unsigned>(transaction.parsed_reg < 0 ? 0xFFFFU : static_cast<uint16_t>(transaction.parsed_reg)),
         static_cast<unsigned>(transaction.exception_code),
         static_cast<unsigned>(transaction.request_len),
-        static_cast<unsigned>(transaction.response_len)
+        static_cast<unsigned>(transaction.response_len),
+        transaction.blocked ? "yes" : "no"
     );
     printFrameHex("[diag] tx ", transaction.request, transaction.request_len);
     printFrameHex("[diag] rx ", transaction.response, transaction.response_len);
@@ -2499,7 +2610,7 @@ void printRawTransactionUart(const char* opLabel,
                              const char* argLabel,
                              const CommDebugTransaction& transaction) {
     Serial.printf(
-        "[diag] raw %s uart=%lu/%s slave=%u reg=0x%04X %s=%u ok=%s timeout=%s crc=%s parsed=0x%04X exc=%u req_len=%u rsp_len=%u\n",
+        "[diag] raw %s uart=%lu/%s slave=%u reg=0x%04X %s=%u ok=%s timeout=%s crc=%s parsed=0x%04X exc=%u req_len=%u rsp_len=%u blocked=%s\n",
         opLabel,
         static_cast<unsigned long>(baudRate),
         uartMode,
@@ -2509,11 +2620,12 @@ void printRawTransactionUart(const char* opLabel,
         static_cast<unsigned>(arg),
         transaction.success ? "yes" : "no",
         transaction.timed_out ? "yes" : "no",
-        transaction.response_crc_ok ? "ok" : "bad",
+        transaction.response_crc_checked ? (transaction.response_crc_ok ? "ok" : "bad") : "not_checked",
         static_cast<unsigned>(transaction.parsed_reg < 0 ? 0xFFFFU : static_cast<uint16_t>(transaction.parsed_reg)),
         static_cast<unsigned>(transaction.exception_code),
         static_cast<unsigned>(transaction.request_len),
-        static_cast<unsigned>(transaction.response_len)
+        static_cast<unsigned>(transaction.response_len),
+        transaction.blocked ? "yes" : "no"
     );
     printFrameHex("[diag] tx ", transaction.request, transaction.request_len);
     printFrameHex("[diag] rx ", transaction.response, transaction.response_len);
@@ -2541,6 +2653,81 @@ void handleLineCommand(char* line) {
         char* subcmd = strtok_r(nullptr, " \t", &savePtr);
         if(subcmd == nullptr) {
             apiPrintAck("api", false, "missing subcommand");
+            return;
+        }
+
+        if(strcmp(subcmd, "tse") == 0) {
+            if(motor_get_drive_type() != DRIVE_TYPE_TSE) {
+                apiPrintAck("tse", false, "TSE backend is not selected");
+                return;
+            }
+            char* action = strtok_r(nullptr, " \t", &savePtr);
+            if(action != nullptr) {
+                if(strcmp(action,"scale_drop_test")==0){
+                    apiPrintAck("tse scale_drop_test", gbw_request_scale_link_test(), "Candidate-only: drop scale BLE link for5s during an armed GBW run with measured motion. No Start or drive command is sent.");
+                } else if(strcmp(action,"touch_test")==0){
+                    char* op=strtok_r(nullptr," \t",&savePtr);
+                    if(op&&strcmp(op,"arm")==0)apiPrintAck("tse touch_test arm",motor_tse_touch_test_arm(),"One touchscreen Start within30s; fixed100rpm, max5s; operator at main switch required.");
+                    else if(op&&strcmp(op,"disarm")==0)apiPrintAck("tse touch_test disarm",motor_tse_touch_test_disarm(),"Disarmed; inspect stop ACK and readback if a run was attempted.");
+                    else apiPrintAck("tse touch_test",false,"usage: api tse touch_test arm|disarm");
+                } else if(strcmp(action,"pa25_pulse")==0){
+                    char* op=strtok_r(nullptr," \t",&savePtr);
+                    if(op&&strcmp(op,"start")==0)apiPrintAck("tse pa25_pulse start",motor_tse_pa25_pulse_start(),"Standalone pulse only; see pulse duration. Touch-test build requires touchscreen Start after USB arm.");
+                    else if(op&&strcmp(op,"cancel")==0)apiPrintAck("tse pa25_pulse cancel",motor_tse_pa25_pulse_cancel(),"Inspect stop acknowledgements AND zero readback.");
+                    else if(op&&strcmp(op,"restore")==0)apiPrintAck("tse pa25_pulse restore",motor_tse_pa25_pulse_recover(),"Zero-only recovery after fresh identity/configuration verification.");
+                    else apiPrintAck("tse pa25_pulse",false,"usage: api tse pa25_pulse start|cancel|restore");
+                } else if(strcmp(action, "pa25_probe") == 0) {
+                    char* op=strtok_r(nullptr," \t",&savePtr);
+                    if(op&&strcmp(op,"start")==0)apiPrintAck("tse pa25_probe start",motor_tse_pa25_probe_start(),"Operator-present disabled PA25 marker=1 audit; no SON=1; deadline 180 seconds.");
+                    else if(op&&strcmp(op,"cancel")==0)apiPrintAck("tse pa25_probe cancel",motor_tse_pa25_probe_cancel(),"Inspect restoration and direct readback.");
+                    else if(op&&strcmp(op,"restore")==0)apiPrintAck("tse pa25_probe restore",motor_tse_pa25_probe_recover(),"Explicit zero-only recovery after fresh KFM identity/configuration checks; requires write echoes and zero-state readback.");
+                    else apiPrintAck("tse pa25_probe",false,"usage: api tse pa25_probe start|cancel|restore");
+                } else if(strcmp(action, "zero_probe") == 0) {
+                    char* op = strtok_r(nullptr, " \t", &savePtr);
+                    if(op && strcmp(op, "start") == 0) apiPrintAck("tse zero_probe start", motor_tse_zero_probe_start(), "Operator-present zero-preset SON test; requires separate zero-probe firmware; no nonzero speed writes; deadline 120 seconds.");
+                    else if(op && strcmp(op, "cancel") == 0) apiPrintAck("tse zero_probe cancel", motor_tse_zero_probe_cancel(), "Probe cancelled or inactive; inspect restore acknowledgements and telemetry.");
+                    else apiPrintAck("tse zero_probe", false, "usage: api tse zero_probe start|cancel; api tse shows status");
+                } else if(strcmp(action, "store_zero_default") == 0) {
+                    apiPrintAck("tse store_zero_default", motor_tse_store_zero_default(), "PA24=0 acknowledgement only; persistence failed on the tested KFM and must not be assumed. Requires stationary IDLE, valid alarm-free telemetry, motion locked, stop preset and no pending transaction. Verify by cold start.");
+                } else if(strcmp(action, "arm") == 0) {
+                    apiPrintAck("tse arm", motor_tse_arm(), "KFM session arm requires complete setup, IDLE, valid alarm-free stationary telemetry, and no pending transaction; inspect candidate maxRpm for the build speed limit");
+                } else if(strcmp(action, "disarm") == 0) {
+                    motor_tse_disarm();
+                    apiPrintAck("tse disarm", true, "motion locked; stop attempted, inspect telemetry");
+                } else apiPrintAck("tse", false, "usage: api tse [store_zero_default|arm|disarm]");
+                return;
+            }
+            const auto touch=motor_tse_touch_test_view();
+            Serial.printf("{\"type\":\"tse_touch_test\",\"available\":%s,\"phase\":\"%s\",\"reason\":\"%s\",\"armed\":%s,\"runActive\":%s,\"remoteFresh\":%s,\"armedAtMs\":%lu,\"fixedRpm\":100,\"maxRunMs\":5000,\"armWindowMs\":30000}\n",touch.available?"true":"false",touch.runActive?"running":touch.armed?"armed":"idle",touch.reason,touch.armed?"true":"false",touch.runActive?"true":"false",touch.remoteFresh?"true":"false",static_cast<unsigned long>(touch.armedAtMs));
+            const auto& pulse=motor_tse_pa25_pulse_view();
+            Serial.printf("{\"type\":\"tse_pa25_pulse\",\"available\":%s,\"phase\":\"%s\",\"reason\":\"%s\",\"startedAtMs\":%lu,\"runStartedAtMs\":%lu,\"targetSignedRpm\":-100,\"durationMs\":%lu,\"writeAttempted\":%s,\"nonzeroAttempted\":%s,\"zeroEnableVerified\":%s,\"restoreAcknowledged\":%s,\"restoreReadbackValid\":%s,\"latestValid\":%s,\"motionObserved\":%s,\"peakAbsRpm\":%u,\"latestRpm\":%d,\"latestAlarm\":%u,\"latestPa25\":%d,\"latestSon\":%u,\"latestSelect\":%u}\n",
+                motor_tse_pa25_pulse_available()?"true":"false",kfm_pa25_pulse::phaseName(pulse.phase),pulse.reason,static_cast<unsigned long>(pulse.startedAt),static_cast<unsigned long>(pulse.runStartedAt),static_cast<unsigned long>(kfm_pa25_pulse::kRunMs),pulse.writeAttempted?"true":"false",pulse.nonzeroAttempted?"true":"false",pulse.zeroEnableVerified?"true":"false",pulse.restoreAcknowledged?"true":"false",pulse.restoreReadbackValid?"true":"false",pulse.latestValid?"true":"false",pulse.motionObserved?"true":"false",pulse.peakAbsRpm,pulse.latest.rpm,pulse.latest.alarm,static_cast<int16_t>(pulse.latest.source[3]),pulse.latest.forced[0],pulse.latest.forced[1]);
+            const auto& p25=motor_tse_pa25_probe_view();
+            Serial.printf("{\"type\":\"tse_pa25_probe\",\"available\":%s,\"phase\":\"%s\",\"reason\":\"%s\",\"startedAtMs\":%lu,\"holdVerified\":%s,\"communicationGapObserved\":%s,\"afterGapCaptured\":%s,\"writeAttempted\":%s,\"restoreAcknowledged\":%s,\"restoreReadbackValid\":%s,\"returnVerified\":%s,\"returnSamples\":%u,\"presetConsistent\":%s,\"beforePa25\":%d,\"afterPa25\":%d,\"settledPa25\":%d,\"afterSon\":%u,\"afterSelect\":%u,\"latestValid\":%s,\"latestRpm\":%d,\"latestAlarm\":%u,\"inputsStatusRaw\":%u,\"marker\":1,\"deadlineMs\":180000,\"capturedAtMs\":%lu,\"latestPa25\":%d,\"afterPa24\":%d,\"afterRpm\":%d,\"afterAlarm\":%u,\"busVoltageRaw\":%u,\"afterBusVoltageRaw\":%u}\n",
+                motor_tse_pa25_probe_available()?"true":"false",kfm_zero_probe::phaseName(p25.phase),p25.reason,
+                static_cast<unsigned long>(p25.startedAt),p25.holdVerified?"true":"false",p25.communicationGapObserved?"true":"false",p25.afterGapCaptured?"true":"false",p25.writeAttempted?"true":"false",p25.restoreAcknowledged?"true":"false",p25.restoreReadbackValid?"true":"false",p25.returnVerified?"true":"false",p25.returnSamples,p25.presetConsistent?"true":"false",static_cast<int16_t>(p25.before.source[3]),static_cast<int16_t>(p25.after.source[3]),static_cast<int16_t>(p25.settledAfter.source[3]),p25.after.forced[0],p25.after.forced[1],p25.latestValid?"true":"false",p25.latest.rpm,p25.latest.alarm,p25.latest.inputsStatusRaw,static_cast<unsigned long>(p25.capturedAt),static_cast<int16_t>(p25.latest.source[3]),static_cast<int16_t>(p25.after.source[2]),p25.after.rpm,p25.after.alarm,p25.latest.busVoltageRaw,p25.after.busVoltageRaw);
+            const auto& z = motor_tse_zero_probe_view();
+            Serial.printf("{\"type\":\"tse_zero_probe\",\"available\":%s,\"phase\":\"%s\",\"reason\":\"%s\",\"startedAtMs\":%lu,\"capturedAtMs\":%lu,\"holdVerified\":%s,\"communicationGapObserved\":%s,\"afterGapCaptured\":%s,\"restoreAcknowledged\":%s,\"returnVerified\":%s,\"returnSamples\":%u,\"settledSon\":%u,\"sonConsistentAfterGap\":%s,\"beforeSon\":%u,\"beforeSelect\":%u,\"afterSon\":%u,\"afterSelect\":%u,\"afterPa24Signed\":%d,\"afterPa25Signed\":%d,\"latestValid\":%s,\"latestRpm\":%d,\"latestAlarm\":%u,\"busVoltageRaw\":%u,\"operatingStatusRaw\":%u}\n",
+                motor_tse_zero_probe_available() ? "true" : "false", kfm_zero_probe::phaseName(z.phase), z.reason,
+                static_cast<unsigned long>(z.startedAt), static_cast<unsigned long>(z.capturedAt),
+                z.holdVerified ? "true" : "false", z.communicationGapObserved ? "true" : "false", z.afterGapCaptured ? "true" : "false", z.restoreAcknowledged ? "true" : "false", z.returnVerified ? "true" : "false", z.returnSamples, z.settledAfter.forced[0], z.sonConsistentAfterGap ? "true" : "false",
+                z.before.forced[0], z.before.forced[1], z.after.forced[0], z.after.forced[1], static_cast<int16_t>(z.after.source[2]), static_cast<int16_t>(z.after.source[3]), z.latestValid ? "true" : "false", z.latest.rpm, z.latest.alarm, z.latest.busVoltageRaw, z.latest.operatingStatusRaw);
+            const auto& d = motor_tse_diagnostics();
+            Serial.printf("{\"type\":\"tse_run_candidate\",\"available\":%s,\"standalone\":%s,\"stopAckRequired\":%s,\"speedRegister\":153,\"maxRpm\":%d,\"maxOperationMs\":%lu,\"remoteTimeoutMs\":3000,\"stopReadbackVerified\":%s,\"zeroEnableReadbackMask\":%u,\"stopReadbackMask\":%u,\"unsentWriteAttempts\":%lu}\n", d.runCandidate?"true":"false", kfm_commissioning::standaloneCandidate?"true":"false", motor_tse_stop_ack_required()?"true":"false", kfm_commissioning::maxRpm, static_cast<unsigned long>(kfm_commissioning::maxOperationMs), d.stopReadbackVerified?"true":"false", d.zeroEnableReadbackMask, d.stopReadbackMask, static_cast<unsigned long>(d.unsentWriteAttempts));
+            Serial.printf("{\"type\":\"tse_diagnostics\",\"pending\":%s,\"diagnosticSessions\":%lu,\"cancelledPollReads\":%lu,\"modbusExceptions\":%lu,\"commandRpm\":%d,\"primaryDirectionSign\":%d,\"torqueRaw\":%d,\"torqueScalingVerified\":%s,\"torqueRawValid\":%s,\"torqueRawAtMs\":%lu}\n",
+                d.pending ? "true" : "false", static_cast<unsigned long>(d.diagnosticSessions), static_cast<unsigned long>(d.cancelledPollReads), static_cast<unsigned long>(d.modbusExceptions), d.commandRpm, d.primaryDirectionSign, d.torqueRaw, d.torqueScalingVerified ? "true" : "false", d.torqueRawValid ? "true" : "false", static_cast<unsigned long>(d.torqueRawAtMs));
+            const auto& a = d.startup;
+            Serial.printf("{\"type\":\"tse_startup\",\"captured\":%s,\"beforeAnyBackendWrite\":%s,\"validMask\":%u,\"startedAtMs\":%lu,\"completedAtMs\":%lu,\"pa22\":%u,\"pa23\":%u,\"pa24Signed\":%d,\"pa25Signed\":%d,\"pa53\":%u,\"p3_15_to_19\":[%u,%u,%u,%u,%u],\"actualRpm\":%d}\n",
+                a.captured ? "true" : "false", a.beforeAnyBackendWrite ? "true" : "false", a.validMask,
+                static_cast<unsigned long>(a.startedAtMs), static_cast<unsigned long>(a.completedAtMs),
+                a.speedSource, a.speedLimit, a.speedCommand, a.zeroPreset, a.softwareEnable,
+                a.forcedInputs[0], a.forcedInputs[1], a.forcedInputs[2], a.forcedInputs[3], a.forcedInputs[4], a.actualRpm);
+
+            Serial.printf("{\"type\":\"tse\",\"phase\":\"%s\",\"reason\":\"%s\",\"kfm\":%s,\"identified\":%s,\"motionArmed\":%s,\"monitorValid\":%s,\"alarmValid\":%s,\"pendingRegister\":%u,\"rejectedRegister\":%u,\"actual\":%u,\"expected\":%u,\"successfulReads\":%lu,\"successfulWrites\":%lu,\"timeouts\":%lu}\n",
+                d.phase ? d.phase : "unknown", d.reason ? d.reason : "none",
+                d.kfm ? "true" : "false", d.identified ? "true" : "false", d.motionArmed ? "true" : "false", d.monitorValid ? "true" : "false", d.alarmValid ? "true" : "false",
+                d.pendingRegister, d.rejectedRegister, d.actual, d.expected,
+                static_cast<unsigned long>(d.successfulReads), static_cast<unsigned long>(d.successfulWrites), static_cast<unsigned long>(d.timeouts));
             return;
         }
 
@@ -2817,13 +3004,13 @@ void handleLineCommand(char* line) {
             bool ok = false;
 
             if(strcmp(action, "start") == 0) {
-                ok = apiActionStart(&message);
+                ok = apiIntentAction(true, strtok_r(nullptr, " \t", &savePtr), &message);
             } else if(strcmp(action, "stop") == 0) {
-                ok = apiActionStop(&message);
+                ok = apiIntentAction(false, strtok_r(nullptr, " \t", &savePtr), &message);
             } else if(strcmp(action, "idle") == 0) {
-                ok = apiActionIdle(IDLE, &message);
+                ok = apiIntentIdle(IDLE, strtok_r(nullptr, " \t", &savePtr), &message);
             } else if(strcmp(action, "idle_gbw") == 0) {
-                ok = apiActionIdle(IDLE_GBW, &message);
+                ok = apiIntentIdle(IDLE_GBW, strtok_r(nullptr, " \t", &savePtr), &message);
             } else if(strcmp(action, "redetect") == 0) {
                 ok = apiActionDrive("auto", &message);
             } else if(strcmp(action, "drive") == 0) {
@@ -3281,6 +3468,15 @@ void handleSerialCommand(char cmd) {
 
 }
 
+String diag_api_action_token() {
+#if defined(SG98_TSE_KFM_STANDALONE) && SG98_TSE_KFM_STANDALONE
+    char text[25];portENTER_CRITICAL(&userIntentMux);seedIntentLedgerLocked();
+    userIntentLedger.offer(text);portEXIT_CRITICAL(&userIntentMux);return String(text);
+#else
+    return String();
+#endif
+}
+
 String diag_api_status_json() {
     String out;
     out.reserve(768);
@@ -3343,13 +3539,13 @@ bool diag_api_run_action(const char* action, const char* arg0, const char* arg1,
     if(action == nullptr) {
         rawMessage = "missing action";
     } else if(strcmp(action, "start") == 0) {
-        ok = apiActionStart(&rawMessage);
+        ok = apiIntentAction(true, arg0, &rawMessage);
     } else if(strcmp(action, "stop") == 0) {
-        ok = apiActionStop(&rawMessage);
+        ok = apiIntentAction(false, arg0, &rawMessage);
     } else if(strcmp(action, "idle") == 0) {
-        ok = apiActionIdle(IDLE, &rawMessage);
+        ok = apiIntentIdle(IDLE, arg0, &rawMessage);
     } else if(strcmp(action, "idle_gbw") == 0) {
-        ok = apiActionIdle(IDLE_GBW, &rawMessage);
+        ok = apiIntentIdle(IDLE_GBW, arg0, &rawMessage);
     } else if(strcmp(action, "redetect") == 0) {
         ok = apiActionDrive("auto", &rawMessage);
     } else if(strcmp(action, "drive") == 0) {

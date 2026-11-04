@@ -1,3 +1,5 @@
+#include "TSE/kfm_commissioning_policy.h"
+#include "TSE/motorcontrol_tse.h"
 #include "SEW/movilink.h"
 
 #include <HardwareSerial.h>
@@ -19,10 +21,10 @@ bool sendFrame(const uint8_t* frame, uint8_t length) {
         return false;
     }
 
+    if(!kfm_commissioning::frameAllowed(frame, length, motor_tse_zero_probe_write_window())) return false;
     while(Serial2.available()) {
         Serial2.read();
     }
-
     setTXmode();
     delayMicroseconds(50);
     Serial2.write(frame, length);
