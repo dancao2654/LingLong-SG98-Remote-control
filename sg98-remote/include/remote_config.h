@@ -51,6 +51,7 @@ constexpr uint32_t kDockClockNtpSyncMs = 60UL * 60UL * 1000UL;
 constexpr const char* kDockClockLocationName = "San Jose";
 constexpr float kDockClockWeatherLatitude = 37.3382f;
 constexpr float kDockClockWeatherLongitude = -121.8863f;
+// Used until the weather response supplies its location's current UTC offset.
 constexpr const char* kDockClockTimezone = "PST8PDT,M3.2.0,M11.1.0";
 constexpr const char* kDockClockNtpServer1 = "pool.ntp.org";
 constexpr const char* kDockClockNtpServer2 = "time.nist.gov";

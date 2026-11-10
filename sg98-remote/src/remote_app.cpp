@@ -2,6 +2,8 @@
 
 #include <math.h>
 #include <new>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <ESPmDNS.h>
@@ -731,6 +733,7 @@ constexpr Screen kRoundMenuTabScreens[] = {
 };
 
 AppState app;
+char g_dockClockTimezone[32] = {};
 mdns_search_once_t* g_mdnsQuery = nullptr;
 bool g_mdnsStopPending = false;
 uint32_t g_lastSubnetProbeAt = 0;
@@ -2305,6 +2308,7 @@ void ensureDockClockTimezone() {
     }
     setenv("TZ", remote_config::kDockClockTimezone, 1);
     tzset();
+    snprintf(g_dockClockTimezone, sizeof(g_dockClockTimezone), "%s", remote_config::kDockClockTimezone);
     timezoneApplied = true;
 }
 
@@ -2366,6 +2370,74 @@ bool jsonNumberBetween(const String& json, const char* key, int start, int end, 
     return true;
 }
 
+bool jsonIntegerBetween(const String& json, const char* key, int start, int end, long* out) {
+    if(key == nullptr || out == nullptr || start < 0) {
+        return false;
+    }
+    const int boundedEnd = end < 0 ? static_cast<int>(json.length()) : end;
+    int pos = json.indexOf(key, static_cast<unsigned int>(start));
+    if(pos < 0 || pos >= boundedEnd) {
+        return false;
+    }
+    pos += static_cast<int>(strlen(key));
+    while(pos < boundedEnd && (json[pos] == ' ' || json[pos] == ':')) {
+        ++pos;
+    }
+
+    char buffer[16] = {};
+    uint8_t len = 0;
+    if(pos < boundedEnd && (json[pos] == '-' || json[pos] == '+')) {
+        buffer[len++] = json[pos++];
+    }
+    while(pos < boundedEnd && len + 1 < sizeof(buffer) && json[pos] >= '0' && json[pos] <= '9') {
+        buffer[len++] = json[pos++];
+    }
+    if(len == 0 || (len == 1 && (buffer[0] == '-' || buffer[0] == '+'))) {
+        return false;
+    }
+    if(pos < boundedEnd && json[pos] != ',' && json[pos] != '}' && json[pos] != ' ' &&
+       json[pos] != '\r' && json[pos] != '\n' && json[pos] != '\t') {
+        return false;
+    }
+    char* parsedEnd = nullptr;
+    const long value = strtol(buffer, &parsedEnd, 10);
+    if(parsedEnd == buffer || *parsedEnd != '\0') {
+        return false;
+    }
+    *out = value;
+    return true;
+}
+
+bool applyDockClockUtcOffset(long utcOffsetSeconds) {
+    constexpr long kMaxUtcOffsetSeconds = 14L * 60L * 60L;
+    if(utcOffsetSeconds < -kMaxUtcOffsetSeconds || utcOffsetSeconds > kMaxUtcOffsetSeconds ||
+       (utcOffsetSeconds % 60L) != 0) {
+        return false;
+    }
+
+    const uint32_t absoluteMinutes = static_cast<uint32_t>(
+        (utcOffsetSeconds < 0 ? -utcOffsetSeconds : utcOffsetSeconds) / 60L);
+    const uint32_t hours = absoluteMinutes / 60U;
+    const uint32_t minutes = absoluteMinutes % 60U;
+    // POSIX TZ offsets are written opposite to UTC offsets: UTC-8 is TZ "UTC+8".
+    const char posixSign = utcOffsetSeconds > 0 ? '-' : '+';
+    char timezone[16] = {};
+    const int written = minutes == 0
+                            ? snprintf(timezone, sizeof(timezone), "UTC%c%u", posixSign, hours)
+                            : snprintf(timezone, sizeof(timezone), "UTC%c%u:%02u", posixSign, hours, minutes);
+    if(written <= 0 || static_cast<size_t>(written) >= sizeof(timezone)) {
+        return false;
+    }
+
+    ensureDockClockTimezone();
+    if(setenv("TZ", timezone, 1) != 0) {
+        return false;
+    }
+    tzset();
+    snprintf(g_dockClockTimezone, sizeof(g_dockClockTimezone), "%s", timezone);
+    return true;
+}
+
 bool updateDockWeatherFromJson(const String& payload) {
     const int currentStart = payload.indexOf("\"current\":");
     const int hourlyStart = payload.indexOf("\"hourly\":");
@@ -2385,6 +2457,10 @@ bool updateDockWeatherFromJson(const String& payload) {
         (void)jsonNumberBetween(payload, "\"precipitation_probability\":[", hourlyStart, -1, &precip);
     }
 
+    long utcOffsetSeconds = 0;
+    const bool hasUtcOffset = jsonIntegerBetween(payload, "\"utc_offset_seconds\":", 0, currentStart,
+                                                  &utcOffsetSeconds);
+
     app.dockWeather.valid = true;
     app.dockWeather.temperatureF = static_cast<int16_t>(lroundf(temperature));
     app.dockWeather.weatherCode = static_cast<uint16_t>(max<int>(0, static_cast<int>(lroundf(weatherCode))));
@@ -2392,6 +2468,9 @@ bool updateDockWeatherFromJson(const String& payload) {
         precip >= 0.0f ? static_cast<int8_t>(clampValue(static_cast<int32_t>(lroundf(precip)), 0, 100)) : -1;
     app.dockWeather.updatedAt = millis();
     app.dockWeather.location = remote_config::kDockClockLocationName;
+    if(hasUtcOffset) {
+        (void)applyDockClockUtcOffset(utcOffsetSeconds);
+    }
     return true;
 }
 
@@ -2416,7 +2495,7 @@ void serviceDockClockTime(uint32_t now) {
         return;
     }
 
-    configTzTime(remote_config::kDockClockTimezone,
+    configTzTime(g_dockClockTimezone,
                  remote_config::kDockClockNtpServer1,
                  remote_config::kDockClockNtpServer2);
     app.dockClockTimeConfigured = true;
